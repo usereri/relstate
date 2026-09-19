@@ -6,4 +6,4 @@ node_modules
 test-ledger
 .yarn
 .surfpool
-./test-usdc-mint.json
+tests/test-usdc-mint.json
