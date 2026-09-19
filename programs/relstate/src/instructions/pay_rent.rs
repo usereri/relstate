@@ -47,6 +47,11 @@ pub fn handle_pay_rent(ctx: Context<PayRent>) -> Result<()> {
         ErrorCode::TermCompleted
     );
 
+    // no prepaying: period k can only be paid once it is due
+    let due = lease.start_ts + lease.paid_count as i64 * lease.period_secs;
+    let now = Clock::get()?.unix_timestamp;
+    require!(now >= due, ErrorCode::TooEarly);
+
     transfer_checked(
         CpiContext::new(
             ctx.accounts.token_program.key(),
@@ -61,8 +66,7 @@ pub fn handle_pay_rent(ctx: Context<PayRent>) -> Result<()> {
         ctx.accounts.mint.decimals,
     )?;
 
-    let due = lease.start_ts + lease.paid_count as i64 * lease.period_secs;
-    let on_time = Clock::get()?.unix_timestamp <= due + lease.period_secs / 10;
+    let on_time = now <= due + lease.grace_secs;
 
     let profile = &mut ctx.accounts.tenant_profile;
     if on_time {
