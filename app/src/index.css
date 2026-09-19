@@ -1,0 +1,81 @@
+@import "tailwindcss";
+
+/* Warm brown + beige palette. Tokens keep the shadcn names so the ui/ components work. */
+:root {
+  --background: #f3eadb;
+  --foreground: #2e2016;
+  --card: #faf5ec;
+  --card-foreground: #2e2016;
+  --primary: #6b4226;
+  --primary-foreground: #faf5ec;
+  --secondary: #e7d9c3;
+  --secondary-foreground: #4a2f1c;
+  --muted: #ebdfcb;
+  --muted-foreground: #6f5b47;
+  --accent: #8f5a22;
+  --accent-foreground: #fff8ee;
+  --border: #d9c9ae;
+  --input: #d9c9ae;
+  --ring: #b7793a;
+  --destructive: #a23b2a;
+  --success: #4f6f3c;
+  --radius: 0.9rem;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --font-serif: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    min-height: 100dvh;
+  }
+  h1, h2, h3 {
+    @apply font-serif tracking-tight;
+  }
+  button, [role="button"], input, label {
+    touch-action: manipulation;
+  }
+}
+
+/* soft paper-like background wash behind the phone-width column */
+body {
+  background-image:
+    radial-gradient(1200px 500px at 50% -10%, #fbf4e6 0%, transparent 70%),
+    radial-gradient(800px 400px at 100% 100%, #ead9bd 0%, transparent 60%);
+  background-attachment: fixed;
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.rise { animation: rise 0.35s ease-out both; }
+@media (prefers-reduced-motion: reduce) {
+  .rise { animation: none; }
+}
