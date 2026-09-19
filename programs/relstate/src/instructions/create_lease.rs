@@ -8,7 +8,7 @@ use crate::{constants::*, state::*};
 pub struct CreateLease<'info> {
     #[account(mut)]
     pub landlord: Signer<'info>,
-    // CHECK: only stored as the counterparty key. It signs later in fund_deposit 
+    /// CHECK: only stored as the counterparty key. It signs later in fund_deposit 
     pub tenant: UncheckedAccount<'info>,
     pub mint: Account<'info, Mint>,
     #[account(

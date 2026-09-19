@@ -14,25 +14,25 @@ pub struct ReleaseDeposit<'info> {
         bump = lease.bump
     )]
     pub lease: Account<'info, Lease>,
-    pub mint: Account<'info, Mint>,
+    pub mint: Box<Account<'info, Mint>>,
     #[account(
         mut, 
         seeds = [VAULT_SEED, lease.key().as_ref()],
         bump
     )]
-    pub vault: Account<'info, TokenAccount>,
+    pub vault: Box<Account<'info, TokenAccount>>,
     #[account(
         mut,
         token::mint = mint,
         token::authority = lease.tenant
     )]
-    pub tenant_ata: Account<'info, TokenAccount>,
+    pub tenant_ata: Box<Account<'info, TokenAccount>>,
     #[account(
         mut,
         token::mint = mint,
         token::authority = landlord
     )]
-    pub landlord_ata: Account<'info, TokenAccount>,
+    pub landlord_ata: Box<Account<'info, TokenAccount>>,
     #[account(
         mut,
         seeds = [PROFILE_SEED, lease.tenant.as_ref()],

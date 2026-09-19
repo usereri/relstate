@@ -1,9 +1,8 @@
 use {
     anchor_lang::{
-        accounts::signer,
-        prelude::{clock, Pubkey},
+        prelude::Pubkey,
         solana_program::{clock::Clock, instruction::Instruction, system_program},
-        AccountDeserialize, InstructionData, Key, ToAccountInfo,
+        AccountDeserialize, InstructionData, ToAccountMetas,
     },
     litesvm::LiteSVM,
     litesvm_token::{
@@ -57,7 +56,8 @@ impl Env {
 
         let landlord = Keypair::new();
         let tenant: Keypair = Keypair::new();
-        svm.airdrop(&landlord.pubkey(), 10_000_000_0000).unwrap();
+        svm.airdrop(&landlord.pubkey(), 10_000_000_000).unwrap();
+        svm.airdrop(&tenant.pubkey(), 10_000_000_000).unwrap();
 
         let mint = CreateMint::new(&mut svm, &landlord)
             .decimals(6)
