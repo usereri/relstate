@@ -75,9 +75,11 @@ pub fn handle_claim_deposit(ctx: Context<ClaimDeposit>) -> Result<()> {
     let tenant = &mut ctx.accounts.tenant_profile;
     tenant.leases_completed += 1;
     tenant.deposits_returned_full += 1;
+    tenant.deposit_total += lease.deposit_amount;
     let landlord = &mut ctx.accounts.landlord_profile;
     landlord.leases_completed += 1;
     landlord.deposits_claimed += 1;
+    landlord.deposit_total += lease.deposit_amount;
 
     let lease = &mut ctx.accounts.lease;
     lease.status = Status::Closed;

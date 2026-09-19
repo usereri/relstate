@@ -232,7 +232,8 @@ describe("relstate", () => {
 
     const t = await program.account.profile.fetch(env.tenantProfile);
     expect([t.leasesCompleted, t.paidOnTime, t.paidLate, t.defaults]).to.deep.equal([1, 3, 0, 0]);
-    expect([t.depositsReturnedFull, t.depositsWithheld]).to.deep.equal([1, 0]);
+    expect([t.depositsReturnedFull, t.depositTotal.toNumber(), t.deductedTotal.toNumber()])
+      .to.deep.equal([1, DEPOSIT, 0]);
     const l = await program.account.profile.fetch(env.landlordProfile);
     expect([l.leasesCompleted, l.depositsReturnedFull]).to.deep.equal([1, 1]);
   });
@@ -244,7 +245,11 @@ describe("relstate", () => {
     expect(await balance(env.tenantAta)).to.equal(START_BALANCE - 3 * RENT - 500);
     expect(await balance(env.landlordAta)).to.equal(3 * RENT + 500);
     const t = await program.account.profile.fetch(env.tenantProfile);
-    expect([t.depositsReturnedFull, t.depositsWithheld]).to.deep.equal([0, 1]);
+    expect([t.depositsReturnedFull, t.depositTotal.toNumber(), t.deductedTotal.toNumber()])
+      .to.deep.equal([0, DEPOSIT, 500]);
+    // the landlord's Profile carries the same facts
+    const l = await program.account.profile.fetch(env.landlordProfile);
+    expect([l.depositTotal.toNumber(), l.deductedTotal.toNumber()]).to.deep.equal([DEPOSIT, 500]);
   });
 
   it("counts a late payment", async () => {
@@ -395,7 +400,8 @@ describe("relstate", () => {
     expect(await balance(env.landlordAta)).to.equal(3 * RENT);
     expect((await program.account.lease.fetch(env.lease)).status).to.have.property("closed");
     const t = await program.account.profile.fetch(env.tenantProfile);
-    expect([t.leasesCompleted, t.depositsReturnedFull]).to.deep.equal([1, 1]);
+    expect([t.leasesCompleted, t.depositsReturnedFull, t.depositTotal.toNumber()])
+      .to.deep.equal([1, 1, DEPOSIT]);
     const l = await program.account.profile.fetch(env.landlordProfile);
     expect([l.leasesCompleted, l.depositsClaimed]).to.deep.equal([1, 1]);
 
@@ -403,7 +409,7 @@ describe("relstate", () => {
   });
 
   it("cannot claim before the landlord's window has passed", async () => {
-    const env = await fullyPaid(); // just past the end of the term, inside the window
+    const env = await fullyPaid();
     await expectFail(env.claim(), "ClaimTooEarly");
   });
 

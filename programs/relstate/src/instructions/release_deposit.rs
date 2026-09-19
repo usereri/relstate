@@ -85,12 +85,12 @@ pub fn handle_release_deposit(ctx: Context<ReleaseDeposit>, deduction: u64) -> R
     tenant.leases_completed += 1;
     let landlord = &mut ctx.accounts.landlord_profile;
     landlord.leases_completed += 1;
-    if deduction == 0 {
-        tenant.deposits_returned_full += 1;
-        landlord.deposits_returned_full += 1;
-    } else {
-        tenant.deposits_withheld += 1;
-        landlord.deposits_withheld += 1;
+    for profile in [tenant, landlord] {
+        profile.deposit_total += lease.deposit_amount;
+        profile.deducted_total += deduction;
+        if deduction == 0 {
+            profile.deposits_returned_full += 1;
+        }
     }
 
     let lease = &mut ctx.accounts.lease;

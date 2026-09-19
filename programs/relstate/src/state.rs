@@ -36,7 +36,8 @@ pub struct Profile {
     pub paid_on_time: u32,
     pub paid_late: u32,
     pub deposits_returned_full: u32,
-    pub deposits_withheld: u32,
+    pub deposit_total: u64,
+    pub deducted_total: u64,
     pub defaults: u32,
     pub deposits_claimed: u32,
 }
