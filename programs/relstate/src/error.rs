@@ -2,8 +2,12 @@ use anchor_lang::prelude::*;
 
 #[error_code]
 pub enum ErrorCode {
-    #[msg("Only the counter authority can update this counter")]
-    Unauthorized,
-    #[msg("Counter has reached the maximum value")]
-    CounterOverflow,
+    #[msg("Lease is not in the required status")]
+    WrongStatus,
+    #[msg("All rent periods are already paid")]
+    TermCompleted,
+    #[msg("Rent periods are still unpaid")]
+    TermIncomplete,
+    #[msg("Deduction is larger than deposit")]
+    DeductionTooLarge,
 }
