@@ -7,3 +7,10 @@ test-ledger
 .yarn
 .surfpool
 tests/test-usdc-mint.json
+dist
+app/src/demo.json
+runbooks
+txtx.yml
+.env*.local
+*.log
+*.tsbuildinfo
