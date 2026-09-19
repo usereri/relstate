@@ -1,12 +1,14 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, Token, TokenAccount};
 
-use create::{constants::*, state::*};
+use crate::{constants::*, state::*};
 
 #[derive(Accounts)]
 #[instruction(lease_id: u64)]
 pub struct CreateLease<'info> {
+    #[account(mut)]
     pub landlord: Signer<'info>,
+    // CHECK: 
     pub tenant: UncheckedAccount<'info>,
     pub mint: Account<'info, Mint>,
     #[account(
@@ -25,11 +27,12 @@ pub struct CreateLease<'info> {
         token::mint = mint,
         token::authority = lease
     )]
-    pub valut: Account<'info, TokenAccount>,
+    pub vault: Account<'info, TokenAccount>,
     #[account(
         init_if_needed,
         payer = landlord,
         space = 8 + Profile::INIT_SPACE,
+        seeds = [PROFILE_SEED, landlord.key().as_ref()],
         bump
     )]
     pub landlord_profile: Account<'info, Profile>,
@@ -58,7 +61,7 @@ pub fn handle_create_lease(
     lease.start_ts = 0;
     lease.term_periods = term_periods;
     lease.paid_count = 0;
-    lease.lease_hash = lease.hash;
+    lease.lease_hash = lease_hash;
     lease.status = Status::Proposed;
     lease.bump = ctx.bumps.lease;
 
