@@ -15,11 +15,35 @@ declare_id!("5J52oGfo7BjC529vizEaM96QtxVFD4Kbv22Tw8aXa1Ar");
 pub mod relstate {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-        crate::instructions::initialize::handle_initialize(ctx)
+    pub fn create_lease(
+        ctx: Context<CreateLease>,
+        lease_id: u64,
+        rent_amount: u64,
+        deposit_amount: u64,
+        period_secs: i64,
+        term_periods: u16,
+        lease_hash: [u8; 32],
+    ) -> Result<()> {
+        crate::instructions::create_lease::handle_create_lease(
+            ctx,
+            lease_id,
+            rent_amount,
+            deposit_amount,
+            period_secs,
+            term_periods,
+            lease_hash,
+        )
     }
 
-    pub fn increment(ctx: Context<Increment>) -> Result<()> {
-        crate::instructions::increment::handle_increment(ctx)
+    pub fn fund_deposit(ctx: Context<FundDeposit>) -> Result<()> {
+        crate::instructions::fund_deposit::handle_fund_deposit(ctx)
+    }
+
+    pub fn pay_rent(ctx: Context<PayRent>) -> Result<()> {
+        crate::instructions::pay_rent::handle_pay_rent(ctx)
+    }
+
+    pub fn release_deposit(ctx: Context<ReleaseDeposit>, deduction: u64) -> Result<()> {
+        crate::instructions::release_deposit::handle_release_deposit(ctx, deduction)
     }
 }
