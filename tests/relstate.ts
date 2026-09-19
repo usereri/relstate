@@ -128,7 +128,6 @@ describe("relstate", () => {
           .signers([landlord])
           .rpc(),
 
-      // `hash` lets a test accept a different document than the one proposed
       fund: (hash = LEASE_HASH) =>
         program.methods
           .fundDeposit(hash)
@@ -273,7 +272,7 @@ describe("relstate", () => {
     const env = await setup();
     await env.create();
     await expectFail(env.fund(Array(32).fill(8)), "LeaseHashMismatch");
-    await env.fund(); // the real hash still works
+    await env.fund();
   });
 
   it("cannot pay before funding", async () => {
