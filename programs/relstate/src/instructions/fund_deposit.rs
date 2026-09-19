@@ -21,7 +21,7 @@ pub struct FundDeposit<'info> {
         seeds = [VAULT_SEED, lease.key().as_ref()], 
         bump
     )]
-    pub valut: Account<'info, TokenAccount>,
+    pub vault: Account<'info, TokenAccount>,
     #[account(
         mut,
         token::mint = mint,
@@ -52,7 +52,7 @@ pub fn handle_fund_deposit(ctx: Context<FundDeposit>) -> Result<()> {
             TransferChecked {
                 from: ctx.accounts.tenant_ata.to_account_info(),
                 mint: ctx.accounts.mint.to_account_info(),
-                to: ctx.accounts.valut.to_account_info(),
+                to: ctx.accounts.vault.to_account_info(),
                 authority: ctx.accounts.tenant.to_account_info(),
             },
         ),
