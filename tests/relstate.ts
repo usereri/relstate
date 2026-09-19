@@ -15,6 +15,7 @@ const { Keypair, PublicKey, LAMPORTS_PER_SOL } = anchor.web3;
 const RENT = 1_000;
 const DEPOSIT = 2_000;
 const PERIOD = 100;
+const GRACE = 10;
 const TERM = 3;
 const START_BALANCE = 10_000;
 
@@ -36,8 +37,14 @@ describe("relstate", () => {
     PublicKey.findProgramAddressSync(seeds, program.programId)[0];
   const u64 = (n: number) => new BN(n).toArrayLike(Buffer, "le", 8);
 
-  // Surfpool cheatcode: the surfnet clock does not follow wall-clock time, so lateness
-  // has to be simulated by jumping it forward.
+  async function chainNow() {
+    const info = await connection.getAccountInfo(anchor.web3.SYSVAR_CLOCK_PUBKEY);
+    return Number(info!.data.readBigInt64LE(32)); // Clock.unix_timestamp
+  }
+
+  // Surfpool cheatcode: the surfnet clock does not follow wall-clock time, so periods
+  // elapsing (or lateness) have to be simulated by jumping it forward from the chain's
+  // own clock, which drifts a little with every transaction.
   async function timeTravel(secondsAhead: number) {
     const res = await (globalThis as any).fetch(connection.rpcEndpoint, {
       method: "POST",
@@ -46,12 +53,17 @@ describe("relstate", () => {
         jsonrpc: "2.0",
         id: 1,
         method: "surfnet_timeTravel",
-        params: [{ absoluteTimestamp: Date.now() + secondsAhead * 1000 }],
+        params: [{ absoluteTimestamp: ((await chainNow()) + secondsAhead) * 1000 }],
       }),
     });
     const json: any = await res.json();
     if (json.error) throw new Error(JSON.stringify(json.error));
   }
+
+  // web3.js caches a blockhash per Connection for 30s of wall-clock time, but a time
+  // jump moves the slot by hundreds and expires it. The spl-token helpers rely on that
+  // cache, so they get a fresh Connection each time.
+  const freshConnection = () => new anchor.web3.Connection(connection.rpcEndpoint, "confirmed");
 
   async function airdrop(kp: anchor.web3.Keypair) {
     const signature = await connection.requestAirdrop(
@@ -76,18 +88,19 @@ describe("relstate", () => {
   });
 
   async function setup(periodSecs = PERIOD, mint = MINT_KEYPAIR.publicKey) {
+    const conn = freshConnection();
     const landlord = Keypair.generate();
     const tenant = Keypair.generate();
     await Promise.all([airdrop(landlord), airdrop(tenant)]);
 
     const landlordAta = await createAssociatedTokenAccount(
-      connection, landlord, mint, landlord.publicKey
+      conn, landlord, mint, landlord.publicKey
     );
     const tenantAta = await createAssociatedTokenAccount(
-      connection, tenant, mint, tenant.publicKey
+      conn, tenant, mint, tenant.publicKey
     );
     const payer = (provider.wallet as anchor.Wallet).payer;
-    await mintTo(connection, payer, mint, tenantAta, payer, START_BALANCE);
+    await mintTo(conn, payer, mint, tenantAta, payer, START_BALANCE);
 
     const leaseId = nextLeaseId++;
     const lease = pda(Buffer.from("lease"), landlord.publicKey.toBuffer(), u64(leaseId));
@@ -100,11 +113,11 @@ describe("relstate", () => {
       landlordProfile, tenantProfile,
 
       // overrides let tests try invalid lease terms
-      create: (o: { rent?: number; term?: number; tenant?: anchor.web3.PublicKey } = {}) =>
+      create: (o: { rent?: number; term?: number; grace?: number; tenant?: anchor.web3.PublicKey } = {}) =>
         program.methods
           .createLease(
             new BN(leaseId), new BN(o.rent ?? RENT), new BN(DEPOSIT), new BN(periodSecs),
-            o.term ?? TERM, Array(32).fill(7)
+            new BN(o.grace ?? GRACE), o.term ?? TERM, Array(32).fill(7)
           )
           .accountsPartial({
             landlord: landlord.publicKey, tenant: o.tenant ?? tenant.publicKey,
@@ -152,9 +165,20 @@ describe("relstate", () => {
     return env;
   }
 
-  async function fullyPaid() {
+  // pays every period on its due date; the lease itself has not ended yet
+  async function allPaid() {
     const env = await active();
-    for (let i = 0; i < TERM; i++) await env.pay();
+    for (let i = 0; i < TERM; i++) {
+      if (i > 0) await timeTravel(PERIOD);
+      await env.pay();
+    }
+    return env;
+  }
+
+  // ... and additionally jumps to the end of the term, when the deposit can be released
+  async function fullyPaid() {
+    const env = await allPaid();
+    await timeTravel(PERIOD);
     return env;
   }
 
@@ -203,7 +227,7 @@ describe("relstate", () => {
   });
 
   it("counts a late payment", async () => {
-    // first rent is due at start_ts, grace is 10s: jump a minute ahead, then pay.
+    // first rent is due at start_ts and grace is 10s: jump a minute ahead, then pay.
     const env = await active();
     await timeTravel(60);
     await env.pay();
@@ -233,6 +257,17 @@ describe("relstate", () => {
     const env = await active();
     await env.pay();
     await expectFail(env.release(0), "TermIncomplete");
+  });
+
+  it("cannot pay a period before it is due", async () => {
+    const env = await active();
+    await env.pay();
+    await expectFail(env.pay(), "TooEarly");
+  });
+
+  it("cannot release before the lease term has ended", async () => {
+    const env = await allPaid();
+    await expectFail(env.release(0), "LeaseNotEnded");
   });
 
   it("cannot deduct more than the deposit", async () => {
@@ -269,8 +304,13 @@ describe("relstate", () => {
 
   it("rejects a mint that is not allowed", async () => {
     const payer = (provider.wallet as anchor.Wallet).payer;
-    const other = await createMint(connection, payer, payer.publicKey, null, 6);
+    const other = await createMint(freshConnection(), payer, payer.publicKey, null, 6);
     const env = await setup(PERIOD, other);
     await expectFail(env.create(), "MintNotAllowed");
+  });
+
+  it("rejects a grace longer than the period", async () => {
+    const env = await setup();
+    await expectFail(env.create({ grace: PERIOD + 1 }), "InvalidGrace");
   });
 });

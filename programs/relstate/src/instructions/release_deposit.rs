@@ -58,6 +58,11 @@ pub fn handle_release_deposit(ctx: Context<ReleaseDeposit>, deduction: u64) -> R
         lease.paid_count == lease.term_periods, 
         ErrorCode::TermIncomplete
     );
+    let end = lease.start_ts + lease.term_periods as i64 * lease.period_secs;
+    require!(
+        Clock::get()?.unix_timestamp >= end,
+        ErrorCode::LeaseNotEnded
+    );
     require!(
         deduction <= lease.deposit_amount, 
         ErrorCode::DeductionTooLarge
