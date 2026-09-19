@@ -21,6 +21,7 @@ pub mod relstate {
         rent_amount: u64,
         deposit_amount: u64,
         period_secs: i64,
+        grace_secs: i64,
         term_periods: u16,
         lease_hash: [u8; 32],
     ) -> Result<()> {
@@ -30,6 +31,7 @@ pub mod relstate {
             rent_amount,
             deposit_amount,
             period_secs,
+            grace_secs,
             term_periods,
             lease_hash,
         )

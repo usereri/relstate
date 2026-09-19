@@ -23,6 +23,8 @@ pub struct Lease {
     pub status: Status,
     pub bump: u8,
     pub period_secs: i64,
+    // how long after a due date a payment still counts as on time
+    pub grace_secs: i64,
 }
 
 #[account]

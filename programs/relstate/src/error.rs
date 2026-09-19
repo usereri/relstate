@@ -18,6 +18,12 @@ pub enum ErrorCode {
     PeriodTooShort,
     #[msg("Landlord and tenant must be different wallets")]
     SelfLease,
+    #[msg("Grace must be between zero and one period")]
+    InvalidGrace,
+    #[msg("This rent period is not due yet")]
+    TooEarly,
+    #[msg("The lease term has not ended yet")]
+    LeaseNotEnded,
     #[msg("Mint is not allowed for leases")]
     MintNotAllowed,
 }
