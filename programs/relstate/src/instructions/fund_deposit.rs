@@ -33,6 +33,7 @@ pub struct FundDeposit<'info> {
         payer = tenant,
         space = 8 + Profile::INIT_SPACE,
         seeds = [PROFILE_SEED, tenant.key().as_ref()],
+        bump
     )]
     pub tenant_profile: Account<'info, Profile>,
     pub token_program: Program<'info, Token>,
@@ -59,8 +60,8 @@ pub fn handle_fund_deposit(ctx: Context<FundDeposit>) -> Result<()> {
         ctx.accounts.mint.decimals,
     )?;
 
-    let lease -= &mut ctx.accounts.lease;
-    lease.status = Status.Active;
+    let lease = &mut ctx.accounts.lease;
+    lease.status = Status::Active;
     lease.start_ts = Clock::get()?.unix_timestamp;
 
     ctx.accounts.tenant_profile.wallet = ctx.accounts.tenant.key();
