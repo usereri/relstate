@@ -9,12 +9,13 @@ pub struct Lease {
     pub lease_id: u64,
     pub rent_amount: u64,
     pub deposit_amount: u64,
-    pub start_ts: u64,
+    pub start_ts: i64,
     pub term_periods: u16,
     pub paid_count: u16,
     pub lease_hash: [u8; 32],
     pub status: Status,
     pub bump: u8,
+    pub period_secs: i64,
 }
 
 #[account]
