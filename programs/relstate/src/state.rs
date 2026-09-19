@@ -1,5 +1,12 @@
 use anchor_lang::prelude::*;
 
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
+pub enum Status {
+    Proposed,
+    Active,
+    Closed,
+}
+
 #[account]
 #[derive(InitSpace)]
 pub struct Lease {
