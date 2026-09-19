@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, Token, TokenAccount};
 
-use crate::{constants::*, state::*};
+use crate::{constants::*, error::ErrorCode, state::*};
 
 #[derive(Accounts)]
 #[instruction(lease_id: u64)]
@@ -10,6 +10,7 @@ pub struct CreateLease<'info> {
     pub landlord: Signer<'info>,
     /// CHECK: only stored as the counterparty key. It signs later in fund_deposit 
     pub tenant: UncheckedAccount<'info>,
+    #[account(address = ALLOWED_MINT @ ErrorCode::MintNotAllowed)]
     pub mint: Account<'info, Mint>,
     #[account(
         init, 
@@ -50,6 +51,11 @@ pub fn handle_create_lease(
     lease_hash: [u8; 32]
 ) -> Result<()> {
     let landlord = ctx.accounts.landlord.key();
+    require_keys_neq!(landlord, ctx.accounts.tenant.key(), ErrorCode::SelfLease);
+    require!(rent_amount > 0, ErrorCode::ZeroRent);
+    require!(term_periods > 0, ErrorCode::ZeroTerm);
+    require!(period_secs >= MIN_PERIOD_SECS, ErrorCode::PeriodTooShort);
+
     let lease = &mut ctx.accounts.lease;
     lease.landlord = landlord;
     lease.tenant = ctx.accounts.tenant.key();

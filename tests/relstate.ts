@@ -7,6 +7,7 @@ import {
   mintTo,
 } from "@solana/spl-token";
 import { expect } from "chai";
+import * as fs from "fs";
 import { Relstate } from "../target/types/relstate";
 
 const { Keypair, PublicKey, LAMPORTS_PER_SOL } = anchor.web3;
@@ -16,6 +17,11 @@ const DEPOSIT = 2_000;
 const PERIOD = 100;
 const TERM = 3;
 const START_BALANCE = 10_000;
+
+// The program only accepts this mint (ALLOWED_MINT in constants.rs).
+const MINT_KEYPAIR = Keypair.fromSecretKey(
+  Uint8Array.from(JSON.parse(fs.readFileSync(`${__dirname}/test-usdc-mint.json`, "utf8")))
+);
 
 describe("relstate", () => {
   anchor.setProvider(anchor.AnchorProvider.env());
@@ -62,19 +68,26 @@ describe("relstate", () => {
     return Number((await getAccount(connection, ata)).amount);
   }
 
-  async function setup(periodSecs = PERIOD) {
+  // Created once by the provider wallet, which stays the mint authority.
+  before(async () => {
+    if (await connection.getAccountInfo(MINT_KEYPAIR.publicKey)) return;
+    const payer = (provider.wallet as anchor.Wallet).payer;
+    await createMint(connection, payer, payer.publicKey, null, 6, MINT_KEYPAIR);
+  });
+
+  async function setup(periodSecs = PERIOD, mint = MINT_KEYPAIR.publicKey) {
     const landlord = Keypair.generate();
     const tenant = Keypair.generate();
     await Promise.all([airdrop(landlord), airdrop(tenant)]);
 
-    const mint = await createMint(connection, landlord, landlord.publicKey, null, 6);
     const landlordAta = await createAssociatedTokenAccount(
       connection, landlord, mint, landlord.publicKey
     );
     const tenantAta = await createAssociatedTokenAccount(
       connection, tenant, mint, tenant.publicKey
     );
-    await mintTo(connection, landlord, mint, tenantAta, landlord, START_BALANCE);
+    const payer = (provider.wallet as anchor.Wallet).payer;
+    await mintTo(connection, payer, mint, tenantAta, payer, START_BALANCE);
 
     const leaseId = nextLeaseId++;
     const lease = pda(Buffer.from("lease"), landlord.publicKey.toBuffer(), u64(leaseId));
@@ -86,14 +99,15 @@ describe("relstate", () => {
       landlord, tenant, mint, landlordAta, tenantAta, lease, vault,
       landlordProfile, tenantProfile,
 
-      create: () =>
+      // overrides let tests try invalid lease terms
+      create: (o: { rent?: number; term?: number; tenant?: anchor.web3.PublicKey } = {}) =>
         program.methods
           .createLease(
-            new BN(leaseId), new BN(RENT), new BN(DEPOSIT), new BN(periodSecs),
-            TERM, Array(32).fill(7)
+            new BN(leaseId), new BN(o.rent ?? RENT), new BN(DEPOSIT), new BN(periodSecs),
+            o.term ?? TERM, Array(32).fill(7)
           )
           .accountsPartial({
-            landlord: landlord.publicKey, tenant: tenant.publicKey,
+            landlord: landlord.publicKey, tenant: o.tenant ?? tenant.publicKey,
             mint, lease, vault, landlordProfile,
           })
           .signers([landlord])
@@ -230,5 +244,33 @@ describe("relstate", () => {
     const env = await fullyPaid();
     await expectFail(env.release(0, env.tenant));
     expect(await balance(env.vault)).to.equal(DEPOSIT);
+  });
+
+  it("rejects a lease with zero rent", async () => {
+    const env = await setup();
+    await expectFail(env.create({ rent: 0 }), "ZeroRent");
+  });
+
+  it("rejects a lease with zero periods", async () => {
+    // would otherwise be "completed" with fund_deposit + release_deposit and no rent
+    const env = await setup();
+    await expectFail(env.create({ term: 0 }), "ZeroTerm");
+  });
+
+  it("rejects a period below the minimum", async () => {
+    const env = await setup(0);
+    await expectFail(env.create(), "PeriodTooShort");
+  });
+
+  it("rejects a lease with yourself", async () => {
+    const env = await setup();
+    await expectFail(env.create({ tenant: env.landlord.publicKey }), "SelfLease");
+  });
+
+  it("rejects a mint that is not allowed", async () => {
+    const payer = (provider.wallet as anchor.Wallet).payer;
+    const other = await createMint(connection, payer, payer.publicKey, null, 6);
+    const env = await setup(PERIOD, other);
+    await expectFail(env.create(), "MintNotAllowed");
   });
 });
