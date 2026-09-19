@@ -4,7 +4,7 @@ use anchor_spl::token::{transfer_checked, Mint, Token, TokenAccount, TransferChe
 use crate::{constants::*, error::ErrorCode, state::*};
 
 #[derive(Accounts)]
-pub struct ReleaseDesposit<'info> {
+pub struct ReleaseDeposit<'info> {
     pub landlord: Signer<'info>,
     #[account(
         mut,
@@ -20,7 +20,7 @@ pub struct ReleaseDesposit<'info> {
         seeds = [VAULT_SEED, lease.key().as_ref()],
         bump
     )]
-    pub valut: Account<'info, TokenAccount>,
+    pub vault: Account<'info, TokenAccount>,
     #[account(
         mut,
         token::mint = mint,
@@ -48,7 +48,7 @@ pub struct ReleaseDesposit<'info> {
     pub token_program: Program<'info, Token>,
 }
 
-pub fn handle_release_deposit(ctx: Context<ReleaseDesposit>, deduction: u64) -> Result<()> {
+pub fn handle_release_deposit(ctx: Context<ReleaseDeposit>, deduction: u64) -> Result<()> {
     let lease = &ctx.accounts.lease;
     require!(
         lease.status == Status::Active,
@@ -63,7 +63,7 @@ pub fn handle_release_deposit(ctx: Context<ReleaseDesposit>, deduction: u64) -> 
         ErrorCode::DeductionTooLarge
     );
 
-    let lease_id - lease.lease_id.to_le_bytes();
+    let lease_id = lease.lease_id.to_le_bytes();
     let seeds: &[&[u8]] = &[
         LEASE_SEED,
         ctx.accounts.landlord.key.as_ref(),
@@ -71,7 +71,7 @@ pub fn handle_release_deposit(ctx: Context<ReleaseDesposit>, deduction: u64) -> 
         &[lease.bump],
     ];
     let to_tenant = lease.deposit_amount - deduction;
-    let decimals = ctx.account.mint.decimals;
+    let decimals = ctx.accounts.mint.decimals;
 
     for (to, amount) in [
         (ctx.accounts.tenant_ata.to_account_info(), to_tenant),
@@ -82,7 +82,7 @@ pub fn handle_release_deposit(ctx: Context<ReleaseDesposit>, deduction: u64) -> 
                 ctx.accounts.token_program.key(),
                 
                 TransferChecked {
-                    from: ctx.accounts.valut.to_account_info(),
+                    from: ctx.accounts.vault.to_account_info(),
                     mint: ctx.accounts.mint.to_account_info(),
                     to,
                     authority: ctx.accounts.lease.to_account_info(),
@@ -98,7 +98,7 @@ pub fn handle_release_deposit(ctx: Context<ReleaseDesposit>, deduction: u64) -> 
     tenant.leases_completed += 1;
     let landlord = &mut ctx.accounts.landlord_profile;
     landlord.leases_completed += 1;
-    if deduciton == 0 {
+    if deduction == 0 {
         tenant.deposits_returned_full += 1;
         landlord.deposits_returned_full += 1;
     } else {
@@ -106,7 +106,7 @@ pub fn handle_release_deposit(ctx: Context<ReleaseDesposit>, deduction: u64) -> 
         landlord.deposits_withheld += 1;
     }
 
-    let lease = &mut ctx.account.lease;
+    let lease = &mut ctx.accounts.lease;
     lease.status = Status::Closed;
     emit!(LeaseClosed {
         lease: lease.key(),

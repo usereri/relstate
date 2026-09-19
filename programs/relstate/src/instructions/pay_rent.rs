@@ -33,7 +33,7 @@ pub struct PayRent<'info> {
         bump
     )]
     pub tenant_profile: Account<'info, Profile>,
-    pub token_program: Account<'info, Token>,
+    pub token_program: Program<'info, Token>,
 }
 
 pub fn handle_pay_rent(ctx: Context<PayRent>) -> Result<()> {
@@ -42,25 +42,29 @@ pub fn handle_pay_rent(ctx: Context<PayRent>) -> Result<()> {
         lease.status == Status::Active,
         ErrorCode::WrongStatus
     );
+    require!(
+        lease.paid_count < lease.term_periods,
+        ErrorCode::TermCompleted
+    );
 
     transfer_checked(
         CpiContext::new(
             ctx.accounts.token_program.key(),
             TransferChecked{
-                from: ctx.account.tenant_ata.to_account_info(),
+                from: ctx.accounts.tenant_ata.to_account_info(),
                 mint: ctx.accounts.mint.to_account_info(),
                 to: ctx.accounts.landlord_ata.to_account_info(),
                 authority: ctx.accounts.tenant.to_account_info(),
             },
         ),
-        lease.rent.amount,
+        lease.rent_amount,
         ctx.accounts.mint.decimals,
     )?;
 
     let due = lease.start_ts + lease.paid_count as i64 * lease.period_secs;
     let on_time = Clock::get()?.unix_timestamp <= due + lease.period_secs / 10;
 
-    let profile = &mut ctx.account.tenant_profile;
+    let profile = &mut ctx.accounts.tenant_profile;
     if on_time {
         profile.paid_on_time += 1;
     } else {
