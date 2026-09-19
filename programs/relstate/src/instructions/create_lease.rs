@@ -47,6 +47,7 @@ pub fn handle_create_lease(
     rent_amount: u64,
     deposit_amount: u64,
     period_secs: i64,
+    grace_secs: i64,
     term_periods: u16,
     lease_hash: [u8; 32]
 ) -> Result<()> {
@@ -55,6 +56,10 @@ pub fn handle_create_lease(
     require!(rent_amount > 0, ErrorCode::ZeroRent);
     require!(term_periods > 0, ErrorCode::ZeroTerm);
     require!(period_secs >= MIN_PERIOD_SECS, ErrorCode::PeriodTooShort);
+    require!(
+        (0..=period_secs).contains(&grace_secs),
+        ErrorCode::InvalidGrace
+    );
 
     let lease = &mut ctx.accounts.lease;
     lease.landlord = landlord;
@@ -64,6 +69,7 @@ pub fn handle_create_lease(
     lease.rent_amount = rent_amount;
     lease.deposit_amount = deposit_amount;
     lease.period_secs = period_secs;
+    lease.grace_secs = grace_secs;
     lease.start_ts = 0;
     lease.term_periods = term_periods;
     lease.paid_count = 0;
