@@ -16,6 +16,7 @@ const RENT = 1_000;
 const DEPOSIT = 2_000;
 const PERIOD = 100;
 const GRACE = 10;
+const CLAIM_WINDOW = 10; // CLAIM_WINDOW_SECS in the demo build
 const TERM = 3;
 const START_BALANCE = 10_000;
 
@@ -144,6 +145,26 @@ describe("relstate", () => {
           .signers([tenant])
           .rpc(),
 
+      claim: (signer = tenant) =>
+        program.methods
+          .claimDeposit()
+          .accountsPartial({
+            tenant: signer.publicKey, lease, mint, vault,
+            tenantAta, landlordAta, tenantProfile, landlordProfile,
+          })
+          .signers([signer])
+          .rpc(),
+
+      markDefault: (signer = landlord) =>
+        program.methods
+          .markDefault()
+          .accountsPartial({
+            landlord: signer.publicKey, lease, mint, vault,
+            tenantAta, landlordAta, tenantProfile,
+          })
+          .signers([signer])
+          .rpc(),
+
       // `signer` is a parameter so tests can try releasing as the wrong wallet.
       release: (deduction: number, signer = landlord) =>
         program.methods
@@ -210,7 +231,7 @@ describe("relstate", () => {
     expect((await program.account.lease.fetch(env.lease)).status).to.have.property("closed");
 
     const t = await program.account.profile.fetch(env.tenantProfile);
-    expect([t.leasesCompleted, t.paidOnTime, t.paidLate]).to.deep.equal([1, 3, 0]);
+    expect([t.leasesCompleted, t.paidOnTime, t.paidLate, t.defaults]).to.deep.equal([1, 3, 0, 0]);
     expect([t.depositsReturnedFull, t.depositsWithheld]).to.deep.equal([1, 0]);
     const l = await program.account.profile.fetch(env.landlordProfile);
     expect([l.leasesCompleted, l.depositsReturnedFull]).to.deep.equal([1, 1]);
@@ -312,5 +333,90 @@ describe("relstate", () => {
   it("rejects a grace longer than the period", async () => {
     const env = await setup();
     await expectFail(env.create({ grace: PERIOD + 1 }), "InvalidGrace");
+  });
+
+  // Period k is due at start + k*PERIOD; a default needs the oldest unpaid one to be
+  // more than PERIOD + GRACE overdue.
+  it("default seizes only the rent owed and returns the rest", async () => {
+    const env = await active();
+    await env.pay();
+    await timeTravel(PERIOD);
+    await env.pay(); // periods 0 and 1 paid, period 2 (due at +200) stays unpaid
+    await timeTravel(215); // now ~ +315, past 200 + PERIOD + GRACE
+
+    await env.markDefault();
+
+    expect(await balance(env.vault)).to.equal(0);
+    expect(await balance(env.landlordAta)).to.equal(2 * RENT + RENT);
+    expect(await balance(env.tenantAta)).to.equal(START_BALANCE - 2 * RENT - RENT);
+    expect((await program.account.lease.fetch(env.lease)).status).to.have.property("defaulted");
+    const t = await program.account.profile.fetch(env.tenantProfile);
+    expect([t.defaults, t.leasesCompleted, t.paidOnTime]).to.deep.equal([1, 0, 2]);
+
+    await expectFail(env.pay(), "WrongStatus");
+    await expectFail(env.release(0), "WrongStatus");
+  });
+
+  it("default seizure is capped at the deposit", async () => {
+    const env = await active();
+    await timeTravel(215); // all 3 periods due and unpaid: owes 3*RENT > DEPOSIT
+    await env.markDefault();
+
+    expect(await balance(env.landlordAta)).to.equal(DEPOSIT);
+    expect(await balance(env.tenantAta)).to.equal(START_BALANCE - DEPOSIT);
+  });
+
+  it("cannot default before the rent is overdue enough", async () => {
+    const env = await active();
+    await timeTravel(PERIOD); // first rent is 100s late but the threshold is 110s
+    await expectFail(env.markDefault(), "NotInDefault");
+  });
+
+  it("cannot default a fully paid lease", async () => {
+    const env = await allPaid();
+    await timeTravel(500);
+    await expectFail(env.markDefault(), "TermCompleted");
+  });
+
+  it("tenant cannot declare their own default", async () => {
+    const env = await active();
+    await timeTravel(215);
+    await expectFail(env.markDefault(env.tenant));
+    expect(await balance(env.vault)).to.equal(DEPOSIT);
+  });
+
+  it("tenant claims the deposit when the landlord never releases it", async () => {
+    const env = await fullyPaid();
+    await timeTravel(CLAIM_WINDOW + 10);
+    await env.claim();
+
+    expect(await balance(env.vault)).to.equal(0);
+    expect(await balance(env.tenantAta)).to.equal(START_BALANCE - 3 * RENT);
+    expect(await balance(env.landlordAta)).to.equal(3 * RENT);
+    expect((await program.account.lease.fetch(env.lease)).status).to.have.property("closed");
+    const t = await program.account.profile.fetch(env.tenantProfile);
+    expect([t.leasesCompleted, t.depositsReturnedFull]).to.deep.equal([1, 1]);
+    const l = await program.account.profile.fetch(env.landlordProfile);
+    expect([l.leasesCompleted, l.depositsClaimed]).to.deep.equal([1, 1]);
+
+    await expectFail(env.release(0), "WrongStatus");
+  });
+
+  it("cannot claim before the landlord's window has passed", async () => {
+    const env = await fullyPaid(); // just past the end of the term, inside the window
+    await expectFail(env.claim(), "ClaimTooEarly");
+  });
+
+  it("cannot claim while rent is unpaid", async () => {
+    const env = await active();
+    await timeTravel(1000);
+    await expectFail(env.claim(), "TermIncomplete");
+  });
+
+  it("landlord cannot claim the deposit as the tenant", async () => {
+    const env = await fullyPaid();
+    await timeTravel(CLAIM_WINDOW + 10);
+    await expectFail(env.claim(env.landlord));
+    expect(await balance(env.vault)).to.equal(DEPOSIT);
   });
 });

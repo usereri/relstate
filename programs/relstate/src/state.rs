@@ -5,6 +5,7 @@ pub enum Status {
     Proposed,
     Active,
     Closed,
+    Defaulted,
 }
 
 #[account]
@@ -36,6 +37,8 @@ pub struct Profile {
     pub paid_late: u32,
     pub deposits_returned_full: u32,
     pub deposits_withheld: u32,
+    pub defaults: u32,
+    pub deposits_claimed: u32,
 }
 
 #[event]
@@ -43,6 +46,12 @@ pub struct RentPaid {
     pub lease: Pubkey,
     pub period: u16,
     pub on_time: bool,
+}
+
+#[event]
+pub struct LeaseDefaulted {
+    pub lease: Pubkey,
+    pub seized: u64,
 }
 
 #[event]

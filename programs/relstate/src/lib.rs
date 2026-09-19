@@ -37,12 +37,20 @@ pub mod relstate {
         )
     }
 
+    pub fn claim_deposit(ctx: Context<ClaimDeposit>) -> Result<()> {
+        crate::instructions::claim_deposit::handle_claim_deposit(ctx)
+    }
+
     pub fn fund_deposit(ctx: Context<FundDeposit>) -> Result<()> {
         crate::instructions::fund_deposit::handle_fund_deposit(ctx)
     }
 
     pub fn pay_rent(ctx: Context<PayRent>) -> Result<()> {
         crate::instructions::pay_rent::handle_pay_rent(ctx)
+    }
+
+    pub fn mark_default(ctx: Context<MarkDefault>) -> Result<()> {
+        crate::instructions::mark_default::handle_mark_default(ctx)
     }
 
     pub fn release_deposit(ctx: Context<ReleaseDeposit>, deduction: u64) -> Result<()> {

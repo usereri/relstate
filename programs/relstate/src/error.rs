@@ -20,6 +20,10 @@ pub enum ErrorCode {
     SelfLease,
     #[msg("Grace must be between zero and one period")]
     InvalidGrace,
+    #[msg("Rent is not overdue long enough to declare a default")]
+    NotInDefault,
+    #[msg("The landlord still has time to release the deposit")]
+    ClaimTooEarly,
     #[msg("This rent period is not due yet")]
     TooEarly,
     #[msg("The lease term has not ended yet")]

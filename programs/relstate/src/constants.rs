@@ -18,3 +18,10 @@ pub const MIN_PERIOD_SECS: i64 = if cfg!(feature = "demo") {
 } else {
     28 * 24 * 60 * 60
 };
+
+// 14 days for releasing deposit by landlord before tenant may claim it. Shortened in the demo
+pub const CLAIM_WINDOW_SECS: i64 = if cfg!(feature = "demo") {
+    10
+} else {
+    14 * 24 * 60 * 60
+};
