@@ -24,6 +24,8 @@ pub enum ErrorCode {
     NotInDefault,
     #[msg("The landlord still has time to release the deposit")]
     ClaimTooEarly,
+    #[msg("Lease hash does not match the proposed lease")]
+    LeaseHashMismatch,
     #[msg("This rent period is not due yet")]
     TooEarly,
     #[msg("The lease term has not ended yet")]

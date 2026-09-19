@@ -40,10 +40,14 @@ pub struct FundDeposit<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn handle_fund_deposit(ctx: Context<FundDeposit>) -> Result<()> {
+pub fn handle_fund_deposit(ctx: Context<FundDeposit>, lease_hash: [u8; 32]) -> Result<()> {
     require!(
         ctx.accounts.lease.status == Status::Proposed,
         ErrorCode::WrongStatus
+    );
+    require!(
+        ctx.accounts.lease.lease_hash == lease_hash,
+        ErrorCode::LeaseHashMismatch
     );
 
     transfer_checked(

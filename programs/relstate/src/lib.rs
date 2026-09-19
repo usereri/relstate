@@ -41,8 +41,8 @@ pub mod relstate {
         crate::instructions::claim_deposit::handle_claim_deposit(ctx)
     }
 
-    pub fn fund_deposit(ctx: Context<FundDeposit>) -> Result<()> {
-        crate::instructions::fund_deposit::handle_fund_deposit(ctx)
+    pub fn fund_deposit(ctx: Context<FundDeposit>, lease_hash: [u8; 32]) -> Result<()> {
+        crate::instructions::fund_deposit::handle_fund_deposit(ctx, lease_hash)
     }
 
     pub fn pay_rent(ctx: Context<PayRent>) -> Result<()> {

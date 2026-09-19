@@ -19,6 +19,7 @@ const GRACE = 10;
 const CLAIM_WINDOW = 10; // CLAIM_WINDOW_SECS in the demo build
 const TERM = 3;
 const START_BALANCE = 10_000;
+const LEASE_HASH = Array(32).fill(7);
 
 // The program only accepts this mint (ALLOWED_MINT in constants.rs).
 const MINT_KEYPAIR = Keypair.fromSecretKey(
@@ -118,7 +119,7 @@ describe("relstate", () => {
         program.methods
           .createLease(
             new BN(leaseId), new BN(o.rent ?? RENT), new BN(DEPOSIT), new BN(periodSecs),
-            new BN(o.grace ?? GRACE), o.term ?? TERM, Array(32).fill(7)
+            new BN(o.grace ?? GRACE), o.term ?? TERM, LEASE_HASH
           )
           .accountsPartial({
             landlord: landlord.publicKey, tenant: o.tenant ?? tenant.publicKey,
@@ -127,9 +128,10 @@ describe("relstate", () => {
           .signers([landlord])
           .rpc(),
 
-      fund: () =>
+      // `hash` lets a test accept a different document than the one proposed
+      fund: (hash = LEASE_HASH) =>
         program.methods
-          .fundDeposit()
+          .fundDeposit(hash)
           .accountsPartial({
             tenant: tenant.publicKey, lease, mint, vault, tenantAta, tenantProfile,
           })
@@ -265,6 +267,13 @@ describe("relstate", () => {
   it("cannot fund twice", async () => {
     const env = await active();
     await expectFail(env.fund(), "WrongStatus");
+  });
+
+  it("cannot accept a lease with a different hash", async () => {
+    const env = await setup();
+    await env.create();
+    await expectFail(env.fund(Array(32).fill(8)), "LeaseHashMismatch");
+    await env.fund(); // the real hash still works
   });
 
   it("cannot pay before funding", async () => {
