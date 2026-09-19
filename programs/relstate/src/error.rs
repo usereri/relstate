@@ -10,4 +10,14 @@ pub enum ErrorCode {
     TermIncomplete,
     #[msg("Deduction is larger than deposit")]
     DeductionTooLarge,
+    #[msg("Rent must be greater than zero")]
+    ZeroRent,
+    #[msg("Lease needs at least one rent period")]
+    ZeroTerm,
+    #[msg("Rent period is shorter than the minimum")]
+    PeriodTooShort,
+    #[msg("Landlord and tenant must be different wallets")]
+    SelfLease,
+    #[msg("Mint is not allowed for leases")]
+    MintNotAllowed,
 }
