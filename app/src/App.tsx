@@ -1,16 +1,16 @@
-import { useContext, useEffect, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { Building2, Copy, Home, KeyRound, LogOut } from "lucide-react";
 import { WalletProvider } from "@solana/wallet-adapter-react";
 import * as chain from "@/lib/chain";
 import { Role } from "@/lib/chain";
 import { IS_LOCAL, RPC } from "@/lib/config";
 import { Doc } from "@/lib/hash";
-import { Tick, useChain } from "@/lib/useChain";
+import { ReadErrors, Tick, useChain } from "@/lib/useChain";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { WalletButton, useMe } from "@/components/WalletButton";
+import { LocalWalletProvider, WalletButton, useMe } from "@/components/WalletButton";
 import { Handlers, LeaseTab, LogEntry, Waiting } from "@/screens";
 import { Listings, MyProfile } from "@/views";
 
@@ -67,13 +67,15 @@ export default function App() {
 
   return (
     <WalletProvider key={role} wallets={[]} autoConnect localStorageKey={`relstate.wallet.${role}`}>
-      <Workspace
-        role={role}
-        switchRole={() => {
-          storeRole(null);
-          setRole(null);
-        }}
-      />
+      <LocalWalletProvider role={role}>
+        <Workspace
+          role={role}
+          switchRole={() => {
+            storeRole(null);
+            setRole(null);
+          }}
+        />
+      </LocalWalletProvider>
     </WalletProvider>
   );
 }
@@ -164,14 +166,24 @@ function Workspace({ role, switchRole }: { role: Role; switchRole: () => void })
     const t = setInterval(() => setTick((x) => x + 1), 5000);
     return () => clearInterval(t);
   }, []);
+  // a failed read is shown until reads stop failing: every tick re-reports it, so it fades out ~12s after the last failure
+  const [readError, setReadError] = useState<string | null>(null);
+  const clear = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const report = (message: string) => {
+    setReadError(message);
+    clearTimeout(clear.current);
+    clear.current = setTimeout(() => setReadError(null), 12000);
+  };
   return (
     <Tick.Provider value={tick}>
-      <Shell role={role} switchRole={switchRole} bump={() => setTick((x) => x + 1)} />
+      <ReadErrors.Provider value={report}>
+        <Shell role={role} switchRole={switchRole} bump={() => setTick((x) => x + 1)} readError={readError} />
+      </ReadErrors.Provider>
     </Tick.Provider>
   );
 }
 
-function Shell({ role, switchRole, bump }: { role: Role; switchRole: () => void; bump: () => void }) {
+function Shell({ role, switchRole, bump, readError }: { role: Role; switchRole: () => void; bump: () => void; readError: string | null }) {
   const me = useMe();
   const address = me?.key.toBase58() ?? null;
   const [tab, setTab] = useState<Tab>(TABS[role][0][0]);
@@ -179,7 +191,6 @@ function Shell({ role, switchRole, bump }: { role: Role; switchRole: () => void;
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [now, setNow] = useState<number>();
-  const [prefill, setPrefill] = useState<{ listing: string; tenant: string } | null>(null);
 
   const listings = useChain(() => chain.loadListings(), []);
   const balances = useChain(() => (address ? chain.loadBalances(address) : Promise.resolve(undefined)), [address]);
@@ -200,6 +211,10 @@ function Shell({ role, switchRole, bump }: { role: Role; switchRole: () => void;
   const run = async (label: string, fn: (me: chain.Me) => Promise<string | void>) => {
     if (!me) {
       setError("Connect your wallet first.");
+      return false;
+    }
+    if (balances && balances.sol < 0.01) {
+      setError(`This wallet has ${balances.sol.toFixed(3)} SOL on this network, not enough to pay fees. Fund it first (see the box at the top).`);
       return false;
     }
     setBusy(label);
@@ -224,8 +239,13 @@ function Shell({ role, switchRole, bump }: { role: Role; switchRole: () => void;
     apply: (l) => run("Applying…", (m) => chain.applyTo(m, l)),
     closeApplication: (a) => run("Closing application…", (m) => chain.closeApplication(m, a)),
     propose: (id, l, tenant, doc: Doc, application) =>
-      run("Proposing lease…", (m) => chain.proposeLease(m, id, l, tenant, doc.hash, application)).then((ok) => (ok && setPrefill(null), ok)),
-    fund: (l, doc) => run("Funding deposit…", (m) => chain.fundDeposit(m, l, doc.hash)),
+      run("Proposing lease…", (m) => chain.proposeLease(m, id, l, tenant, doc.hash, application)),
+    fund: (l, doc) =>
+      run("Funding deposit…", async (m) => {
+        // tidying up applications is a nicety: never let a failed lookup block accepting the lease
+        const open = await chain.loadApplications({ tenant: m.key.toBase58() }).catch(() => []);
+        return chain.fundDeposit(m, l, doc.hash, open.filter((a) => a.landlord === l.landlord));
+      }),
     pay: (l) => run("Paying rent…", (m) => chain.payRent(m, l)),
     release: (l, deduction) => run("Releasing deposit…", (m) => chain.releaseDeposit(m, l, deduction)),
     markDefault: (l) => run("Declaring default…", (m) => chain.markDefault(m, l)),
@@ -283,6 +303,13 @@ function Shell({ role, switchRole, bump }: { role: Role; switchRole: () => void;
           </p>
         )}
 
+        {readError && !error && (
+          <p role="alert" className="rounded-xl border border-destructive/30 bg-[#f6e4df] p-3 text-sm text-destructive">
+            Could not read from the network: {readError}
+            {/mainnet|remote|datasource/i.test(readError) && IS_LOCAL && " Restart the local chain with `make demo-chain` (it now runs offline)."}
+          </p>
+        )}
+
         {needsFunds && (
           <Card className="flex flex-col gap-2 border-accent/40 p-4 text-sm">
             <p>
@@ -306,15 +333,12 @@ function Shell({ role, switchRole, bump }: { role: Role; switchRole: () => void;
             me={address}
             listings={listings}
             h={h}
-            onPropose={(l, tenant) => {
-              setPrefill({ listing: l.address, tenant });
-              setTab("lease");
-            }}
+            onReview={() => setTab("lease")}
           />
         )}
         {tab === "lease" &&
           (address ? (
-            <LeaseTab role={role} me={address} listings={(listings ?? []).filter((l) => l.landlord === address)} now={now} h={h} log={log} goListings={() => setTab("listings")} prefill={prefill} />
+            <LeaseTab role={role} me={address} listings={(listings ?? []).filter((l) => l.landlord === address)} now={now} h={h} log={log} goListings={() => setTab("listings")} />
           ) : (
             connectFirst
           ))}

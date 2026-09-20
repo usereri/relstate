@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Copy, Plus, Search, ShieldCheck, Trash2, UserRound, X } from "lucide-react";
+import { Copy, Plus, Search, ShieldCheck, Trash2, UserRound } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -10,35 +10,24 @@ import { Handlers, Waiting, statusBadge } from "@/screens";
 import * as chain from "@/lib/chain";
 import { LeaseView, ListingView, ProfileView, Role, typicalRent } from "@/lib/chain";
 import { MAX_TEXT, USDC } from "@/lib/config";
+import { count, recordLine, unique, useRecords } from "@/lib/records";
 import { useChain } from "@/lib/useChain";
 import { duration, photoUrl, short, usdc } from "@/lib/utils";
 
-const unique = (xs: string[]) => [...new Set(xs)];
-const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const bytes = (s: string) => new TextEncoder().encode(s).length;
-
-/** The record of each wallet in `addresses`, keyed by address. */
-function useRecords(addresses: string[]) {
-  return (
-    useChain(
-      async () => Object.fromEntries(await Promise.all(addresses.map(async (a) => [a, await chain.loadProfile(a)] as const))) as Record<string, ProfileView | null>,
-      [addresses.join()],
-    ) ?? {}
-  );
-}
 
 export function Listings({
   mode,
   me,
   listings,
   h,
-  onPropose,
+  onReview,
 }: {
   mode: "browse" | "mine";
   me: string | null;
   listings: ListingView[] | undefined;
   h: Handlers;
-  onPropose?: (l: ListingView, tenant: string) => void;
+  onReview?: () => void;
 }) {
   const [q, setQ] = useState("");
   const words = q.toLowerCase().split(/\s+/).filter(Boolean);
@@ -46,13 +35,20 @@ export function Listings({
     (l) =>
       (mode === "browse" || l.landlord === me) && words.every((w) => `${l.title} ${l.city} ${l.blurb} ${l.region}`.toLowerCase().includes(w)),
   );
+  // only the button that was clicked shows its progress; the others just wait
+  const [acting, setActing] = useState<string | null>(null);
+  const act = (key: string, fn: () => Promise<unknown>) => {
+    setActing(key);
+    fn().finally(() => setActing(null));
+  };
+  const myLeases = useChain(() => (me && mode === "browse" ? chain.loadLeases(me, "tenant") : Promise.resolve([])), [me, mode]) ?? [];
   // tenants see their own applications; landlords see the ones made to their listings
   const applications =
     useChain(
       () => (me ? chain.loadApplications(mode === "mine" ? { landlord: me } : { tenant: me }) : Promise.resolve([])),
       [me, mode],
     ) ?? [];
-  const records = useRecords(unique(mode === "mine" ? applications.map((a) => a.tenant) : shown.map((l) => l.landlord)));
+  const records = useRecords(mode === "mine" ? [] : unique(shown.map((l) => l.landlord)));
 
   if (mode === "mine" && !me)
     return <Waiting title="Connect your wallet" text="Your listings belong to your wallet. Connect it with the button at the top right." />;
@@ -63,6 +59,8 @@ export function Listings({
         const rec = records[l.landlord];
         const forListing = applications.filter((a) => a.listing === l.address);
         const applied = forListing[0];
+        // a lease proposed to me, or already accepted, by this listing's landlord: nothing left to withdraw
+        const lease = myLeases.find((x) => x.landlord === l.landlord && (x.status === "proposed" || x.status === "active"));
         return (
           <Listing key={l.address} l={l}>
             <div className="flex flex-col gap-3 border-t px-4 py-3">
@@ -83,13 +81,18 @@ export function Listings({
                     <p className="text-xs text-muted-foreground">Connect a wallet to apply.</p>
                   ) : l.landlord === me ? (
                     <p className="text-xs text-muted-foreground">This is your own listing.</p>
+                  ) : lease ? (
+                    <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                      <Badge variant={lease.status === "active" ? "success" : "warning"}>{lease.status === "active" ? "Lease active" : "Lease proposed"}</Badge>
+                      {lease.status === "active" ? "with this landlord" : "accept it in My lease"}
+                    </p>
                   ) : applied ? (
-                    <Button variant="outline" disabled={!!h.busy} onClick={() => h.closeApplication(applied)}>
-                      Applied · withdraw
+                    <Button variant="outline" disabled={!!h.busy} onClick={() => act(applied.address, () => h.closeApplication(applied))}>
+                      {acting === applied.address ? "Withdrawing…" : "Applied · withdraw"}
                     </Button>
                   ) : (
-                    <Button disabled={!!h.busy} onClick={() => h.apply(l)}>
-                      {h.busy ?? "Apply to rent"}
+                    <Button disabled={!!h.busy} onClick={() => act(l.address, () => h.apply(l))}>
+                      {acting === l.address ? "Applying…" : "Apply to rent"}
                     </Button>
                   )}
                 </>
@@ -101,26 +104,13 @@ export function Listings({
                       <Trash2 /> Remove
                     </Button>
                   </div>
-                  <div className="flex flex-col gap-2">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Applicants ({forListing.length})</p>
-                    {forListing.length === 0 && <p className="text-xs text-muted-foreground">No applications yet.</p>}
-                    {forListing.map((a) => (
-                      <div key={a.address} className="flex flex-col gap-1.5 rounded-xl bg-secondary/50 p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-mono text-xs">{short(a.tenant, 5)}</span>
-                          <span className="flex gap-1">
-                            <Button size="sm" disabled={!!h.busy} onClick={() => onPropose?.(l, a.tenant)}>
-                              Propose lease
-                            </Button>
-                            <Button size="sm" variant="ghost" title="Dismiss" aria-label="Dismiss application" disabled={!!h.busy} onClick={() => h.closeApplication(a)}>
-                              <X />
-                            </Button>
-                          </span>
-                        </div>
-                        <p className="text-xs text-muted-foreground">{recordLine("tenant", records[a.tenant])}</p>
-                      </div>
-                    ))}
-                  </div>
+                  <button
+                    onClick={onReview}
+                    className="flex flex-wrap items-center gap-x-2 gap-y-1 text-left text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    <Badge variant="warning">Tenant needed</Badge>
+                    {forListing.length > 0 ? `${count(forListing.length, "applicant")}: review in Leases` : "No applications yet"}
+                  </button>
                 </>
               )}
             </div>
@@ -133,7 +123,7 @@ export function Listings({
   const empty =
     listings && shown.length === 0 ? (
       <p className="text-sm text-muted-foreground">
-        {mode === "mine" && !q ? "You have no listings yet. Add one with the form." : q ? `Nothing matches “${q}”.` : "No apartments are listed yet. Switch to a landlord window and add one."}
+        {mode === "mine" && !q ? "You have no listings yet. Add one with the form." : q ? `Nothing matches “${q}”.` : "No apartments are listed yet. Run `make demo-setup` for the default listings, or add one in a landlord window."}
       </p>
     ) : null;
 
@@ -242,15 +232,6 @@ function ListingForm({ h }: { h: Handlers }) {
 
 // ---- my profile + my current and recent counterparties ------------------------------------
 
-const recordLine = (counterparty: Role, p: ProfileView | null | undefined) => {
-  if (p === undefined) return "Loading their record…";
-  if (!p) return "No record yet: their first lease.";
-  if (counterparty === "tenant") {
-    const paid = p.paidOnTime + p.paidLate;
-    return `${count(p.leasesCompleted, "lease")} completed · ${paid ? `${Math.round((p.paidOnTime / paid) * 100)}% paid on time` : "no rent paid yet"} · typical rent ${typicalRent(p) ? usdc(typicalRent(p)) : "—"} USDC`;
-  }
-  return `${count(p.leasesCompleted, "lease")} completed · ${count(p.depositsReturnedFull, "deposit")} returned in full · ${p.depositsClaimed} claimed by tenants`;
-};
 
 export function MyProfile({ role, me }: { role: Role; me: string }) {
   const profile = useChain(() => chain.loadProfile(me), [me]);

@@ -3,9 +3,10 @@ import { AnchorProvider, BN, Program } from "@anchor-lang/core";
 import { getAccount, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import idl from "@target/idl/relstate.json";
 import type { Relstate } from "@target/types/relstate";
-import { GRACE_SECS, MINT, PERIOD_SECS, RPC, TERM_PERIODS } from "./config";
+import { sha256 } from "@noble/hashes/sha2";
+import { GRACE_SECS, IS_LOCAL, MINT, PERIOD_SECS, RPC, TERM_PERIODS } from "./config";
 
-const { Connection, PublicKey, SYSVAR_CLOCK_PUBKEY } = anchor.web3;
+const { Connection, Keypair, PublicKey, SYSVAR_CLOCK_PUBKEY } = anchor.web3;
 type PubKey = anchor.web3.PublicKey;
 
 export type Role = "landlord" | "tenant";
@@ -103,6 +104,24 @@ interface WalletLike {
   publicKey: PubKey;
   signTransaction: <T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(tx: T) => Promise<T>;
   signAllTransactions: <T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(txs: T[]) => Promise<T[]>;
+}
+
+/**
+ * Built-in test wallets for a LOCAL network only: one fixed key per role, derived from a public
+ * seed, so two browser tabs can be two different people without a wallet extension (an extension
+ * keeps one connected account per site). scripts/setup-demo.ts derives the same keys to fund them.
+ */
+export const LOCAL_WALLETS_AVAILABLE = IS_LOCAL;
+export const localKeypair = (role: Role) => Keypair.fromSeed(sha256(new TextEncoder().encode(`relstate-local-${role}`)));
+
+export function localWallet(role: Role): WalletLike {
+  const kp = localKeypair(role);
+  const sign = <T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(tx: T): T => {
+    if ("version" in tx) tx.sign([kp]);
+    else tx.partialSign(kp);
+    return tx;
+  };
+  return { publicKey: kp.publicKey, signTransaction: async (tx) => sign(tx), signAllTransactions: async (txs) => txs.map(sign) };
 }
 
 export interface Me {
@@ -246,26 +265,28 @@ export interface NewListing {
   photo: string;
 }
 
+async function send(call: { simulate: () => Promise<unknown>; rpc: () => Promise<string> }) {
+  await call.simulate();
+  return call.rpc();
+}
+
 export function createListing(me: Me, id: string, f: NewListing) {
-  return me.program.methods
+  return send(me.program.methods
     .createListing(new BN(id), new BN(f.rent), new BN(f.deposit), Array.from(f.region, (c) => c.charCodeAt(0)), f.title, f.city, f.blurb, f.photo)
-    .accountsPartial({ landlord: me.key, listing: listingPda(me.key, id) })
-    .rpc();
+    .accountsPartial({ landlord: me.key, listing: listingPda(me.key, id) }));
 }
 
 export function closeListing(me: Me, l: ListingView) {
-  return me.program.methods
+  return send(me.program.methods
     .closeListing()
-    .accountsPartial({ landlord: me.key, listing: new PublicKey(l.address) })
-    .rpc();
+    .accountsPartial({ landlord: me.key, listing: new PublicKey(l.address) }));
 }
 
 export function applyTo(me: Me, l: ListingView) {
   const listing = new PublicKey(l.address);
-  return me.program.methods
+  return send(me.program.methods
     .apply()
-    .accountsPartial({ tenant: me.key, listing, application: applicationPda(listing, me.key) })
-    .rpc();
+    .accountsPartial({ tenant: me.key, listing, application: applicationPda(listing, me.key) }));
 }
 
 const closeApplicationCall = (me: Me, a: ApplicationView) =>
@@ -275,7 +296,7 @@ const closeApplicationCall = (me: Me, a: ApplicationView) =>
 
 // Either the applicant (withdraw) or the landlord (dismiss).
 export function closeApplication(me: Me, a: ApplicationView) {
-  return closeApplicationCall(me, a).rpc();
+  return send(closeApplicationCall(me, a));
 }
 
 // When the tenant had applied, the application is closed in the same transaction.
@@ -302,12 +323,14 @@ export async function proposeLease(me: Me, id: string, l: ListingView, tenant: s
       vault: vaultPda(lease),
       landlordProfile: profilePda(me.key),
     });
-  return application ? call.postInstructions([await closeApplicationCall(me, application).instruction()]).rpc() : call.rpc();
+  return send(application ? call.postInstructions([await closeApplicationCall(me, application).instruction()]) : call);
 }
 
-export function fundDeposit(me: Me, l: LeaseView, hash: number[]) {
+// Accepting the lease also closes the tenant's open applications to this landlord (same transaction),
+// so nothing stale is left to withdraw.
+export async function fundDeposit(me: Me, l: LeaseView, hash: number[], applications: ApplicationView[] = []) {
   const lease = new PublicKey(l.address);
-  return me.program.methods
+  const call = me.program.methods
     .fundDeposit(hash)
     .accountsPartial({
       tenant: me.key,
@@ -316,12 +339,13 @@ export function fundDeposit(me: Me, l: LeaseView, hash: number[]) {
       vault: vaultPda(lease),
       tenantAta: me.ata,
       tenantProfile: profilePda(me.key),
-    })
-    .rpc();
+    });
+  const closes = await Promise.all(applications.map((a) => closeApplicationCall(me, a).instruction()));
+  return send(closes.length ? call.postInstructions(closes) : call);
 }
 
 export function payRent(me: Me, l: LeaseView) {
-  return me.program.methods
+  return send(me.program.methods
     .payRent()
     .accountsPartial({
       tenant: me.key,
@@ -330,14 +354,13 @@ export function payRent(me: Me, l: LeaseView) {
       tenantAta: me.ata,
       landlordAta: tokenAccount(new PublicKey(l.landlord)),
       tenantProfile: profilePda(me.key),
-    })
-    .rpc();
+    }));
 }
 
 export function releaseDeposit(me: Me, l: LeaseView, deduction: number) {
   const lease = new PublicKey(l.address);
   const tenant = new PublicKey(l.tenant);
-  return me.program.methods
+  return send(me.program.methods
     .releaseDeposit(new BN(deduction))
     .accountsPartial({
       landlord: me.key,
@@ -348,14 +371,13 @@ export function releaseDeposit(me: Me, l: LeaseView, deduction: number) {
       landlordAta: me.ata,
       tenantProfile: profilePda(tenant),
       landlordProfile: profilePda(me.key),
-    })
-    .rpc();
+    }));
 }
 
 export function markDefault(me: Me, l: LeaseView) {
   const lease = new PublicKey(l.address);
   const tenant = new PublicKey(l.tenant);
-  return me.program.methods
+  return send(me.program.methods
     .markDefault()
     .accountsPartial({
       landlord: me.key,
@@ -365,14 +387,13 @@ export function markDefault(me: Me, l: LeaseView) {
       tenantAta: tokenAccount(tenant),
       landlordAta: me.ata,
       tenantProfile: profilePda(tenant),
-    })
-    .rpc();
+    }));
 }
 
 export function claimDeposit(me: Me, l: LeaseView) {
   const lease = new PublicKey(l.address);
   const landlord = new PublicKey(l.landlord);
-  return me.program.methods
+  return send(me.program.methods
     .claimDeposit()
     .accountsPartial({
       tenant: me.key,
@@ -383,8 +404,7 @@ export function claimDeposit(me: Me, l: LeaseView) {
       landlordAta: tokenAccount(landlord),
       tenantProfile: profilePda(me.key),
       landlordProfile: profilePda(landlord),
-    })
-    .rpc();
+    }));
 }
 
 /** Surfpool cheatcode: jump the chain clock forward (local network only). */
@@ -409,6 +429,20 @@ export const explorerTx = (sig: string) =>
   (/devnet/.test(RPC) ? "devnet" : `custom&customUrl=${encodeURIComponent(RPC)}`);
 
 export function errorMessage(e: unknown): string {
-  const err = e as { error?: { errorMessage?: string }; message?: string };
-  return err?.error?.errorMessage ?? err?.message ?? "Something went wrong";
+  const err = e as {
+    error?: { errorMessage?: string };
+    message?: string;
+    name?: string;
+    simulationResponse?: { err: unknown; logs?: string[] | null };
+  };
+  if (err?.error?.errorMessage) return err.error.errorMessage;
+  const sim = err?.simulationResponse;
+  if (sim) {
+    const why = JSON.stringify(sim.err);
+    if (/AccountNotFound/.test(why)) return "This wallet has no SOL on this network, so it cannot pay fees. Fund it first (see the box at the top).";
+    return `The network rejected the transaction: ${why}${sim.logs?.length ? `. Last log: ${sim.logs[sim.logs.length - 1]}` : ""}`;
+  }
+  if (err?.name?.startsWith("Wallet"))
+    return `${err.message || "The wallet did not sign"} (${err.name}). Check that the wallet is unlocked, set to the same network as this app (${RPC}), and that its active account is the one connected here.`;
+  return err?.message ?? "Something went wrong";
 }

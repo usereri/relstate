@@ -12,7 +12,7 @@ test-demo:
 #   RPC=https://api.devnet.solana.com make demo-setup WALLETS=...   (devnet)
 demo-chain:
 	anchor build -- --features demo
-	surfpool start -y --host 0.0.0.0
+	surfpool start -y --host 0.0.0.0 --offline
 
 demo-setup:
 	npx ts-node --transpile-only scripts/setup-demo.ts $(if $(WALLETS),$(WALLETS),$(LANDLORD_WALLET) $(TENANT_WALLET))

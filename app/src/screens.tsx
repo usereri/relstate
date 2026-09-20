@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { ArrowUpRight, Clock, FastForward, Gavel, Handshake, HandCoins, KeyRound, Plus, Sparkles } from "lucide-react";
+import { useState } from "react";
+import { ArrowUpRight, Clock, FastForward, Gavel, Handshake, HandCoins, KeyRound, Plus, Sparkles, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,6 +11,7 @@ import { Doc } from "@/lib/hash";
 import * as chain from "@/lib/chain";
 import { ApplicationView, DISCOUNT_PCT, LeaseView, ListingView, NewListing, Role, Snapshot, Status, isWallet, maxDiscountRent, qualifiesForDiscount } from "@/lib/chain";
 import { CAN_FAST_FORWARD, CLAIM_WINDOW_SECS, PERIOD_SECS, TERM_PERIODS, USDC } from "@/lib/config";
+import { recordLine, unique, useRecords } from "@/lib/records";
 import { useChain } from "@/lib/useChain";
 import { cn, duration, short, usdc } from "@/lib/utils";
 
@@ -468,7 +469,6 @@ export function LeaseTab({
   h,
   log,
   goListings,
-  prefill,
 }: {
   role: Role;
   me: string;
@@ -477,15 +477,15 @@ export function LeaseTab({
   h: Handlers;
   log: LogEntry[];
   goListings: () => void;
-  prefill?: { listing: string; tenant: string } | null;
 }) {
   const leases = useChain(() => chain.loadLeases(me, role), [me, role]);
   const [sel, setSel] = useState<string | null>(null); // a lease address, "new", or null = the sensible default
 
-  // an applicant chosen in My listings opens a proposal for them
-  useEffect(() => {
-    if (prefill) setSel("new");
-  }, [prefill]);
+  // an applicant chosen below opens a proposal for them
+  const [draft, setDraft] = useState<{ listing: string; tenant: string } | null>(null);
+  const applications = useChain(() => (role === "landlord" ? chain.loadApplications({ landlord: me }) : Promise.resolve([])), [me, role]) ?? [];
+  const applicants = applications.filter((a) => listings.some((l) => l.address === a.listing));
+  const records = useRecords(unique(applicants.map((a) => a.tenant)));
 
   const list = leases ?? [];
   const open = list.find((l) => l.status === "proposed" || l.status === "active");
@@ -500,7 +500,10 @@ export function LeaseTab({
 
   const proposeAndSelect: Handlers["propose"] = async (id, l, tenant, doc, application) => {
     const ok = await h.propose(id, l, tenant, doc, application);
-    if (ok) setSel(chain.leaseAddress(me, id));
+    if (ok) {
+      setDraft(null);
+      setSel(chain.leaseAddress(me, id));
+    }
     return ok;
   };
 
@@ -508,13 +511,13 @@ export function LeaseTab({
   if (!leases || now === undefined) main = <Waiting title="Loading" text="Reading your leases from the network." />;
   else if (current === "new")
     main = (
-      <ProposeLease key={prefill ? prefill.listing + prefill.tenant : "blank"} me={me} listings={listings} h={{ ...h, propose: proposeAndSelect }} goListings={goListings} initial={prefill ?? undefined} />
+      <ProposeLease key={draft ? draft.listing + draft.tenant : "blank"} me={me} listings={listings} h={{ ...h, propose: proposeAndSelect }} goListings={goListings} initial={draft ?? undefined} />
     );
   else if (!lease)
     main = (
       <Waiting
         title="No lease for you yet"
-        text="Apply to an apartment in the Apartments tab. When the landlord proposes a lease to your wallet it shows up here."
+        text={`You are connected as ${me}. A landlord has to propose the lease to exactly this address; anything proposed to another wallet will not show up. Apply to an apartment in the Apartments tab to make yourself known.`}
       />
     );
   else if (!snap) main = <Waiting title="Loading" text="Reading both records from the network." />;
@@ -527,6 +530,42 @@ export function LeaseTab({
       <div className="flex min-w-0 flex-col gap-5">{main}</div>
 
       <aside className="flex flex-col gap-4">
+        {role === "landlord" && (
+          <Card className="p-4">
+            <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Applicants ({applicants.length})</p>
+            {applicants.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Nobody has applied yet.</p>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {applicants.map((a) => (
+                  <li key={a.address} className="flex flex-col gap-1.5 rounded-xl bg-secondary/50 p-3">
+                    <p className="text-xs text-muted-foreground">{listings.find((l) => l.address === a.listing)?.title}</p>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono text-xs">{short(a.tenant, 5)}</span>
+                      <span className="flex gap-1">
+                        <Button
+                          size="sm"
+                          disabled={!!h.busy}
+                          onClick={() => {
+                            setDraft({ listing: a.listing, tenant: a.tenant });
+                            setSel("new");
+                          }}
+                        >
+                          Propose lease
+                        </Button>
+                        <Button size="sm" variant="ghost" title="Dismiss" aria-label="Dismiss application" disabled={!!h.busy} onClick={() => h.closeApplication(a)}>
+                          <X />
+                        </Button>
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">{recordLine("tenant", records[a.tenant])}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+        )}
+
         <Card className="p-4">
           <div className="mb-3 flex items-center justify-between">
             <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Your leases</p>
