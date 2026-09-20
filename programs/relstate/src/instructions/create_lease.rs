@@ -49,7 +49,8 @@ pub fn handle_create_lease(
     period_secs: i64,
     grace_secs: i64,
     term_periods: u16,
-    lease_hash: [u8; 32]
+    lease_hash: [u8; 32],
+    region: [u8; 2],
 ) -> Result<()> {
     let landlord = ctx.accounts.landlord.key();
     require_keys_neq!(landlord, ctx.accounts.tenant.key(), ErrorCode::SelfLease);
@@ -60,6 +61,8 @@ pub fn handle_create_lease(
         (0..=period_secs).contains(&grace_secs),
         ErrorCode::InvalidGrace
     );
+
+    require!(region.iter().all(u8::is_ascii_uppercase), ErrorCode::InvalidRegion);
 
     let lease = &mut ctx.accounts.lease;
     lease.landlord = landlord;
@@ -74,6 +77,7 @@ pub fn handle_create_lease(
     lease.term_periods = term_periods;
     lease.paid_count = 0;
     lease.lease_hash = lease_hash;
+    lease.region = region;
     lease.status = Status::Proposed;
     lease.bump = ctx.bumps.lease;
 

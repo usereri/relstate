@@ -24,6 +24,7 @@ export interface LeaseView {
   periodSecs: number;
   graceSecs: number;
   hashHex: string;
+  region: string;
   status: Status;
 }
 
@@ -136,6 +137,7 @@ export async function loadSnapshot(leaseId: string | null): Promise<Snapshot> {
             periodSecs: lease.periodSecs.toNumber(),
             graceSecs: lease.graceSecs.toNumber(),
             hashHex: hex(lease.leaseHash),
+            region: String.fromCharCode(...lease.region),
             status: Object.keys(lease.status)[0] as Status,
           }
         : null,
@@ -155,11 +157,11 @@ async function balanceOf(ata: PubKey) {
 
 // ---- instructions (each returns the transaction signature) -------------------------------
 
-export function createLease(id: string, rent: number, deposit: number, hash: number[]) {
+export function createLease(id: string, rent: number, deposit: number, hash: number[], region: string) {
   const { landlord, tenant } = actors;
   const lease = leasePda(landlord.key, new BN(id));
   return landlord.program.methods
-    .createLease(new BN(id), new BN(rent), new BN(deposit), new BN(PERIOD_SECS), new BN(GRACE_SECS), TERM_PERIODS, hash)
+    .createLease(new BN(id), new BN(rent), new BN(deposit), new BN(PERIOD_SECS), new BN(GRACE_SECS), TERM_PERIODS, hash, Array.from(region, (c) => c.charCodeAt(0)))
     .accountsPartial({
       landlord: landlord.key,
       tenant: tenant.key,

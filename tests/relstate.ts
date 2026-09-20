@@ -20,6 +20,7 @@ const CLAIM_WINDOW = 10; // CLAIM_WINDOW_SECS in the demo build
 const TERM = 3;
 const START_BALANCE = 10_000;
 const LEASE_HASH = Array(32).fill(7);
+const REGION = [80, 76]; // "PL"
 
 // The program only accepts this mint (ALLOWED_MINT in constants.rs).
 const MINT_KEYPAIR = Keypair.fromSecretKey(
@@ -115,11 +116,11 @@ describe("relstate", () => {
       landlordProfile, tenantProfile,
 
       // overrides let tests try invalid lease terms
-      create: (o: { rent?: number; term?: number; grace?: number; tenant?: anchor.web3.PublicKey } = {}) =>
+      create: (o: { rent?: number; term?: number; grace?: number; region?: number[]; tenant?: anchor.web3.PublicKey } = {}) =>
         program.methods
           .createLease(
             new BN(leaseId), new BN(o.rent ?? RENT), new BN(DEPOSIT), new BN(periodSecs),
-            new BN(o.grace ?? GRACE), o.term ?? TERM, LEASE_HASH
+            new BN(o.grace ?? GRACE), o.term ?? TERM, LEASE_HASH, o.region ?? REGION
           )
           .accountsPartial({
             landlord: landlord.publicKey, tenant: o.tenant ?? tenant.publicKey,
@@ -229,7 +230,9 @@ describe("relstate", () => {
 
     expect(await balance(env.vault)).to.equal(0);
     expect(await balance(env.tenantAta)).to.equal(START_BALANCE - 3 * RENT);
-    expect((await program.account.lease.fetch(env.lease)).status).to.have.property("closed");
+    const closed = await program.account.lease.fetch(env.lease);
+    expect(closed.status).to.have.property("closed");
+    expect(closed.region).to.deep.equal(REGION);
 
     const t = await program.account.profile.fetch(env.tenantProfile);
     expect([t.leasesCompleted, t.paidOnTime, t.paidLate, t.defaults]).to.deep.equal([1, 3, 0, 0]);
@@ -329,6 +332,11 @@ describe("relstate", () => {
   it("rejects a period below the minimum", async () => {
     const env = await setup(0);
     await expectFail(env.create(), "PeriodTooShort");
+  });
+
+  it("rejects a region that is not two uppercase letters", async () => {
+    const env = await setup();
+    await expectFail(env.create({ region: [112, 108] }), "InvalidRegion"); // "pl"
   });
 
   it("rejects a lease with yourself", async () => {

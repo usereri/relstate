@@ -91,7 +91,7 @@ export default function App() {
     create: (doc: Doc, deposit) =>
       run("Creating lease…", async () => {
         const newId = chain.newLeaseId();
-        const sig = await chain.createLease(newId, listing.rent, deposit, doc.hash);
+        const sig = await chain.createLease(newId, listing.rent, deposit, doc.hash, listing.country);
         store(LEASE, newId);
         setLeaseId(newId);
         setRole("tenant");

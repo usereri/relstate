@@ -32,4 +32,6 @@ pub enum ErrorCode {
     LeaseNotEnded,
     #[msg("Mint is not allowed for leases")]
     MintNotAllowed,
+    #[msg("Region must be two uppercase letters (ISO country code)")]
+    InvalidRegion,
 }

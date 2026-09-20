@@ -107,7 +107,7 @@ export function CreateLease({ snap, listing, h }: { snap: Snapshot; listing: Lis
               onDoc={setDoc}
             />
             <Terms
-              rows={termRows({ rent: listing.rent, deposit, term: TERM_PERIODS, periodSecs: PERIOD_SECS })}
+              rows={termRows({ rent: listing.rent, deposit, term: TERM_PERIODS, periodSecs: PERIOD_SECS, region: listing.country })}
             />
             <p className="text-xs text-muted-foreground">
               Tenant: <span className="font-mono">{short(actors.tenant.key.toBase58(), 6)}</span>

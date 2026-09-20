@@ -26,6 +26,8 @@ pub struct Lease {
     pub period_secs: i64,
     // how long after a due date a payment still counts as on time
     pub grace_secs: i64,
+    // ISO 3166-1 alpha-2 country of the rented unit, e.g. *b"PL"
+    pub region: [u8; 2],
 }
 
 #[account]

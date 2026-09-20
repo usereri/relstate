@@ -24,6 +24,7 @@ pub mod relstate {
         grace_secs: i64,
         term_periods: u16,
         lease_hash: [u8; 32],
+        region: [u8; 2],
     ) -> Result<()> {
         crate::instructions::create_lease::handle_create_lease(
             ctx,
@@ -34,6 +35,7 @@ pub mod relstate {
             grace_secs,
             term_periods,
             lease_hash,
+            region,
         )
     }
 

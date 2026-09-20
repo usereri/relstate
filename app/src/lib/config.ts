@@ -19,6 +19,7 @@ export interface ListingData {
   id: string;
   title: string;
   city: string;
+  country: string; // ISO 3166-1 alpha-2, stored on the lease as its region
   blurb: string;
   rent: number;
   deposit: number;
@@ -28,8 +29,8 @@ export interface ListingData {
 }
 
 export const LISTINGS: ListingData[] = [
-  { id: "kazimierz", title: "Sunlit 1-bedroom, Kazimierz", city: "Kraków, Poland", blurb: "Furnished · 42 m² · fibre internet · desk by the window", rent: 850 * USDC, deposit: 850 * USDC, landlord: null },
-  { id: "planty", title: "Studio by the Planty", city: "Kraków, Poland", blurb: "Unfurnished · 28 m² · quiet courtyard · bikes welcome", rent: 620 * USDC, deposit: 620 * USDC, landlord: null },
-  { id: "praga", title: "Brick loft with a view, Praga", city: "Warsaw, Poland", blurb: "Furnished · 65 m² · 2 rooms · balcony", rent: 1200 * USDC, deposit: 1200 * USDC, landlord: "2S2KtCmgK1ga3gdEVLgcGN3mLqhuYYE5uQC5ujY2j3Dn" },
-  { id: "zablocie", title: "Garden flat, Zabłocie", city: "Kraków, Poland", blurb: "Furnished · 55 m² · pets allowed · private garden", rent: 990 * USDC, deposit: 990 * USDC, landlord: "7TUgTsmZWnoe6yN9KJggkAybFQ9PwKnmdUUwwJkfFWAR" },
+  { id: "kazimierz", title: "Sunlit 1-bedroom, Kazimierz", city: "Kraków, Poland", country: "PL", blurb: "Furnished · 42 m² · fibre internet · desk by the window", rent: 850 * USDC, deposit: 850 * USDC, landlord: null },
+  { id: "planty", title: "Studio by the Planty", city: "Kraków, Poland", country: "PL", blurb: "Unfurnished · 28 m² · quiet courtyard · bikes welcome", rent: 620 * USDC, deposit: 620 * USDC, landlord: null },
+  { id: "praga", title: "Brick loft with a view, Praga", city: "Warsaw, Poland", country: "PL", blurb: "Furnished · 65 m² · 2 rooms · balcony", rent: 1200 * USDC, deposit: 1200 * USDC, landlord: "2S2KtCmgK1ga3gdEVLgcGN3mLqhuYYE5uQC5ujY2j3Dn" },
+  { id: "zablocie", title: "Garden flat, Zabłocie", city: "Kraków, Poland", country: "PL", blurb: "Furnished · 55 m² · pets allowed · private garden", rent: 990 * USDC, deposit: 990 * USDC, landlord: "7TUgTsmZWnoe6yN9KJggkAybFQ9PwKnmdUUwwJkfFWAR" },
 ];

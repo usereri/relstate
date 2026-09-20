@@ -49,7 +49,9 @@ export const termRows = (o: {
   term: number;
   periodSecs: number;
   hashHex?: string;
+  region?: string;
 }): [string, string][] => [
+  ...(o.region ? ([["Region", o.region]] as [string, string][]) : []),
   ["Rent", `${usdc(o.rent)} USDC / period`],
   ["Deposit", `${usdc(o.deposit)} USDC · held in vault`],
   ["Term", `${o.term} periods of ${duration(o.periodSecs)}`],
