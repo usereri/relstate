@@ -1,19 +1,19 @@
 import { Card } from "@/components/ui/card";
-import { ListingData } from "@/lib/config";
+import { ListingView } from "@/lib/chain";
 import { duration, short, usdc } from "@/lib/utils";
 
-export function Listing({ l, children }: { l: ListingData; children?: React.ReactNode }) {
+export function Listing({ l, children }: { l: ListingView; children?: React.ReactNode }) {
   return (
     <Card className="overflow-hidden">
       <div
-        className="relative h-40 bg-cover bg-center"
+        className="relative h-48 bg-cover bg-center"
         style={{
-          backgroundImage: `url(${l.photo ?? `/listings/${l.id}.jpg`}), linear-gradient(135deg, #8f5a22 0%, #6b4226 55%, #3f2616 100%)`,
+          backgroundImage: `${l.photo ? `url(${l.photo}), ` : ""}linear-gradient(135deg, var(--accent) 0%, var(--primary) 55%, #1d1410 100%)`,
         }}
       >
         <div className="absolute inset-0 bg-gradient-to-t from-[#2e2016]/70 via-transparent to-transparent" />
         <div className="absolute bottom-3 left-4 right-4 text-white">
-          <p className="text-xs opacity-85">{l.city}</p>
+          <p className="text-xs opacity-85">{[l.city, l.region].filter(Boolean).join(" · ")}</p>
           <h2 className="text-xl font-semibold leading-tight">{l.title}</h2>
         </div>
       </div>
