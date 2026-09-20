@@ -87,6 +87,26 @@ const hex = (bytes: number[]) => bytes.map((b) => b.toString(16).padStart(2, "0"
 
 export const newLeaseId = () => String(Date.now());
 
+const profileView = (
+  p: Awaited<ReturnType<typeof actors.landlord.program.account.profile.fetchNullable>>,
+): ProfileView | null =>
+  p && {
+    leasesCompleted: p.leasesCompleted,
+    paidOnTime: p.paidOnTime,
+    paidLate: p.paidLate,
+    defaults: p.defaults,
+    depositsReturnedFull: p.depositsReturnedFull,
+    depositsClaimed: p.depositsClaimed,
+    depositTotal: p.depositTotal.toNumber(),
+    deductedTotal: p.deductedTotal.toNumber(),
+  };
+
+/** On-chain record of any wallet; null if it never took part in a lease. Throws on a malformed address. */
+export async function loadProfile(address: string): Promise<ProfileView | null> {
+  const wallet = new PublicKey(address);
+  return profileView(await actors.landlord.program.account.profile.fetchNullable(profilePda(wallet)));
+}
+
 /** Everything the UI needs, read in one go. */
 export async function loadSnapshot(leaseId: string | null): Promise<Snapshot> {
   const { landlord, tenant } = actors;
@@ -100,18 +120,6 @@ export async function loadSnapshot(leaseId: string | null): Promise<Snapshot> {
     balanceOf(landlord.ata),
     balanceOf(tenant.ata),
   ]);
-
-  const profile = (p: typeof l): ProfileView | null =>
-    p && {
-      leasesCompleted: p.leasesCompleted,
-      paidOnTime: p.paidOnTime,
-      paidLate: p.paidLate,
-      defaults: p.defaults,
-      depositsReturnedFull: p.depositsReturnedFull,
-      depositsClaimed: p.depositsClaimed,
-      depositTotal: p.depositTotal.toNumber(),
-      deductedTotal: p.deductedTotal.toNumber(),
-    };
 
   return {
     lease:
@@ -131,7 +139,7 @@ export async function loadSnapshot(leaseId: string | null): Promise<Snapshot> {
             status: Object.keys(lease.status)[0] as Status,
           }
         : null,
-    profiles: { landlord: profile(l), tenant: profile(t) },
+    profiles: { landlord: profileView(l), tenant: profileView(t) },
     balances: { landlord: landlordBal, tenant: tenantBal },
     now: clock ? Number(clock.data.readBigInt64LE(32)) : Math.floor(Date.now() / 1000),
   };

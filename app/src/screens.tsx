@@ -9,7 +9,7 @@ import { ProfileCard } from "@/components/ProfileCard";
 import { Terms, termRows } from "@/components/Terms";
 import { Doc } from "@/lib/hash";
 import { Role, Snapshot, LeaseView, actors } from "@/lib/chain";
-import { CAN_FAST_FORWARD, CLAIM_WINDOW_SECS, GRACE_SECS, LISTING, PERIOD_SECS, TERM_PERIODS, USDC } from "@/lib/config";
+import { CAN_FAST_FORWARD, CLAIM_WINDOW_SECS, GRACE_SECS, ListingData, PERIOD_SECS, TERM_PERIODS, USDC } from "@/lib/config";
 import { duration, short, usdc } from "@/lib/utils";
 
 /** Big primary action pinned above the bottom edge on phones. */
@@ -71,10 +71,10 @@ function Waiting({ title, text }: { title: string; text: string }) {
 
 // ---- landlord: propose a lease ---------------------------------------------------------
 
-export function CreateLease({ snap, h }: { snap: Snapshot; h: Handlers }) {
+export function CreateLease({ snap, listing, h }: { snap: Snapshot; listing: ListingData; h: Handlers }) {
   const [doc, setDoc] = useState<Doc | null>(null);
   const discount = goodStanding(snap);
-  const deposit = discount ? LISTING.deposit / 2 : LISTING.deposit;
+  const deposit = discount ? listing.deposit / 2 : listing.deposit;
 
   return (
     <>
@@ -107,7 +107,7 @@ export function CreateLease({ snap, h }: { snap: Snapshot; h: Handlers }) {
               onDoc={setDoc}
             />
             <Terms
-              rows={termRows({ rent: LISTING.rent, deposit, term: TERM_PERIODS, periodSecs: PERIOD_SECS })}
+              rows={termRows({ rent: listing.rent, deposit, term: TERM_PERIODS, periodSecs: PERIOD_SECS })}
             />
             <p className="text-xs text-muted-foreground">
               Tenant: <span className="font-mono">{short(actors.tenant.key.toBase58(), 6)}</span>

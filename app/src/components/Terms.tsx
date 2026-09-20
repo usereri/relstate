@@ -1,29 +1,30 @@
 import { Card } from "@/components/ui/card";
-import { LISTING } from "@/lib/config";
+import { ListingData } from "@/lib/config";
 import { duration, short, usdc } from "@/lib/utils";
 
-export function Listing() {
+export function Listing({ l, children }: { l: ListingData; children?: React.ReactNode }) {
   return (
     <Card className="overflow-hidden">
       <div
         className="relative h-40 bg-cover bg-center"
         style={{
-          backgroundImage: `url(${LISTING.photo}), linear-gradient(135deg, #8f5a22 0%, #6b4226 55%, #3f2616 100%)`,
+          backgroundImage: `url(${l.photo ?? ""}), linear-gradient(135deg, #8f5a22 0%, #6b4226 55%, #3f2616 100%)`,
         }}
       >
         <div className="absolute inset-0 bg-gradient-to-t from-[#2e2016]/70 via-transparent to-transparent" />
         <div className="absolute bottom-3 left-4 right-4 text-white">
-          <p className="text-xs opacity-85">{LISTING.city}</p>
-          <h2 className="text-xl font-semibold leading-tight">{LISTING.title}</h2>
+          <p className="text-xs opacity-85">{l.city}</p>
+          <h2 className="text-xl font-semibold leading-tight">{l.title}</h2>
         </div>
       </div>
       <div className="flex items-center justify-between gap-3 px-4 py-3">
-        <p className="text-xs text-muted-foreground">{LISTING.blurb}</p>
+        <p className="text-xs text-muted-foreground">{l.blurb}</p>
         <p className="shrink-0 text-right">
-          <span className="font-serif text-lg font-semibold">{usdc(LISTING.rent)}</span>
+          <span className="font-serif text-lg font-semibold">{usdc(l.rent)}</span>
           <span className="text-xs text-muted-foreground"> USDC / mo</span>
         </p>
       </div>
+      {children}
     </Card>
   );
 }
