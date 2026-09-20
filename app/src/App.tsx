@@ -1,246 +1,311 @@
-import { useCallback, useEffect, useState } from "react";
-import { ArrowUpRight, Home } from "lucide-react";
+import { useContext, useEffect, useState } from "react";
+import { Building2, Copy, Home, KeyRound, LogOut } from "lucide-react";
+import { WalletProvider } from "@solana/wallet-adapter-react";
 import * as chain from "@/lib/chain";
-import { Role, Snapshot } from "@/lib/chain";
-import { IS_LOCAL, LISTINGS, ListingData } from "@/lib/config";
+import { Role } from "@/lib/chain";
+import { IS_LOCAL, RPC } from "@/lib/config";
 import { Doc } from "@/lib/hash";
-import { cn, short, usdc } from "@/lib/utils";
+import { Tick, useChain } from "@/lib/useChain";
+import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Listing } from "@/components/Terms";
-import { Listings, Profiles } from "@/views";
-import { AcceptLease, ActiveLease, ProposeLease, Finished, Handlers, ProposedWaiting, Waiting } from "@/screens";
+import { WalletButton, useMe } from "@/components/WalletButton";
+import { Handlers, LeaseTab, LogEntry, Waiting } from "@/screens";
+import { Listings, MyProfile } from "@/views";
 
-const stored = (key: string) => {
+const ROLE_KEY = "relstate.role";
+const storedRole = (): Role | null => {
   try {
-    return localStorage.getItem(key);
+    const r = new URLSearchParams(location.search).get("role") ?? sessionStorage.getItem(ROLE_KEY);
+    return r === "landlord" || r === "tenant" ? r : null;
   } catch {
     return null;
   }
 };
-const store = (key: string, val: string | null) => {
+const storeRole = (r: Role | null) => {
   try {
-    if (val) localStorage.setItem(key, val);
-    else localStorage.removeItem(key);
+    if (r) sessionStorage.setItem(ROLE_KEY, r);
+    else sessionStorage.removeItem(ROLE_KEY);
   } catch {
-    /* private mode: the lease is simply forgotten on reload */
+    /* private mode: the role is simply asked again on reload */
   }
 };
-const LEASE = "relstate.leaseId";
-const LISTING_KEY = "relstate.listingId";
 
-type Tab = "listings" | "profiles" | "lease";
-const TABS: [Tab, string][] = [
-  ["listings", "Apartments"],
-  ["profiles", "Profiles"],
-  ["lease", "My lease"],
-];
-
-interface LogEntry {
-  label: string;
-  sig: string;
-}
+const ROLES: Record<Role, { label: string; icon: typeof Home; blurb: string; does: string[] }> = {
+  landlord: {
+    label: "Landlord",
+    icon: Building2,
+    blurb: "Offer apartments and lease them to tenants with a verifiable record.",
+    does: ["List apartments", "Propose a lease with the signed contract's fingerprint", "Release the deposit, or declare a default"],
+  },
+  tenant: {
+    label: "Tenant",
+    icon: KeyRound,
+    blurb: "Find a place and build a rental record that follows you to the next city.",
+    does: ["Browse listings and landlord records", "Accept a lease by funding the deposit", "Pay rent, or claim the deposit if the landlord stalls"],
+  },
+};
 
 export default function App() {
-  const [role, setRole] = useState<Role>("landlord");
-  const [tab, setTab] = useState<Tab>(() => (stored(LEASE) ? "lease" : "listings"));
-  const [profileAddr, setProfileAddr] = useState(chain.actors.tenant.key.toBase58());
-  const [listing, setListing] = useState<ListingData>(
-    () => LISTINGS.find((l) => l.id === stored(LISTING_KEY)) ?? LISTINGS[0],
+  const [role, setRole] = useState<Role | null>(storedRole);
+
+  useEffect(() => {
+    document.documentElement.dataset.role = role ?? "";
+    document.title = role ? `Relstate · ${ROLES[role].label}` : "Relstate";
+  }, [role]);
+
+  if (!role)
+    return (
+      <Landing
+        onPick={(r) => {
+          storeRole(r);
+          setRole(r);
+        }}
+      />
+    );
+
+  return (
+    <WalletProvider key={role} wallets={[]} autoConnect localStorageKey={`relstate.wallet.${role}`}>
+      <Workspace
+        role={role}
+        switchRole={() => {
+          storeRole(null);
+          setRole(null);
+        }}
+      />
+    </WalletProvider>
   );
-  const [leaseId, setLeaseId] = useState<string | null>(() => stored(LEASE));
-  const [snap, setSnap] = useState<Snapshot | null>(null);
+}
+
+
+function Landing({ onPick }: { onPick: (r: Role) => void }) {
+  return (
+    <div className="mx-auto flex min-h-dvh max-w-6xl flex-col gap-10 px-8 py-8">
+      <header className="flex items-center justify-between">
+        <Logo />
+        <Badge variant="outline">{IS_LOCAL ? "local network" : "devnet"}</Badge>
+      </header>
+
+      <section className="grid flex-1 items-center gap-12 lg:grid-cols-[1fr_1fr]">
+        <div className="flex flex-col gap-5">
+          <h1 className="text-5xl font-semibold leading-[1.05] lg:text-6xl">Rent with a record nobody can edit.</h1>
+          <p className="max-w-xl text-lg text-muted-foreground">
+            Deposits sit in an on-chain vault. Every payment and every deduction is written to the wallet's profile by the program itself, so a good
+            tenant or landlord takes their reputation to any city.
+          </p>
+          <p className="max-w-xl text-sm text-muted-foreground">
+            Each browser window plays one role with its own wallet. Open a second window, ideally another browser profile with its own wallet, for the
+            other side.
+          </p>
+        </div>
+
+        <div className="grid gap-4">
+          {(Object.keys(ROLES) as Role[]).map((r) => {
+            const R = ROLES[r];
+            return (
+              <button
+                key={r}
+                onClick={() => onPick(r)}
+                data-pick={r}
+                className={cn(
+                  "group flex flex-col gap-3 rounded-3xl p-6 text-left text-white shadow-lg transition-transform hover:-translate-y-0.5",
+                  r === "landlord" ? "bg-[#6b4226]" : "bg-[#1d5f6c]",
+                )}
+              >
+                <span className="flex items-center gap-3">
+                  <span className="grid size-11 place-items-center rounded-xl bg-white/15">
+                    <R.icon className="size-6" />
+                  </span>
+                  <span className="font-serif text-2xl font-semibold">I'm a {R.label.toLowerCase()}</span>
+                </span>
+                <span className="text-white/85">{R.blurb}</span>
+                <ul className="flex flex-col gap-1 text-sm text-white/75">
+                  {R.does.map((d) => (
+                    <li key={d}>· {d}</li>
+                  ))}
+                </ul>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+const Logo = () => (
+  <div className="flex items-center gap-2.5">
+    <span className="grid size-9 place-items-center rounded-xl bg-primary text-primary-foreground">
+      <Home className="size-5" />
+    </span>
+    <span className="font-serif text-2xl font-semibold tracking-tight">Relstate</span>
+  </div>
+);
+
+
+type Tab = "apartments" | "listings" | "lease" | "profile";
+const TABS: Record<Role, [Tab, string][]> = {
+  tenant: [
+    ["apartments", "Apartments"],
+    ["lease", "My lease"],
+    ["profile", "My profile"],
+  ],
+  landlord: [
+    ["listings", "My listings"],
+    ["lease", "Leases"],
+    ["profile", "My profile"],
+  ],
+};
+
+function Workspace({ role, switchRole }: { role: Role; switchRole: () => void }) {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick((x) => x + 1), 5000);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <Tick.Provider value={tick}>
+      <Shell role={role} switchRole={switchRole} bump={() => setTick((x) => x + 1)} />
+    </Tick.Provider>
+  );
+}
+
+function Shell({ role, switchRole, bump }: { role: Role; switchRole: () => void; bump: () => void }) {
+  const me = useMe();
+  const address = me?.key.toBase58() ?? null;
+  const [tab, setTab] = useState<Tab>(TABS[role][0][0]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
+  const [now, setNow] = useState<number>();
 
-  const refresh = useCallback(async (id = leaseId) => {
-    try {
-      setSnap(await chain.loadSnapshot(id));
-      setError((e) => (e?.startsWith("Cannot reach") ? null : e));
-    } catch {
-      setError("Cannot reach the network. Is Surfpool running and demo.json set up?");
-    }
-  }, [leaseId]);
+  const listings = useChain(() => chain.loadListings(), []);
+  const balances = useChain(() => (address ? chain.loadBalances(address) : Promise.resolve(undefined)), [address]);
 
+  // The chain clock doubles as the reachability check.
+  const tick = useContext(Tick);
   useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, 3000);
-    return () => clearInterval(t);
-  }, [refresh]);
+    chain.loadNow().then(
+      (n) => {
+        setNow(n);
+        setError((e) => (e?.startsWith("Cannot reach") ? null : e));
+      },
+      () => setError(`Cannot reach the network at ${RPC}. Is it running?`),
+    );
+  }, [tick]);
 
   /** Runs one transaction with a busy label, logs its explorer link, refreshes. */
-  const run = async (label: string, fn: () => Promise<string | void>) => {
+  const run = async (label: string, fn: (me: chain.Me) => Promise<string | void>) => {
+    if (!me) {
+      setError("Connect your wallet first.");
+      return false;
+    }
     setBusy(label);
     setError(null);
     try {
-      const sig = await fn();
+      const sig = await fn(me);
       if (sig) setLog((l) => [{ label, sig }, ...l]);
-      await refresh();
+      bump();
+      return true;
     } catch (e) {
       setError(chain.errorMessage(e));
+      return false;
     } finally {
       setBusy(null);
     }
   };
 
-  const id = leaseId ?? "";
-  const lease = snap?.lease ?? null;
   const h: Handlers = {
     busy,
-    propose: (doc: Doc) =>
-      run("Proposing lease…", async () => {
-        const newId = chain.newLeaseId();
-        const sig = await chain.proposeLease(newId, listing.rent, listing.deposit, doc.hash, listing.country);
-        store(LEASE, newId);
-        setLeaseId(newId);
-        setRole("tenant");
-        return sig;
-      }),
-    fund: (doc) => run("Funding deposit…", () => chain.fundDeposit(id, doc.hash)),
-    pay: () =>
-      run("Paying rent…", async () => {
-        const sig = await chain.payRent(id);
-        if (lease && lease.paidCount + 1 >= lease.termPeriods) setRole("landlord");
-        return sig;
-      }),
-    release: (deduction) => run("Releasing deposit…", () => chain.releaseDeposit(id, deduction)),
-    markDefault: () => run("Declaring default…", () => chain.markDefault(id)),
-    claim: () => run("Claiming deposit…", () => chain.claimDeposit(id)),
+    createListing: (f) => run("Publishing listing…", (m) => chain.createListing(m, chain.newId(), f)),
+    closeListing: (l) => run("Removing listing…", (m) => chain.closeListing(m, l)),
+    propose: (id, l, tenant, doc: Doc) => run("Proposing lease…", (m) => chain.proposeLease(m, id, l, tenant, doc.hash)),
+    fund: (l, doc) => run("Funding deposit…", (m) => chain.fundDeposit(m, l, doc.hash)),
+    pay: (l) => run("Paying rent…", (m) => chain.payRent(m, l)),
+    release: (l, deduction) => run("Releasing deposit…", (m) => chain.releaseDeposit(m, l, deduction)),
+    markDefault: (l) => run("Declaring default…", (m) => chain.markDefault(m, l)),
+    claim: (l) => run("Claiming deposit…", (m) => chain.claimDeposit(m, l)),
     jump: (secs) => run("Moving the clock…", () => chain.fastForward(secs)),
-    next: () => {
-      store(LEASE, null);
-      setLeaseId(null);
-      setRole("landlord");
-      refresh(null);
-    },
   };
 
-  let screen: React.ReactNode;
-  if (!snap) screen = <Waiting title="Connecting…" text="Reading the network." />;
-  else if (!lease)
-    screen =
-      role === "landlord" ? (
-        <ProposeLease snap={snap} listing={listing} h={h} />
-      ) : (
-        <Waiting title="No lease yet" text="The landlord has not proposed a lease. Switch to Landlord to create one." />
-      );
-  else if (lease.status === "proposed")
-    screen = role === "tenant" ? <AcceptLease lease={lease} h={h} /> : <ProposedWaiting />;
-  else if (lease.status === "active") screen = <ActiveLease lease={lease} snap={snap} role={role} h={h} />;
-  else screen = <Finished lease={lease} snap={snap} h={h} />;
-
-  const rent = (l: ListingData) => {
-    if (!leaseId) {
-      setListing(l);
-      store(LISTING_KEY, l.id);
-    }
-    setRole("landlord");
-    setTab("lease");
-  };
+  const needsFunds = !!address && !!balances && (balances.usdc === null || balances.sol < 0.01);
+  const fundCommand = `${IS_LOCAL ? "" : `RPC=${RPC} `}make demo-setup WALLETS=${address}`;
+  const connectFirst = (
+    <Waiting title="Connect your wallet" text={`This window acts as a ${role}. Connect the wallet you want to use with the button at the top right.`} />
+  );
 
   return (
-    <div
-      className={cn(
-        "mx-auto flex min-h-dvh max-w-4xl flex-col gap-5 px-4 pt-[max(1rem,env(safe-area-inset-top))]",
-        tab === "lease" ? "pb-44" : "pb-12",
-      )}
-    >
-      <header className="flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <span className="grid size-9 place-items-center rounded-xl bg-primary text-primary-foreground">
-              <Home className="size-5" />
+    <div className="min-h-dvh">
+      <div className="h-2 bg-primary" aria-hidden />
+      <div className="mx-auto flex max-w-7xl flex-col gap-6 px-8 pb-16 pt-5">
+        <header className="flex flex-wrap items-center gap-x-8 gap-y-3 border-b border-border pb-4">
+          <div className="flex items-center gap-3">
+            <Logo />
+            <span className="rounded-full bg-primary px-3 py-1 text-xs font-semibold uppercase tracking-wider text-primary-foreground">
+              {ROLES[role].label} window
             </span>
-            <span className="font-serif text-2xl font-semibold tracking-tight">Relstate</span>
           </div>
-          <Badge variant="outline">{IS_LOCAL ? "local demo network" : "devnet"}</Badge>
-        </div>
 
-        <nav role="tablist" aria-label="Sections" className="grid grid-cols-3 gap-1 rounded-2xl bg-secondary p-1 sm:max-w-md">
-          {TABS.map(([t, label]) => (
-            <button
-              key={t}
-              role="tab"
-              aria-selected={tab === t}
-              onClick={() => setTab(t)}
-              className={cn(
-                "min-h-11 rounded-xl px-2 text-sm font-semibold transition-all",
-                tab === t ? "bg-card shadow-sm" : "text-muted-foreground",
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
-      </header>
-
-      {error && (
-        <p role="alert" className="rounded-xl border border-destructive/30 bg-[#f6e4df] p-3 text-sm text-destructive">
-          {error}
-        </p>
-      )}
-
-      {tab === "listings" && (
-        <Listings
-          onRent={rent}
-          onProfile={(addr) => {
-            setProfileAddr(addr);
-            setTab("profiles");
-          }}
-        />
-      )}
-      {tab === "profiles" && <Profiles key={profileAddr} initial={profileAddr} />}
-      {tab === "lease" && (
-        <div className="mx-auto flex w-full max-w-md flex-col gap-5">
-          <div role="tablist" aria-label="Acting as" className="grid grid-cols-2 gap-1 rounded-2xl bg-secondary p-1">
-            {(["landlord", "tenant"] as Role[]).map((r) => (
+          <nav role="tablist" aria-label="Sections" className="flex gap-1">
+            {TABS[role].map(([t, label]) => (
               <button
-                key={r}
+                key={t}
                 role="tab"
-                aria-selected={role === r}
-                onClick={() => setRole(r)}
+                aria-selected={tab === t}
+                onClick={() => setTab(t)}
                 className={cn(
-                  "flex min-h-14 flex-col items-center justify-center rounded-xl px-2 transition-all",
-                  role === r ? "bg-card shadow-sm" : "text-muted-foreground",
+                  "min-h-11 rounded-xl px-4 text-sm font-semibold transition-colors",
+                  tab === t ? "bg-secondary text-secondary-foreground" : "text-muted-foreground hover:bg-secondary/50",
                 )}
               >
-                <span className="text-sm font-semibold capitalize">{r}</span>
-                <span className="text-[11px] tabular-nums opacity-80">
-                  {short(chain.actors[r].key.toBase58())} · {snap ? usdc(snap.balances[r]) : "…"} USDC
-                </span>
+                {label}
               </button>
             ))}
+          </nav>
+
+          <div className="ml-auto flex items-center gap-3">
+            <Badge variant="outline">{IS_LOCAL ? "local network" : "devnet"}</Badge>
+            <WalletButton balances={balances} />
+            <Button variant="ghost" size="sm" title="Pick the other role in this window" onClick={switchRole}>
+              <LogOut /> Switch role
+            </Button>
           </div>
+        </header>
 
-          <Listing l={listing} />
+        {error && (
+          <p role="alert" className="rounded-xl border border-destructive/30 bg-[#f6e4df] p-3 text-sm text-destructive">
+            {error}
+          </p>
+        )}
 
-          {screen}
+        {needsFunds && (
+          <Card className="flex flex-col gap-2 border-accent/40 p-4 text-sm">
+            <p>
+              <b>This wallet needs test funds</b> ({balances!.usdc === null ? "no test-USDC account yet" : `${balances!.sol.toFixed(3)} SOL`}). Run this in the
+              project folder:
+            </p>
+            <button
+              onClick={() => navigator.clipboard?.writeText(fundCommand)}
+              className="flex items-center justify-between gap-3 rounded-lg bg-secondary px-3 py-2 text-left font-mono text-xs"
+              title="Copy command"
+            >
+              <span className="break-all">{fundCommand}</span> <Copy className="size-4 shrink-0" />
+            </button>
+          </Card>
+        )}
 
-          {log.length > 0 && (
-            <Card className="p-4">
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Transactions</p>
-              <ul className="flex flex-col divide-y divide-border">
-                {log.map((e) => (
-                  <li key={e.sig}>
-                    <a
-                      href={chain.explorerTx(e.sig)}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex min-h-11 items-center justify-between gap-3 text-sm"
-                    >
-                      <span>{e.label.replace("…", "")}</span>
-                      <span className="flex items-center gap-1 font-mono text-xs text-accent">
-                        {short(e.sig, 5)} <ArrowUpRight className="size-3.5" />
-                      </span>
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </Card>
-          )}
-        </div>
-      )}
+        {tab === "apartments" && <Listings mode="browse" me={address} listings={listings} h={h} />}
+        {tab === "listings" && <Listings mode="mine" me={address} listings={listings} h={h} />}
+        {tab === "lease" &&
+          (address ? (
+            <LeaseTab role={role} me={address} listings={(listings ?? []).filter((l) => l.landlord === address)} now={now} h={h} log={log} goListings={() => setTab("listings")} />
+          ) : (
+            connectFirst
+          ))}
+        {tab === "profile" && (address ? <MyProfile role={role} me={address} /> : connectFirst)}
+      </div>
     </div>
   );
 }
+

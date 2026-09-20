@@ -1,7 +1,7 @@
-// Prepares a network for the frontend demo: the test-USDC mint, two throwaway wallets
-// (Landlord, Tenant) funded with SOL + test USDC, and app/src/demo.json holding their keys.
-//   RPC=http://localhost:8899 npx ts-node --transpile-only scripts/setup-demo.ts
-// The payer (ANCHOR_WALLET or ~/.config/solana/id.json) becomes the mint authority.
+// Prepares a network for the app: the test-USDC mint, and SOL + test USDC for the wallets you name
+// (the ones you connect in the browser windows).
+//   RPC=https://api.devnet.solana.com npx ts-node --transpile-only scripts/setup-demo.ts <wallet> [<wallet> ...]
+// The payer (ANCHOR_WALLET or ~/.config/solana/id.json) becomes the mint authority and pays account rent.
 import * as anchor from "@anchor-lang/core";
 import {
   createMint,
@@ -13,56 +13,46 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
-const { Connection, Keypair, LAMPORTS_PER_SOL } = anchor.web3;
+const { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } = anchor.web3;
 
 const RPC = process.env.RPC ?? "http://localhost:8899";
 const USDC = 1_000_000; // 6 decimals
-const TENANT_USDC = 10_000 * USDC;
-const LANDLORD_USDC = 1_000 * USDC;
+const WALLET_USDC = 10_000 * USDC;
 
 const load = (file: string) =>
   Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(file, "utf8"))));
 
 async function main() {
+  const wallets = process.argv.slice(2).map((a) => new PublicKey(a));
+  if (!wallets.length) throw new Error("usage: setup-demo.ts <wallet> [<wallet> ...]");
+
   const conn = new Connection(RPC, "confirmed");
-  const payer = load(
-    process.env.ANCHOR_WALLET ?? path.join(os.homedir(), ".config/solana/id.json"),
-  );
+  const payer = load(process.env.ANCHOR_WALLET ?? path.join(os.homedir(), ".config/solana/id.json"));
   const mintKp = load(path.join(__dirname, "../tests/test-usdc-mint.json"));
 
-  const demoFile = path.join(__dirname, "../app/src/demo.json");
-  const demo = fs.existsSync(demoFile)
-    ? JSON.parse(fs.readFileSync(demoFile, "utf8"))
-    : { landlord: Array.from(Keypair.generate().secretKey), tenant: Array.from(Keypair.generate().secretKey) };
-  const landlord = Keypair.fromSecretKey(Uint8Array.from(demo.landlord));
-  const tenant = Keypair.fromSecretKey(Uint8Array.from(demo.tenant));
-
-  const topUp = async (kp: anchor.web3.Keypair, minSol: number) => {
-    if ((await conn.getBalance(kp.publicKey)) >= minSol * LAMPORTS_PER_SOL) return;
-    const sig = await conn.requestAirdrop(kp.publicKey, 2 * LAMPORTS_PER_SOL);
-    await conn.confirmTransaction({ signature: sig, ...(await conn.getLatestBlockhash()) });
+  const topUp = async (key: anchor.web3.PublicKey, minSol: number) => {
+    if ((await conn.getBalance(key)) >= minSol * LAMPORTS_PER_SOL) return;
+    try {
+      const sig = await conn.requestAirdrop(key, 2 * LAMPORTS_PER_SOL);
+      await conn.confirmTransaction({ signature: sig, ...(await conn.getLatestBlockhash()) });
+    } catch {
+      console.warn(`could not airdrop SOL to ${key.toBase58()}: send it some from https://faucet.solana.com`);
+    }
   };
-  await topUp(payer, 1);
-  await topUp(landlord, 1);
-  await topUp(tenant, 1);
+  await topUp(payer.publicKey, 1);
 
   if (!(await conn.getAccountInfo(mintKp.publicKey))) {
     await createMint(conn, payer, payer.publicKey, null, 6, mintKp);
     console.log("created test-USDC mint", mintKp.publicKey.toBase58());
   }
 
-  for (const [name, kp, target] of [
-    ["landlord", landlord, LANDLORD_USDC],
-    ["tenant", tenant, TENANT_USDC],
-  ] as const) {
-    const ata = await getOrCreateAssociatedTokenAccount(conn, payer, mintKp.publicKey, kp.publicKey);
+  for (const wallet of wallets) {
+    await topUp(wallet, 1);
+    const ata = await getOrCreateAssociatedTokenAccount(conn, payer, mintKp.publicKey, wallet);
     const have = Number((await getAccount(conn, ata.address)).amount);
-    if (have < target) await mintTo(conn, payer, mintKp.publicKey, ata.address, payer, target - have);
-    console.log(`${name} ${kp.publicKey.toBase58()}  ${target / USDC} test USDC`);
+    if (have < WALLET_USDC) await mintTo(conn, payer, mintKp.publicKey, ata.address, payer, WALLET_USDC - have);
+    console.log(`${wallet.toBase58()}  ${WALLET_USDC / USDC} test USDC`);
   }
-
-  fs.writeFileSync(demoFile, JSON.stringify(demo));
-  console.log("wrote", path.relative(process.cwd(), demoFile));
 }
 
 main().catch((e) => {

@@ -10,6 +10,8 @@
         "@anchor-lang/core": "^1.1.2",
         "@noble/hashes": "^1.8.0",
         "@solana/spl-token": "^0.4.15",
+        "@solana/wallet-adapter-base": "^0.9.28",
+        "@solana/wallet-adapter-react": "^0.15.40",
         "buffer": "^6.0.3",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",

@@ -34,14 +34,12 @@ pub struct Lease {
     pub discount_pct: u8,
 }
 
-// An apartment a landlord offers. Independent of leases: the lease it leads to is proposed separately.
 #[account]
 #[derive(InitSpace)]
 pub struct Listing {
     pub landlord: Pubkey,
     pub listing_id: u64,
     pub rent_amount: u64,
-    // the standard deposit, before any good-standing discount
     pub deposit_amount: u64,
     pub region: [u8; 2],
     pub bump: u8,
@@ -51,7 +49,7 @@ pub struct Listing {
     pub city: String,
     #[max_len(MAX_BLURB)]
     pub blurb: String,
-    // image URL, or a path served by the app such as /listings/flat.jpg
+    // image URL
     #[max_len(MAX_PHOTO)]
     pub photo: String,
 }

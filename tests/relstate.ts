@@ -405,6 +405,58 @@ describe("relstate", () => {
     await expectFail(env.propose({ region: [112, 108] }), "InvalidRegion"); // "pl"
   });
 
+  // ---- listings ----
+
+  async function listing(landlord: anchor.web3.Keypair, id: number) {
+    await airdrop(landlord);
+    const address = pda(Buffer.from("listing"), landlord.publicKey.toBuffer(), u64(id));
+    const create = (o: { rent?: number; region?: number[]; title?: string } = {}) =>
+      program.methods
+        .createListing(new BN(id), new BN(o.rent ?? RENT), new BN(DEPOSIT), o.region ?? REGION,
+          o.title ?? "Sunlit studio", "Kraków", "42 m², fibre", "/listings/a.jpg")
+        .accountsPartial({ landlord: landlord.publicKey, listing: address })
+        .signers([landlord])
+        .rpc();
+    return { address, create };
+  }
+
+  it("a landlord lists an apartment and can find it", async () => {
+    const landlord = Keypair.generate();
+    const l = await listing(landlord, nextLeaseId++);
+    await l.create();
+
+    const got = await program.account.listing.fetch(l.address);
+    expect([got.landlord.toBase58(), got.rentAmount.toNumber(), got.depositAmount.toNumber(), got.title])
+      .to.deep.equal([landlord.publicKey.toBase58(), RENT, DEPOSIT, "Sunlit studio"]);
+    const mine = await program.account.listing.all([{ memcmp: { offset: 8, bytes: landlord.publicKey.toBase58() } }]);
+    expect(mine.map((r) => r.publicKey.toBase58())).to.deep.equal([l.address.toBase58()]);
+  });
+
+  it("rejects a listing with zero rent, a bad region or an over-long title", async () => {
+    const landlord = Keypair.generate();
+    await expectFail((await listing(landlord, nextLeaseId++)).create({ rent: 0 }), "ZeroRent");
+    await expectFail((await listing(landlord, nextLeaseId++)).create({ region: [112, 108] }), "InvalidRegion");
+    await expectFail((await listing(landlord, nextLeaseId++)).create({ title: "x".repeat(61) }), "TextTooLong");
+  });
+
+  it("only the landlord can close a listing, which returns the rent", async () => {
+    const landlord = Keypair.generate();
+    const other = Keypair.generate();
+    await airdrop(other);
+    const l = await listing(landlord, nextLeaseId++);
+    await l.create();
+
+    await expectFail(
+      program.methods.closeListing()
+        .accountsPartial({ landlord: other.publicKey, listing: l.address })
+        .signers([other]).rpc(),
+    );
+    await program.methods.closeListing()
+      .accountsPartial({ landlord: landlord.publicKey, listing: l.address })
+      .signers([landlord]).rpc();
+    expect(await connection.getAccountInfo(l.address)).to.equal(null);
+  });
+
   it("rejects a lease with yourself", async () => {
     const env = await setup();
     await expectFail(env.propose({ tenant: env.landlord.publicKey }), "SelfLease");

@@ -1,185 +1,233 @@
-import { useEffect, useState } from "react";
-import { Search, ShieldCheck, UserRound } from "lucide-react";
+import { useState } from "react";
+import { Copy, Plus, Search, ShieldCheck, Trash2, UserRound } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Listing } from "@/components/Terms";
 import { ProfileCard } from "@/components/ProfileCard";
+import { Handlers, Waiting, statusBadge } from "@/screens";
 import * as chain from "@/lib/chain";
-import { ProfileView, Role } from "@/lib/chain";
-import { LISTINGS, ListingData } from "@/lib/config";
-import { short } from "@/lib/utils";
+import { LeaseView, ListingView, ProfileView, Role, typicalRent } from "@/lib/chain";
+import { MAX_TEXT, USDC } from "@/lib/config";
+import { useChain } from "@/lib/useChain";
+import { duration, short, usdc } from "@/lib/utils";
 
-export const landlordOf = (l: ListingData) => l.landlord ?? chain.actors.landlord.key.toBase58();
+const unique = (xs: string[]) => [...new Set(xs)];
+const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const bytes = (s: string) => new TextEncoder().encode(s).length;
 
-// ---- landing + search -------------------------------------------------------------------
-
-export function Listings({
-  onRent,
-  onProfile,
-}: {
-  onRent: (l: ListingData) => void;
-  onProfile: (addr: string) => void;
-}) {
-  const [q, setQ] = useState("");
-  const [records, setRecords] = useState<Record<string, ProfileView | null>>({});
-
-  useEffect(() => {
-    const load = () =>
-      Promise.all(LISTINGS.map((l) => chain.loadProfile(landlordOf(l)).then((p) => [landlordOf(l), p] as const)))
-        .then((rows) => setRecords(Object.fromEntries(rows)))
-        .catch(() => {}); // network trouble is reported by the app-level poll
-    load();
-    const t = setInterval(load, 3000);
-    return () => clearInterval(t);
-  }, []);
-
-  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-  const shown = LISTINGS.filter((l) => words.every((w) => `${l.title} ${l.city} ${l.blurb}`.toLowerCase().includes(w)));
-
+/** The record of each wallet in `addresses`, keyed by address. */
+function useRecords(addresses: string[]) {
   return (
-    <div className="rise flex flex-col gap-6">
-      <section className="flex flex-col gap-2 py-4 sm:py-8">
-        <h1 className="max-w-2xl text-4xl font-semibold leading-[1.1] sm:text-5xl">
-          Rent with a record nobody can edit.
-        </h1>
-        <p className="max-w-xl text-muted-foreground">
-          Deposits sit in an on-chain vault, and every payment and every deduction is written to the wallet's profile by
-          the program itself. Find a place, check the landlord, then lease.
-        </p>
-      </section>
+    useChain(
+      async () => Object.fromEntries(await Promise.all(addresses.map(async (a) => [a, await chain.loadProfile(a)] as const))) as Record<string, ProfileView | null>,
+      [addresses.join()],
+    ) ?? {}
+  );
+}
 
-      <div className="relative">
-        <Search className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          className="pl-11"
-          placeholder="Search by district, city or feature: Kraków, garden, furnished…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          aria-label="Search apartments"
-        />
-      </div>
+export function Listings({ mode, me, listings, h }: { mode: "browse" | "mine"; me: string | null; listings: ListingView[] | undefined; h: Handlers }) {
+  const [q, setQ] = useState("");
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const shown = (listings ?? []).filter(
+    (l) =>
+      (mode === "browse" || l.landlord === me) && words.every((w) => `${l.title} ${l.city} ${l.blurb} ${l.region}`.toLowerCase().includes(w)),
+  );
+  const records = useRecords(unique(shown.map((l) => l.landlord)));
 
-      {shown.length === 0 && <p className="text-sm text-muted-foreground">No apartments match “{q}”.</p>}
+  if (mode === "mine" && !me)
+    return <Waiting title="Connect your wallet" text="Your listings belong to your wallet. Connect it with the button at the top right." />;
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        {shown.map((l) => {
-          const addr = landlordOf(l);
-          const rec = records[addr];
-          return (
-            <Listing key={l.id} l={l}>
-              <div className="flex items-center justify-between gap-2 border-t px-4 py-3">
-                <button
-                  onClick={() => onProfile(addr)}
-                  className="flex min-h-9 items-center gap-1.5 text-left text-xs text-muted-foreground hover:text-foreground"
-                >
+  const grid = (
+    <div className={mode === "mine" ? "grid gap-5 sm:grid-cols-2" : "grid gap-5 sm:grid-cols-2 xl:grid-cols-3"}>
+      {shown.map((l) => {
+        const rec = records[l.landlord];
+        return (
+          <Listing key={l.address} l={l}>
+            <div className="flex items-center justify-between gap-2 border-t px-4 py-3">
+              {mode === "browse" ? (
+                <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                   <UserRound className="size-3.5" />
-                  <span className="font-mono">{short(addr)}</span>
+                  <span className="font-mono">{short(l.landlord)}</span>
                   {rec ? (
                     <Badge variant="success">
-                      <ShieldCheck /> {rec.leasesCompleted} completed
+                      <ShieldCheck /> {rec.leasesCompleted} completed · {count(rec.depositsReturnedFull, "deposit")} returned in full
                     </Badge>
                   ) : (
                     <Badge>new landlord</Badge>
                   )}
-                </button>
-                {l.landlord === null ? (
-                  <Button size="sm" onClick={() => onRent(l)}>
-                    Lease this
+                </p>
+              ) : (
+                <>
+                  <span className="text-xs text-muted-foreground">Deposit {usdc(l.deposit)} USDC</span>
+                  <Button size="sm" variant="outline" disabled={!!h.busy} onClick={() => h.closeListing(l)}>
+                    <Trash2 /> Remove
                   </Button>
-                ) : (
-                  <span className="text-xs text-muted-foreground">view only in demo</span>
-                )}
-              </div>
-            </Listing>
-          );
-        })}
+                </>
+              )}
+            </div>
+          </Listing>
+        );
+      })}
+    </div>
+  );
+
+  const empty =
+    listings && shown.length === 0 ? (
+      <p className="text-sm text-muted-foreground">
+        {mode === "mine" && !q ? "You have no listings yet. Add one with the form." : q ? `Nothing matches “${q}”.` : "No apartments are listed yet. Switch to a landlord window and add one."}
+      </p>
+    ) : null;
+
+  if (mode === "mine")
+    return (
+      <div className="rise grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_380px]">
+        <div className="flex flex-col gap-5">
+          <div>
+            <h1 className="text-3xl font-semibold">My listings</h1>
+            <p className="text-sm text-muted-foreground">Tenants see these in their Apartments tab. Removing a listing returns its storage deposit to you.</p>
+          </div>
+          {empty}
+          {grid}
+        </div>
+        <ListingForm h={h} />
       </div>
+    );
+
+  return (
+    <div className="rise flex flex-col gap-6">
+      <section className="flex flex-col gap-2 py-2 lg:py-6">
+        <h1 className="max-w-5xl text-4xl font-semibold leading-[1.1] lg:text-5xl">Find a home. Bring your record with you.</h1>
+        <p className="max-w-2xl text-muted-foreground">
+          The deposit sits in an on-chain vault, and every payment and deduction is written to the wallet's profile by the program itself. Landlords
+          here can see your record; you can see theirs.
+        </p>
+      </section>
+
+      <div className="relative max-w-2xl">
+        <Search className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+        <Input className="pl-11" placeholder="Search by district, city or feature: Kraków, garden, furnished…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search apartments" />
+      </div>
+      {!listings && <p className="text-sm text-muted-foreground">Loading apartments…</p>}
+      {empty}
+      {grid}
     </div>
   );
 }
 
-// ---- profile lookup ---------------------------------------------------------------------
+function ListingForm({ h }: { h: Handlers }) {
+  const blank = { title: "", city: "", region: "", blurb: "", photo: "", rent: "", deposit: "" };
+  const [f, setF] = useState(blank);
+  const set = (k: keyof typeof blank) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
 
-export function Profiles({ initial }: { initial: string }) {
-  const [input, setInput] = useState(initial);
-  const [addr, setAddr] = useState(initial);
-  const [profile, setProfile] = useState<ProfileView | null>(null);
-  const [countries, setCountries] = useState<Record<Role, string[]> | null>(null);
-  const [state, setState] = useState<"loading" | "ok" | "invalid">("loading");
+  const rent = Math.round(Number(f.rent) * USDC);
+  const deposit = Math.round(Number(f.deposit === "" ? f.rent : f.deposit) * USDC);
+  const region = f.region.toUpperCase();
+  const tooLong = (["title", "city", "blurb", "photo"] as const).find((k) => bytes(f[k]) > MAX_TEXT[k]);
+  const ok = !!f.title.trim() && rent > 0 && deposit >= 0 && /^[A-Z]{2}$/.test(region) && !tooLong;
 
-  useEffect(() => {
-    let live = true;
-    const load = () =>
-      Promise.all([chain.loadProfile(addr), chain.loadCountries(addr)]).then(
-        ([p, c]) => live && (setProfile(p), setCountries(c), setState("ok")),
-        (e) => live && (e instanceof Error && /address|base58|key/i.test(e.message) ? setState("invalid") : undefined)
-      );
-    load();
-    const t = setInterval(load, 3000);
-    return () => {
-      live = false;
-      clearInterval(t);
-    };
-  }, [addr]);
-
-  const go = (a: string) => {
-    setInput(a);
-    setAddr(a.trim());
-    setProfile(null);
-    setCountries(null);
-    setState("loading");
+  const submit = async () => {
+    if (await h.createListing({ rent, deposit, region, title: f.title.trim(), city: f.city.trim(), blurb: f.blurb.trim(), photo: f.photo.trim() })) setF(blank);
   };
 
+  const field = (k: keyof typeof blank, label: string, props: React.InputHTMLAttributes<HTMLInputElement> = {}) => (
+    <label className="flex flex-col gap-1.5 text-sm font-semibold">
+      {label}
+      <Input className="font-normal" value={f[k]} onChange={set(k)} {...props} />
+    </label>
+  );
+
   return (
-    <div className="rise flex flex-col gap-4">
-      <div>
-        <h1 className="text-3xl font-semibold">Profiles</h1>
-        <p className="text-sm text-muted-foreground">
-          Look up any wallet. A wallet has one record, seen here as tenant and as landlord.
-        </p>
+    <Card className="flex flex-col gap-4 p-5 lg:sticky lg:top-6">
+      <h2 className="flex items-center gap-2 text-xl font-semibold">
+        <Plus className="size-5" /> New listing
+      </h2>
+      {field("title", "Title", { placeholder: "Sunlit 1-bedroom, Kazimierz" })}
+      <div className="grid grid-cols-[1fr_88px] gap-3">
+        {field("city", "City", { placeholder: "Kraków" })}
+        {field("region", "Country", { placeholder: "PL", maxLength: 2, className: "font-normal uppercase" })}
       </div>
-
-      <form
-        className="flex flex-col gap-2 sm:flex-row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          go(input);
-        }}
-      >
-        <Input
-          className="font-mono text-sm"
-          placeholder="Wallet address"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          aria-label="Wallet address"
-        />
-        <Button type="submit">Look up</Button>
-      </form>
-
-      <div className="flex flex-wrap gap-2">
-        {(["landlord", "tenant"] as const).map((r) => (
-          <Button key={r} size="sm" variant="outline" onClick={() => go(chain.actors[r].key.toBase58())}>
-            <UserRound /> Demo {r} · {short(chain.actors[r].key.toBase58())}
-          </Button>
-        ))}
+      {field("blurb", "Short description", { placeholder: "Furnished · 42 m² · fibre internet" })}
+      {field("photo", "Photo", { placeholder: "/listings/flat.jpg or https://…" })}
+      <div className="grid grid-cols-2 gap-3">
+        {field("rent", "Rent, USDC / period", { inputMode: "decimal", placeholder: "850" })}
+        {field("deposit", "Deposit, USDC", { inputMode: "decimal", placeholder: f.rent || "same as rent" })}
       </div>
+      <p className="text-xs text-muted-foreground">
+        Photo: a web address, or a file you put in <span className="font-mono">app/public</span>. The deposit is the standard one; the program halves it
+        for tenants with a clean record.
+        {tooLong && <span className="block text-destructive">The {tooLong} is too long for the chain (max {MAX_TEXT[tooLong]} bytes).</span>}
+      </p>
+      <Button size="lg" disabled={!ok || !!h.busy} onClick={submit}>
+        {h.busy ?? "Publish listing"}
+      </Button>
+    </Card>
+  );
+}
 
-      {state === "invalid" ? (
-        <p role="alert" className="text-sm text-destructive">
-          That is not a valid wallet address.
-        </p>
-      ) : state === "ok" && !profile ? (
-        <Card className="p-5 text-sm text-muted-foreground">
-          No on-chain record yet. This wallet has not taken part in a lease.
-        </Card>
-      ) : profile ? (
-        <div className="grid gap-4 md:grid-cols-2">
-          <ProfileCard role="tenant" address={addr} profile={profile} countries={countries?.tenant} />
-          <ProfileCard role="landlord" address={addr} profile={profile} countries={countries?.landlord} />
-        </div>
-      ) : null}
+// ---- my profile + my current and recent counterparties ------------------------------------
+
+const recordLine = (counterparty: Role, p: ProfileView | null | undefined) => {
+  if (p === undefined) return "Loading their record…";
+  if (!p) return "No record yet: their first lease.";
+  if (counterparty === "tenant") {
+    const paid = p.paidOnTime + p.paidLate;
+    return `${count(p.leasesCompleted, "lease")} completed · ${paid ? `${Math.round((p.paidOnTime / paid) * 100)}% paid on time` : "no rent paid yet"} · typical rent ${typicalRent(p) ? usdc(typicalRent(p)) : "—"} USDC`;
+  }
+  return `${count(p.leasesCompleted, "lease")} completed · ${count(p.depositsReturnedFull, "deposit")} returned in full · ${p.depositsClaimed} claimed by tenants`;
+};
+
+export function MyProfile({ role, me }: { role: Role; me: string }) {
+  const profile = useChain(() => chain.loadProfile(me), [me]);
+  const leases = useChain(() => chain.loadLeases(me, role), [me, role]);
+  const other: Role = role === "landlord" ? "tenant" : "landlord";
+  const records = useRecords(unique((leases ?? []).map((l) => l[other])));
+
+  const current = (leases ?? []).filter((l) => l.status === "proposed" || l.status === "active");
+  const recent = (leases ?? []).filter((l) => l.status === "closed" || l.status === "defaulted");
+  const countries = unique(recent.filter((l) => l.status === "closed").map((l) => l.region)).sort();
+
+  const rows = (title: string, items: LeaseView[], none: string) => (
+    <section className="flex flex-col gap-3">
+      <h2 className="text-xl font-semibold">{title}</h2>
+      {!leases ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : items.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{none}</p>
+      ) : (
+        items.map((l) => (
+          <Card key={l.address} className="flex flex-col gap-2 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <button
+                title="Copy full address"
+                onClick={() => navigator.clipboard?.writeText(l[other])}
+                className="flex items-center gap-2 font-mono text-sm font-medium hover:text-accent"
+              >
+                <UserRound className="size-4" /> {short(l[other], 6)} <Copy className="size-3.5 text-muted-foreground" />
+              </button>
+              {statusBadge(l.status)}
+            </div>
+            <p className="text-sm text-muted-foreground">{recordLine(other, records[l[other]])}</p>
+            <p className="text-xs text-muted-foreground">
+              {usdc(l.rent)} USDC / {duration(l.periodSecs)} · {l.paidCount}/{l.termPeriods} paid · deposit {usdc(l.deposit)} USDC · {l.region}
+              {l.startTs ? ` · started ${new Date(l.startTs * 1000).toLocaleDateString()}` : " · not started"}
+            </p>
+          </Card>
+        ))
+      )}
+    </section>
+  );
+
+  return (
+    <div className="rise grid items-start gap-8 lg:grid-cols-[400px_minmax(0,1fr)]">
+      <div className="flex flex-col gap-3 lg:sticky lg:top-6">
+        <ProfileCard role={role} address={me} profile={profile ?? null} countries={countries} />
+      </div>
+      <div className="flex flex-col gap-8">
+        {rows(role === "landlord" ? "Current tenants" : "Current landlord", current, role === "landlord" ? "No tenant is in a lease with you right now." : "You have no lease in progress.")}
+        {rows(role === "landlord" ? "Recent tenants" : "Recent landlords", recent, "Nothing finished yet.")}
+      </div>
     </div>
   );
 }

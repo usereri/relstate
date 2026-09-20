@@ -3,16 +3,29 @@ import { AnchorProvider, BN, Program } from "@anchor-lang/core";
 import { getAccount, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import idl from "@target/idl/relstate.json";
 import type { Relstate } from "@target/types/relstate";
-import demo from "@/demo.json";
 import { GRACE_SECS, MINT, PERIOD_SECS, RPC, TERM_PERIODS } from "./config";
 
-const { Connection, Keypair, PublicKey, SYSVAR_CLOCK_PUBKEY } = anchor.web3;
+const { Connection, PublicKey, SYSVAR_CLOCK_PUBKEY } = anchor.web3;
 type PubKey = anchor.web3.PublicKey;
 
 export type Role = "landlord" | "tenant";
 export type Status = "proposed" | "active" | "closed" | "defaulted";
 
+export interface ListingView {
+  address: string;
+  id: string;
+  landlord: string;
+  rent: number;
+  deposit: number;
+  region: string;
+  title: string;
+  city: string;
+  blurb: string;
+  photo: string;
+}
+
 export interface LeaseView {
+  address: string;
   id: string;
   landlord: string;
   tenant: string;
@@ -41,6 +54,11 @@ export interface ProfileView {
   rentPaidTotal: number;
 }
 
+export interface Snapshot {
+  profiles: Record<Role, ProfileView | null>;
+  now: number;
+}
+
 /** Single source of truth: the program's constants, read from the IDL. */
 const constant = (name: string) => Number(idl.constants.find((c) => c.name === name)!.value);
 export const DISCOUNT_PCT = constant("GOOD_STANDING_DISCOUNT_PCT");
@@ -63,58 +81,94 @@ export const maxDiscountRent = (p: ProfileView | null) => Math.floor((typicalRen
 export const qualifiesForDiscount = (p: ProfileView | null, rent: number) =>
   goodStanding(p) && rent <= maxDiscountRent(p);
 
-export interface Snapshot {
-  lease: LeaseView | null;
-  profiles: Record<Role, ProfileView | null>;
-  balances: Record<Role, number>;
-  now: number; // chain clock, unix seconds
-}
-
-const connection = new Connection(RPC, "confirmed");
-const mint = new PublicKey(MINT);
-
-function makeActor(secret: number[]) {
-  const kp = Keypair.fromSecretKey(Uint8Array.from(secret));
-  // NodeWallet isn't available in the browser bundle, so sign with the keypair directly
-  const sign = <T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(tx: T): T => {
-    if ("version" in tx) tx.sign([kp]);
-    else tx.partialSign(kp);
-    return tx;
-  };
-  const wallet = {
-    publicKey: kp.publicKey,
-    signTransaction: async <T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(tx: T) => sign(tx),
-    signAllTransactions: async <T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(txs: T[]) =>
-      txs.map(sign),
-  };
-  const provider = new AnchorProvider(connection, wallet as never, { commitment: "confirmed" });
-  return {
-    key: kp.publicKey,
-    ata: getAssociatedTokenAddressSync(mint, kp.publicKey),
-    program: new Program<Relstate>(idl as Relstate, provider),
-  };
-}
-
-export const actors: Record<Role, ReturnType<typeof makeActor>> = {
-  landlord: makeActor(demo.landlord),
-  tenant: makeActor(demo.tenant),
+export const isWallet = (s: string) => {
+  try {
+    return new PublicKey(s).toBytes().length === 32;
+  } catch {
+    return false;
+  }
 };
 
-const programId = actors.landlord.program.programId;
+export const connection = new Connection(RPC, "confirmed");
+const mint = new PublicKey(MINT);
+
+interface WalletLike {
+  publicKey: PubKey;
+  signTransaction: <T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(tx: T) => Promise<T>;
+  signAllTransactions: <T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(txs: T[]) => Promise<T[]>;
+}
+
+export interface Me {
+  key: PubKey;
+  ata: PubKey;
+  program: Program<Relstate>;
+}
+
+const tokenAccount = (wallet: PubKey) => getAssociatedTokenAddressSync(mint, wallet);
+
+export function makeMe(wallet: WalletLike): Me {
+  const provider = new AnchorProvider(connection, wallet as never, { commitment: "confirmed" });
+  return { key: wallet.publicKey, ata: tokenAccount(wallet.publicKey), program: new Program<Relstate>(idl as Relstate, provider) };
+}
+
+const reader = new Program<Relstate>(
+  idl as Relstate,
+  new AnchorProvider(
+    connection,
+    { publicKey: PublicKey.default, signTransaction: async (t: unknown) => t, signAllTransactions: async (t: unknown) => t } as never,
+    { commitment: "confirmed" },
+  ),
+);
+const programId = reader.programId;
+
 const u64 = (n: BN) => n.toArrayLike(Buffer, "le", 8);
-const leasePda = (landlord: PubKey, id: BN) =>
-  PublicKey.findProgramAddressSync([Buffer.from("lease"), landlord.toBuffer(), u64(id)], programId)[0];
-const vaultPda = (lease: PubKey) => PublicKey.findProgramAddressSync([Buffer.from("vault"), lease.toBuffer()], programId)[0];
-const profilePda = (wallet: PubKey) =>
-  PublicKey.findProgramAddressSync([Buffer.from("profile"), wallet.toBuffer()], programId)[0];
+const pda = (...seeds: (Buffer | Uint8Array)[]) => PublicKey.findProgramAddressSync(seeds, programId)[0];
+const leasePda = (landlord: PubKey, id: string) => pda(Buffer.from("lease"), landlord.toBuffer(), u64(new BN(id)));
+const listingPda = (landlord: PubKey, id: string) => pda(Buffer.from("listing"), landlord.toBuffer(), u64(new BN(id)));
+const vaultPda = (lease: PubKey) => pda(Buffer.from("vault"), lease.toBuffer());
+const profilePda = (wallet: PubKey) => pda(Buffer.from("profile"), wallet.toBuffer());
+
+export const leaseAddress = (landlord: string, id: string) => leasePda(new PublicKey(landlord), id).toBase58();
+export const newId = () => String(Date.now());
+
+
+type Acc<K extends "lease" | "profile" | "listing"> = NonNullable<Awaited<ReturnType<(typeof reader.account)[K]["fetchNullable"]>>>;
 
 const hex = (bytes: number[]) => bytes.map((b) => b.toString(16).padStart(2, "0")).join("");
+const code = (region: number[]) => String.fromCharCode(...region);
 
-export const newLeaseId = () => String(Date.now());
+const listingView = (address: PubKey, l: Acc<"listing">): ListingView => ({
+  address: address.toBase58(),
+  id: l.listingId.toString(),
+  landlord: l.landlord.toBase58(),
+  rent: l.rentAmount.toNumber(),
+  deposit: l.depositAmount.toNumber(),
+  region: code(l.region),
+  title: l.title,
+  city: l.city,
+  blurb: l.blurb,
+  photo: l.photo,
+});
 
-const profileView = (
-  p: Awaited<ReturnType<typeof actors.landlord.program.account.profile.fetchNullable>>,
-): ProfileView | null =>
+const leaseView = (address: PubKey, l: Acc<"lease">): LeaseView => ({
+  address: address.toBase58(),
+  id: l.leaseId.toString(),
+  landlord: l.landlord.toBase58(),
+  tenant: l.tenant.toBase58(),
+  rent: l.rentAmount.toNumber(),
+  deposit: l.depositAmount.toNumber(),
+  startTs: l.startTs.toNumber(),
+  termPeriods: l.termPeriods,
+  paidCount: l.paidCount,
+  periodSecs: l.periodSecs.toNumber(),
+  graceSecs: l.graceSecs.toNumber(),
+  hashHex: hex(l.leaseHash),
+  region: code(l.region),
+  discountPct: l.discountPct,
+  status: Object.keys(l.status)[0] as Status,
+});
+
+const profileView = (p: Acc<"profile"> | null): ProfileView | null =>
   p && {
     leasesCompleted: p.leasesCompleted,
     paidOnTime: p.paidOnTime,
@@ -127,182 +181,174 @@ const profileView = (
     rentPaidTotal: p.rentPaidTotal.toNumber(),
   };
 
-/** On-chain record of any wallet; null if it never took part in a lease. Throws on a malformed address. */
+const newestFirst = <T extends { id: string }>(rows: T[]) => rows.sort((a, b) => Number(b.id) - Number(a.id));
+
+export async function loadListings(): Promise<ListingView[]> {
+  return newestFirst((await reader.account.listing.all()).map((r) => listingView(r.publicKey, r.account)));
+}
+
+export async function loadLeases(wallet: string, role: Role): Promise<LeaseView[]> {
+  const bytes = new PublicKey(wallet).toBase58();
+  const rows = await reader.account.lease.all([{ memcmp: { offset: role === "landlord" ? 8 : 40, bytes } }]);
+  return newestFirst(rows.map((r) => leaseView(r.publicKey, r.account)));
+}
+
 export async function loadProfile(address: string): Promise<ProfileView | null> {
-  const wallet = new PublicKey(address);
-  return profileView(await actors.landlord.program.account.profile.fetchNullable(profilePda(wallet)));
+  return profileView(await reader.account.profile.fetchNullable(profilePda(new PublicKey(address))));
 }
 
-/**
- * Countries of a wallet's finished leases, as tenant and as landlord. A plain scan of the lease
- * accounts (offsets 8 and 40 hold the landlord and tenant keys); at scale this reads an index.
- */
-export async function loadCountries(address: string): Promise<Record<Role, string[]>> {
-  const wallet = new PublicKey(address).toBase58();
-  const finished = async (offset: number) => {
-    const rows = await actors.landlord.program.account.lease.all([{ memcmp: { offset, bytes: wallet } }]);
-    const codes = rows.filter((r) => "closed" in r.account.status).map((r) => String.fromCharCode(...r.account.region));
-    return [...new Set(codes)].sort();
-  };
-  const [landlord, tenant] = await Promise.all([finished(8), finished(40)]);
-  return { landlord, tenant };
+export async function loadNow(): Promise<number> {
+  const clock = await connection.getAccountInfo(SYSVAR_CLOCK_PUBKEY);
+  return clock ? Number(clock.data.readBigInt64LE(32)) : Math.floor(Date.now() / 1000);
 }
 
-/** Everything the UI needs, read in one go. */
-export async function loadSnapshot(leaseId: string | null): Promise<Snapshot> {
-  const { landlord, tenant } = actors;
-  const program = landlord.program;
-
-  const [clock, l, t, lease, landlordBal, tenantBal] = await Promise.all([
-    connection.getAccountInfo(SYSVAR_CLOCK_PUBKEY),
-    program.account.profile.fetchNullable(profilePda(landlord.key)),
-    program.account.profile.fetchNullable(profilePda(tenant.key)),
-    leaseId ? program.account.lease.fetchNullable(leasePda(landlord.key, new BN(leaseId))) : null,
-    balanceOf(landlord.ata),
-    balanceOf(tenant.ata),
+export async function loadBalances(wallet: string): Promise<{ sol: number; usdc: number | null }> {
+  const key = new PublicKey(wallet);
+  const [lamports, usdc] = await Promise.all([
+    connection.getBalance(key),
+    getAccount(connection, tokenAccount(key)).then(
+      (a) => Number(a.amount),
+      () => null,
+    ),
   ]);
-
-  return {
-    lease:
-      lease && leaseId
-        ? {
-            id: leaseId,
-            landlord: lease.landlord.toBase58(),
-            tenant: lease.tenant.toBase58(),
-            rent: lease.rentAmount.toNumber(),
-            deposit: lease.depositAmount.toNumber(),
-            startTs: lease.startTs.toNumber(),
-            termPeriods: lease.termPeriods,
-            paidCount: lease.paidCount,
-            periodSecs: lease.periodSecs.toNumber(),
-            graceSecs: lease.graceSecs.toNumber(),
-            hashHex: hex(lease.leaseHash),
-            region: String.fromCharCode(...lease.region),
-            discountPct: lease.discountPct,
-            status: Object.keys(lease.status)[0] as Status,
-          }
-        : null,
-    profiles: { landlord: profileView(l), tenant: profileView(t) },
-    balances: { landlord: landlordBal, tenant: tenantBal },
-    now: clock ? Number(clock.data.readBigInt64LE(32)) : Math.floor(Date.now() / 1000),
-  };
+  return { sol: lamports / anchor.web3.LAMPORTS_PER_SOL, usdc };
 }
 
-async function balanceOf(ata: PubKey) {
-  try {
-    return Number((await getAccount(connection, ata)).amount);
-  } catch {
-    return 0;
-  }
+export interface NewListing {
+  rent: number;
+  deposit: number;
+  region: string;
+  title: string;
+  city: string;
+  blurb: string;
+  photo: string;
 }
 
-// ---- instructions (each returns the transaction signature) -------------------------------
+export function createListing(me: Me, id: string, f: NewListing) {
+  return me.program.methods
+    .createListing(new BN(id), new BN(f.rent), new BN(f.deposit), Array.from(f.region, (c) => c.charCodeAt(0)), f.title, f.city, f.blurb, f.photo)
+    .accountsPartial({ landlord: me.key, listing: listingPda(me.key, id) })
+    .rpc();
+}
 
-export function proposeLease(id: string, rent: number, standardDeposit: number, hash: number[], region: string) {
-  const { landlord, tenant } = actors;
-  const lease = leasePda(landlord.key, new BN(id));
-  return landlord.program.methods
-    .proposeLease(new BN(id), new BN(rent), new BN(standardDeposit), new BN(PERIOD_SECS), new BN(GRACE_SECS), TERM_PERIODS, hash, Array.from(region, (c) => c.charCodeAt(0)))
+export function closeListing(me: Me, l: ListingView) {
+  return me.program.methods
+    .closeListing()
+    .accountsPartial({ landlord: me.key, listing: new PublicKey(l.address) })
+    .rpc();
+}
+
+export function proposeLease(me: Me, id: string, l: ListingView, tenant: string, hash: number[]) {
+  const tenantKey = new PublicKey(tenant);
+  const lease = leasePda(me.key, id);
+  return me.program.methods
+    .proposeLease(
+      new BN(id),
+      new BN(l.rent),
+      new BN(l.deposit),
+      new BN(PERIOD_SECS),
+      new BN(GRACE_SECS),
+      TERM_PERIODS,
+      hash,
+      Array.from(l.region, (c) => c.charCodeAt(0)),
+    )
     .accountsPartial({
-      landlord: landlord.key,
-      tenant: tenant.key,
-      tenantProfile: profilePda(tenant.key),
+      landlord: me.key,
+      tenant: tenantKey,
+      tenantProfile: profilePda(tenantKey),
       mint,
       lease,
       vault: vaultPda(lease),
-      landlordProfile: profilePda(landlord.key),
+      landlordProfile: profilePda(me.key),
     })
     .rpc();
 }
 
-export function fundDeposit(id: string, hash: number[]) {
-  const { landlord, tenant } = actors;
-  const lease = leasePda(landlord.key, new BN(id));
-  return tenant.program.methods
+export function fundDeposit(me: Me, l: LeaseView, hash: number[]) {
+  const lease = new PublicKey(l.address);
+  return me.program.methods
     .fundDeposit(hash)
     .accountsPartial({
-      tenant: tenant.key,
+      tenant: me.key,
       lease,
       mint,
       vault: vaultPda(lease),
-      tenantAta: tenant.ata,
-      tenantProfile: profilePda(tenant.key),
+      tenantAta: me.ata,
+      tenantProfile: profilePda(me.key),
     })
     .rpc();
 }
 
-export function payRent(id: string) {
-  const { landlord, tenant } = actors;
-  return tenant.program.methods
+export function payRent(me: Me, l: LeaseView) {
+  return me.program.methods
     .payRent()
     .accountsPartial({
-      tenant: tenant.key,
-      lease: leasePda(landlord.key, new BN(id)),
+      tenant: me.key,
+      lease: new PublicKey(l.address),
       mint,
-      tenantAta: tenant.ata,
-      landlordAta: landlord.ata,
-      tenantProfile: profilePda(tenant.key),
+      tenantAta: me.ata,
+      landlordAta: tokenAccount(new PublicKey(l.landlord)),
+      tenantProfile: profilePda(me.key),
     })
     .rpc();
 }
 
-export function releaseDeposit(id: string, deduction: number) {
-  const { landlord, tenant } = actors;
-  const lease = leasePda(landlord.key, new BN(id));
-  return landlord.program.methods
+export function releaseDeposit(me: Me, l: LeaseView, deduction: number) {
+  const lease = new PublicKey(l.address);
+  const tenant = new PublicKey(l.tenant);
+  return me.program.methods
     .releaseDeposit(new BN(deduction))
     .accountsPartial({
-      landlord: landlord.key,
+      landlord: me.key,
       lease,
       mint,
       vault: vaultPda(lease),
-      tenantAta: tenant.ata,
-      landlordAta: landlord.ata,
-      tenantProfile: profilePda(tenant.key),
-      landlordProfile: profilePda(landlord.key),
+      tenantAta: tokenAccount(tenant),
+      landlordAta: me.ata,
+      tenantProfile: profilePda(tenant),
+      landlordProfile: profilePda(me.key),
     })
     .rpc();
 }
 
-export function markDefault(id: string) {
-  const { landlord, tenant } = actors;
-  const lease = leasePda(landlord.key, new BN(id));
-  return landlord.program.methods
+export function markDefault(me: Me, l: LeaseView) {
+  const lease = new PublicKey(l.address);
+  const tenant = new PublicKey(l.tenant);
+  return me.program.methods
     .markDefault()
     .accountsPartial({
-      landlord: landlord.key,
+      landlord: me.key,
       lease,
       mint,
       vault: vaultPda(lease),
-      tenantAta: tenant.ata,
-      landlordAta: landlord.ata,
-      tenantProfile: profilePda(tenant.key),
+      tenantAta: tokenAccount(tenant),
+      landlordAta: me.ata,
+      tenantProfile: profilePda(tenant),
     })
     .rpc();
 }
 
-export function claimDeposit(id: string) {
-  const { landlord, tenant } = actors;
-  const lease = leasePda(landlord.key, new BN(id));
-  return tenant.program.methods
+export function claimDeposit(me: Me, l: LeaseView) {
+  const lease = new PublicKey(l.address);
+  const landlord = new PublicKey(l.landlord);
+  return me.program.methods
     .claimDeposit()
     .accountsPartial({
-      tenant: tenant.key,
+      tenant: me.key,
       lease,
       mint,
       vault: vaultPda(lease),
-      tenantAta: tenant.ata,
-      landlordAta: landlord.ata,
-      tenantProfile: profilePda(tenant.key),
-      landlordProfile: profilePda(landlord.key),
+      tenantAta: me.ata,
+      landlordAta: tokenAccount(landlord),
+      tenantProfile: profilePda(me.key),
+      landlordProfile: profilePda(landlord),
     })
     .rpc();
 }
 
-/** Surfpool cheatcode: jump the chain clock forward (local demo only). */
+/** Surfpool cheatcode: jump the chain clock forward (local network only). */
 export async function fastForward(secondsAhead: number) {
-  const info = await connection.getAccountInfo(SYSVAR_CLOCK_PUBKEY);
-  const now = Number(info!.data.readBigInt64LE(32));
+  const now = await loadNow();
   const res = await fetch(RPC, {
     method: "POST",
     headers: { "content-type": "application/json" },
