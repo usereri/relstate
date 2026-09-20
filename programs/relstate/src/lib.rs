@@ -15,6 +15,26 @@ declare_id!("5J52oGfo7BjC529vizEaM96QtxVFD4Kbv22Tw8aXa1Ar");
 pub mod relstate {
     use super::*;
 
+    pub fn create_listing(
+        ctx: Context<CreateListing>,
+        listing_id: u64,
+        rent_amount: u64,
+        deposit_amount: u64,
+        region: [u8; 2],
+        title: String,
+        city: String,
+        blurb: String,
+        photo: String,
+    ) -> Result<()> {
+        crate::instructions::create_listing::handle_create_listing(
+            ctx, listing_id, rent_amount, deposit_amount, region, title, city, blurb, photo,
+        )
+    }
+
+    pub fn close_listing(ctx: Context<CloseListing>) -> Result<()> {
+        crate::instructions::close_listing::handle_close_listing(ctx)
+    }
+
     pub fn propose_lease(
         ctx: Context<ProposeLease>,
         lease_id: u64,

@@ -7,10 +7,23 @@ pub const LEASE_SEED: &[u8] = b"lease";
 pub const VAULT_SEED: &[u8] = b"vault";
 
 #[constant]
+pub const LISTING_SEED: &[u8] = b"listing";
+
+#[constant]
 pub const PROFILE_SEED: &[u8] = b"profile";
 
 #[constant]
 pub const GOOD_STANDING_DISCOUNT_PCT: u8 = 50;
+
+// listing text limits, in bytes
+#[constant]
+pub const MAX_TITLE: usize = 60;
+#[constant]
+pub const MAX_CITY: usize = 40;
+#[constant]
+pub const MAX_BLURB: usize = 120;
+#[constant]
+pub const MAX_PHOTO: usize = 120;
 
 // The discount only applies to a lease whose rent is at most this share of the tenant's typical
 // rent (see Profile::typical_rent), so tiny leases cannot buy a discount on big ones

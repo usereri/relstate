@@ -34,4 +34,6 @@ pub enum ErrorCode {
     MintNotAllowed,
     #[msg("Region must be two uppercase letters (ISO country code)")]
     InvalidRegion,
+    #[msg("Listing text is too long")]
+    TextTooLong,
 }

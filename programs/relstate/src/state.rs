@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::constants::RENT_HEADROOM_PCT;
+use crate::constants::{MAX_BLURB, MAX_CITY, MAX_PHOTO, MAX_TITLE, RENT_HEADROOM_PCT};
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
 pub enum Status {
@@ -32,6 +32,28 @@ pub struct Lease {
     pub region: [u8; 2],
     // good-standing discount applied to this lease's deposit, 0 if none
     pub discount_pct: u8,
+}
+
+// An apartment a landlord offers. Independent of leases: the lease it leads to is proposed separately.
+#[account]
+#[derive(InitSpace)]
+pub struct Listing {
+    pub landlord: Pubkey,
+    pub listing_id: u64,
+    pub rent_amount: u64,
+    // the standard deposit, before any good-standing discount
+    pub deposit_amount: u64,
+    pub region: [u8; 2],
+    pub bump: u8,
+    #[max_len(MAX_TITLE)]
+    pub title: String,
+    #[max_len(MAX_CITY)]
+    pub city: String,
+    #[max_len(MAX_BLURB)]
+    pub blurb: String,
+    // image URL, or a path served by the app such as /listings/flat.jpg
+    #[max_len(MAX_PHOTO)]
+    pub photo: String,
 }
 
 #[account]
