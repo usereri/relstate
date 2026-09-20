@@ -90,20 +90,21 @@ describe("relstate", () => {
     await createMint(connection, payer, payer.publicKey, null, 6, MINT_KEYPAIR);
   });
 
-  async function setup(periodSecs = PERIOD, mint = MINT_KEYPAIR.publicKey) {
+  // `returning` = an earlier Env whose tenant (wallet, token account, record) takes another lease
+  async function setup(periodSecs = PERIOD, mint = MINT_KEYPAIR.publicKey, returning?: { tenant: anchor.web3.Keypair; tenantAta: anchor.web3.PublicKey }) {
     const conn = freshConnection();
     const landlord = Keypair.generate();
-    const tenant = Keypair.generate();
-    await Promise.all([airdrop(landlord), airdrop(tenant)]);
+    const tenant = returning?.tenant ?? Keypair.generate();
+    await Promise.all([airdrop(landlord), returning ? null : airdrop(tenant)]);
 
     const landlordAta = await createAssociatedTokenAccount(
       conn, landlord, mint, landlord.publicKey
     );
-    const tenantAta = await createAssociatedTokenAccount(
+    const tenantAta = returning?.tenantAta ?? await createAssociatedTokenAccount(
       conn, tenant, mint, tenant.publicKey
     );
     const payer = (provider.wallet as anchor.Wallet).payer;
-    await mintTo(conn, payer, mint, tenantAta, payer, START_BALANCE);
+    if (!returning) await mintTo(conn, payer, mint, tenantAta, payer, START_BALANCE);
 
     const leaseId = nextLeaseId++;
     const lease = pda(Buffer.from("lease"), landlord.publicKey.toBuffer(), u64(leaseId));
@@ -116,7 +117,7 @@ describe("relstate", () => {
       landlordProfile, tenantProfile,
 
       // overrides let tests try invalid lease terms
-      create: (o: { rent?: number; term?: number; grace?: number; region?: number[]; tenant?: anchor.web3.PublicKey } = {}) =>
+      create: (o: { rent?: number; term?: number; grace?: number; region?: number[]; tenant?: anchor.web3.PublicKey; tenantProfile?: anchor.web3.PublicKey } = {}) =>
         program.methods
           .createLease(
             new BN(leaseId), new BN(o.rent ?? RENT), new BN(DEPOSIT), new BN(periodSecs),
@@ -125,6 +126,7 @@ describe("relstate", () => {
           .accountsPartial({
             landlord: landlord.publicKey, tenant: o.tenant ?? tenant.publicKey,
             mint, lease, vault, landlordProfile,
+            tenantProfile: o.tenantProfile ?? (o.tenant ? pda(Buffer.from("profile"), o.tenant.toBuffer()) : tenantProfile),
           })
           .signers([landlord])
           .rpc(),
@@ -233,11 +235,13 @@ describe("relstate", () => {
     const closed = await program.account.lease.fetch(env.lease);
     expect(closed.status).to.have.property("closed");
     expect(closed.region).to.deep.equal(REGION);
+    expect([closed.depositAmount.toNumber(), closed.discountPct]).to.deep.equal([DEPOSIT, 0]); // first lease: no history, no discount
 
     const t = await program.account.profile.fetch(env.tenantProfile);
     expect([t.leasesCompleted, t.paidOnTime, t.paidLate, t.defaults]).to.deep.equal([1, 3, 0, 0]);
     expect([t.depositsReturnedFull, t.depositTotal.toNumber(), t.deductedTotal.toNumber()])
       .to.deep.equal([1, DEPOSIT, 0]);
+    expect(t.rentPaidTotal.toNumber()).to.equal(3 * RENT);
     const l = await program.account.profile.fetch(env.landlordProfile);
     expect([l.leasesCompleted, l.depositsReturnedFull]).to.deep.equal([1, 1]);
   });
@@ -264,6 +268,68 @@ describe("relstate", () => {
 
     const t = await program.account.profile.fetch(env.tenantProfile);
     expect([t.paidOnTime, t.paidLate]).to.deep.equal([0, 1]);
+  });
+
+  // pays every rent (the first one late when asked), jumps past the term and releases the deposit
+  async function finishLease(env: Env, firstLate = false) {
+    for (let i = 0; i < TERM; i++) {
+      const wait = i === 0 ? (firstLate ? 60 : 0) : PERIOD;
+      if (wait) await timeTravel(wait);
+      await env.pay();
+    }
+    await timeTravel(PERIOD);
+    await env.release(0);
+  }
+
+  it("a tenant with a clean record pays half the deposit on the next lease", async () => {
+    const first = await active();
+    await finishLease(first);
+
+    const second = await setup(PERIOD, MINT_KEYPAIR.publicKey, first);
+    await second.create();
+    const lease = await program.account.lease.fetch(second.lease);
+    expect([lease.depositAmount.toNumber(), lease.discountPct]).to.deep.equal([DEPOSIT / 2, 50]);
+
+    await second.fund();
+    expect(await balance(second.vault)).to.equal(DEPOSIT / 2);
+  });
+
+  it("the discount only covers rent up to 1.5x the tenant's typical rent", async () => {
+    const first = await active();
+    await finishLease(first); // typical rent = RENT
+
+    const within = await setup(PERIOD, MINT_KEYPAIR.publicKey, first);
+    await within.create({ rent: RENT * 1.5 });
+    expect((await program.account.lease.fetch(within.lease)).discountPct).to.equal(50);
+
+    const above = await setup(PERIOD, MINT_KEYPAIR.publicKey, first);
+    await above.create({ rent: RENT * 1.5 + 1 });
+    expect((await program.account.lease.fetch(above.lease)).discountPct).to.equal(0);
+  });
+
+  it("a late payment removes the discount", async () => {
+    const first = await active();
+    await finishLease(first, true);
+
+    const second = await setup(PERIOD, MINT_KEYPAIR.publicKey, first);
+    await second.create();
+    const lease = await program.account.lease.fetch(second.lease);
+    expect([lease.depositAmount.toNumber(), lease.discountPct]).to.deep.equal([DEPOSIT, 0]);
+  });
+
+  it("the landlord cannot dodge the discount by passing another record", async () => {
+    const env = await setup();
+    await expectFail(env.create({ tenantProfile: env.landlordProfile }), "ConstraintSeeds");
+  });
+
+  it("finds a wallet's leases by key offset (the app's profile lookup)", async () => {
+    const env = await active();
+    // Lease layout: 8-byte discriminator, then landlord (offset 8) and tenant (offset 40)
+    const byLandlord = await program.account.lease.all([{ memcmp: { offset: 8, bytes: env.landlord.publicKey.toBase58() } }]);
+    const byTenant = await program.account.lease.all([{ memcmp: { offset: 40, bytes: env.tenant.publicKey.toBase58() } }]);
+    expect(byLandlord.map((r) => r.publicKey.toBase58())).to.deep.equal([env.lease.toBase58()]);
+    expect(byTenant.map((r) => r.publicKey.toBase58())).to.deep.equal([env.lease.toBase58()]);
+    expect(String.fromCharCode(...byTenant[0].account.region)).to.equal("PL");
   });
 
   it("cannot fund twice", async () => {

@@ -25,6 +25,7 @@ export interface LeaseView {
   graceSecs: number;
   hashHex: string;
   region: string;
+  discountPct: number;
   status: Status;
 }
 
@@ -37,7 +38,30 @@ export interface ProfileView {
   depositsClaimed: number;
   depositTotal: number;
   deductedTotal: number;
+  rentPaidTotal: number;
 }
+
+/** Single source of truth: the program's constants, read from the IDL. */
+const constant = (name: string) => Number(idl.constants.find((c) => c.name === name)!.value);
+export const DISCOUNT_PCT = constant("GOOD_STANDING_DISCOUNT_PCT");
+export const RENT_HEADROOM_PCT = constant("RENT_HEADROOM_PCT");
+
+// Previews of Profile::good_standing / typical_rent / deserves_discount in the program;
+// the program applies the real rule at create_lease.
+export const goodStanding = (p: ProfileView | null) =>
+  !!p && p.leasesCompleted >= 1 && p.paidLate === 0 && p.defaults === 0;
+
+/** Average rent per payment: the rent level this tenant has proven (base units). */
+export const typicalRent = (p: ProfileView | null) => {
+  const payments = p ? p.paidOnTime + p.paidLate : 0;
+  return p && payments ? Math.floor(p.rentPaidTotal / payments) : 0;
+};
+
+/** The highest rent the discount still covers. */
+export const maxDiscountRent = (p: ProfileView | null) => Math.floor((typicalRent(p) * RENT_HEADROOM_PCT) / 100);
+
+export const qualifiesForDiscount = (p: ProfileView | null, rent: number) =>
+  goodStanding(p) && rent <= maxDiscountRent(p);
 
 export interface Snapshot {
   lease: LeaseView | null;
@@ -100,12 +124,28 @@ const profileView = (
     depositsClaimed: p.depositsClaimed,
     depositTotal: p.depositTotal.toNumber(),
     deductedTotal: p.deductedTotal.toNumber(),
+    rentPaidTotal: p.rentPaidTotal.toNumber(),
   };
 
 /** On-chain record of any wallet; null if it never took part in a lease. Throws on a malformed address. */
 export async function loadProfile(address: string): Promise<ProfileView | null> {
   const wallet = new PublicKey(address);
   return profileView(await actors.landlord.program.account.profile.fetchNullable(profilePda(wallet)));
+}
+
+/**
+ * Countries of a wallet's finished leases, as tenant and as landlord. A plain scan of the lease
+ * accounts (offsets 8 and 40 hold the landlord and tenant keys); at scale this reads an index.
+ */
+export async function loadCountries(address: string): Promise<Record<Role, string[]>> {
+  const wallet = new PublicKey(address).toBase58();
+  const finished = async (offset: number) => {
+    const rows = await actors.landlord.program.account.lease.all([{ memcmp: { offset, bytes: wallet } }]);
+    const codes = rows.filter((r) => "closed" in r.account.status).map((r) => String.fromCharCode(...r.account.region));
+    return [...new Set(codes)].sort();
+  };
+  const [landlord, tenant] = await Promise.all([finished(8), finished(40)]);
+  return { landlord, tenant };
 }
 
 /** Everything the UI needs, read in one go. */
@@ -138,6 +178,7 @@ export async function loadSnapshot(leaseId: string | null): Promise<Snapshot> {
             graceSecs: lease.graceSecs.toNumber(),
             hashHex: hex(lease.leaseHash),
             region: String.fromCharCode(...lease.region),
+            discountPct: lease.discountPct,
             status: Object.keys(lease.status)[0] as Status,
           }
         : null,
@@ -157,14 +198,15 @@ async function balanceOf(ata: PubKey) {
 
 // ---- instructions (each returns the transaction signature) -------------------------------
 
-export function createLease(id: string, rent: number, deposit: number, hash: number[], region: string) {
+export function createLease(id: string, rent: number, standardDeposit: number, hash: number[], region: string) {
   const { landlord, tenant } = actors;
   const lease = leasePda(landlord.key, new BN(id));
   return landlord.program.methods
-    .createLease(new BN(id), new BN(rent), new BN(deposit), new BN(PERIOD_SECS), new BN(GRACE_SECS), TERM_PERIODS, hash, Array.from(region, (c) => c.charCodeAt(0)))
+    .createLease(new BN(id), new BN(rent), new BN(standardDeposit), new BN(PERIOD_SECS), new BN(GRACE_SECS), TERM_PERIODS, hash, Array.from(region, (c) => c.charCodeAt(0)))
     .accountsPartial({
       landlord: landlord.key,
       tenant: tenant.key,
+      tenantProfile: profilePda(tenant.key),
       mint,
       lease,
       vault: vaultPda(lease),

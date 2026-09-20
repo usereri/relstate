@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Listing } from "@/components/Terms";
 import { ProfileCard } from "@/components/ProfileCard";
 import * as chain from "@/lib/chain";
-import { ProfileView } from "@/lib/chain";
+import { ProfileView, Role } from "@/lib/chain";
 import { LISTINGS, ListingData } from "@/lib/config";
 import { short } from "@/lib/utils";
 
@@ -106,13 +106,14 @@ export function Profiles({ initial }: { initial: string }) {
   const [input, setInput] = useState(initial);
   const [addr, setAddr] = useState(initial);
   const [profile, setProfile] = useState<ProfileView | null>(null);
+  const [countries, setCountries] = useState<Record<Role, string[]> | null>(null);
   const [state, setState] = useState<"loading" | "ok" | "invalid">("loading");
 
   useEffect(() => {
     let live = true;
     const load = () =>
-      chain.loadProfile(addr).then(
-        (p) => live && (setProfile(p), setState("ok")),
+      Promise.all([chain.loadProfile(addr), chain.loadCountries(addr)]).then(
+        ([p, c]) => live && (setProfile(p), setCountries(c), setState("ok")),
         (e) => live && (e instanceof Error && /address|base58|key/i.test(e.message) ? setState("invalid") : undefined)
       );
     load();
@@ -127,6 +128,7 @@ export function Profiles({ initial }: { initial: string }) {
     setInput(a);
     setAddr(a.trim());
     setProfile(null);
+    setCountries(null);
     setState("loading");
   };
 
@@ -174,8 +176,8 @@ export function Profiles({ initial }: { initial: string }) {
         </Card>
       ) : profile ? (
         <div className="grid gap-4 md:grid-cols-2">
-          <ProfileCard role="tenant" address={addr} profile={profile} />
-          <ProfileCard role="landlord" address={addr} profile={profile} />
+          <ProfileCard role="tenant" address={addr} profile={profile} countries={countries?.tenant} />
+          <ProfileCard role="landlord" address={addr} profile={profile} countries={countries?.landlord} />
         </div>
       ) : null}
     </div>

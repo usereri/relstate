@@ -8,7 +8,7 @@ import { DocPicker } from "@/components/DocPicker";
 import { ProfileCard } from "@/components/ProfileCard";
 import { Terms, termRows } from "@/components/Terms";
 import { Doc } from "@/lib/hash";
-import { Role, Snapshot, LeaseView, actors } from "@/lib/chain";
+import { DISCOUNT_PCT, Role, Snapshot, LeaseView, actors, goodStanding, maxDiscountRent, qualifiesForDiscount } from "@/lib/chain";
 import { CAN_FAST_FORWARD, CLAIM_WINDOW_SECS, GRACE_SECS, ListingData, PERIOD_SECS, TERM_PERIODS, USDC } from "@/lib/config";
 import { duration, short, usdc } from "@/lib/utils";
 
@@ -23,7 +23,7 @@ export function StickyAction({ children }: { children: React.ReactNode }) {
 
 export interface Handlers {
   busy: string | null;
-  create: (doc: Doc, deposit: number) => void;
+  create: (doc: Doc) => void;
   fund: (doc: Doc) => void;
   pay: () => void;
   release: (deduction: number) => void;
@@ -50,11 +50,6 @@ function timing(l: LeaseView, now: number) {
   };
 }
 
-export const goodStanding = (s: Snapshot) => {
-  const t = s.profiles.tenant;
-  return !!t && t.leasesCompleted >= 1 && t.paidLate === 0 && t.defaults === 0;
-};
-
 function Waiting({ title, text }: { title: string; text: string }) {
   return (
     <Card className="rise">
@@ -73,8 +68,10 @@ function Waiting({ title, text }: { title: string; text: string }) {
 
 export function CreateLease({ snap, listing, h }: { snap: Snapshot; listing: ListingData; h: Handlers }) {
   const [doc, setDoc] = useState<Doc | null>(null);
-  const discount = goodStanding(snap);
-  const deposit = discount ? listing.deposit / 2 : listing.deposit;
+  const discount = qualifiesForDiscount(snap.profiles.tenant, listing.rent);
+  const tenantRecord = snap.profiles.tenant;
+  const tooBig = goodStanding(tenantRecord) && !discount;
+  const deposit = discount ? (listing.deposit * (100 - DISCOUNT_PCT)) / 100 : listing.deposit;
 
   return (
     <>
@@ -89,10 +86,16 @@ export function CreateLease({ snap, listing, h }: { snap: Snapshot; listing: Lis
         {snap.profiles.tenant && (
           <div className="flex flex-col gap-2">
             <ProfileCard role="tenant" address={actors.tenant.key.toBase58()} profile={snap.profiles.tenant} />
+            {tooBig && (
+              <p className="rounded-xl bg-secondary p-3 text-sm text-muted-foreground">
+                No discount here: this rent is above {usdc(maxDiscountRent(tenantRecord))} USDC, the most the tenant's
+                typical rent of past leases covers.
+              </p>
+            )}
             {discount && (
               <p className="flex items-start gap-2 rounded-xl bg-[#eef2e4] p-3 text-sm text-success">
                 <Sparkles className="mt-0.5 size-4 shrink-0" />
-                Good standing: no late payments, no defaults. Deposit reduced by 50%.
+                Good standing: no late payments, no defaults. The program takes {DISCOUNT_PCT}% off the deposit when the lease is created.
               </p>
             )}
           </div>
@@ -107,7 +110,7 @@ export function CreateLease({ snap, listing, h }: { snap: Snapshot; listing: Lis
               onDoc={setDoc}
             />
             <Terms
-              rows={termRows({ rent: listing.rent, deposit, term: TERM_PERIODS, periodSecs: PERIOD_SECS, region: listing.country })}
+              rows={termRows({ rent: listing.rent, deposit, term: TERM_PERIODS, periodSecs: PERIOD_SECS, region: listing.country, discountPct: discount ? DISCOUNT_PCT : 0 })}
             />
             <p className="text-xs text-muted-foreground">
               Tenant: <span className="font-mono">{short(actors.tenant.key.toBase58(), 6)}</span>
@@ -116,7 +119,7 @@ export function CreateLease({ snap, listing, h }: { snap: Snapshot; listing: Lis
         </Card>
       </div>
       <StickyAction>
-        <Button size="lg" disabled={!doc || !!h.busy} onClick={() => doc && h.create(doc, deposit)}>
+        <Button size="lg" disabled={!doc || !!h.busy} onClick={() => doc && h.create(doc)}>
           <Handshake /> {h.busy ?? "Create lease"}
         </Button>
       </StickyAction>
@@ -257,7 +260,7 @@ export function ActiveLease({ lease, snap, role, h }: { lease: LeaseView; snap: 
             <Terms
               rows={[
                 ["Rent paid", `${usdc(lease.paidCount * lease.rent)} of ${usdc(lease.termPeriods * lease.rent)} USDC`],
-                ["Deposit in vault", `${usdc(lease.deposit)} USDC`],
+                ["Deposit in vault", `${usdc(lease.deposit)} USDC${lease.discountPct ? ` (−${lease.discountPct}% good standing)` : ""}`],
                 ["Grace period", duration(lease.graceSecs)],
               ]}
             />
@@ -364,10 +367,10 @@ export function Finished({ lease, snap, h }: { lease: LeaseView; snap: Snapshot;
           ))}
         </div>
         <ProfileCard role={who} address={actors[who].key.toBase58()} profile={snap.profiles[who]} />
-        {lease.status === "closed" && goodStanding(snap) && (
+        {lease.status === "closed" && goodStanding(snap.profiles.tenant) && (
           <p className="flex items-start gap-2 rounded-xl bg-[#eef2e4] p-3 text-sm text-success">
             <Sparkles className="mt-0.5 size-4 shrink-0" />
-            This record qualifies the tenant for a 50% deposit on the next lease.
+            This record qualifies the tenant for a {DISCOUNT_PCT}% smaller deposit on the next lease with rent up to {usdc(maxDiscountRent(snap.profiles.tenant))} USDC.
           </p>
         )}
       </div>
