@@ -457,6 +457,63 @@ describe("relstate", () => {
     expect(await connection.getAccountInfo(l.address)).to.equal(null);
   });
 
+  async function applicant() {
+    const landlord = Keypair.generate();
+    const tenant = Keypair.generate();
+    await airdrop(tenant);
+    const l = await listing(landlord, nextLeaseId++);
+    await l.create();
+    const application = pda(Buffer.from("application"), l.address.toBuffer(), tenant.publicKey.toBuffer());
+    const apply = (who = tenant) =>
+      program.methods.apply()
+        .accountsPartial({
+          tenant: who.publicKey, listing: l.address,
+          application: pda(Buffer.from("application"), l.address.toBuffer(), who.publicKey.toBuffer()),
+        })
+        .signers([who]).rpc();
+    const close = (signer: anchor.web3.Keypair) =>
+      program.methods.closeApplication()
+        .accountsPartial({ signer: signer.publicKey, application, tenant: tenant.publicKey })
+        .signers([signer]).rpc();
+    return { landlord, tenant, listing: l, application, apply, close };
+  }
+
+  it("a tenant applies to a listing and the landlord can find the application", async () => {
+    const a = await applicant();
+    await a.apply();
+
+    const got = await program.account.application.fetch(a.application);
+    expect([got.listing.toBase58(), got.landlord.toBase58(), got.tenant.toBase58()])
+      .to.deep.equal([a.listing.address.toBase58(), a.landlord.publicKey.toBase58(), a.tenant.publicKey.toBase58()]);
+    // Application layout: 8-byte discriminator, then listing (8), landlord (40), tenant (72)
+    const byLandlord = await program.account.application.all([{ memcmp: { offset: 40, bytes: a.landlord.publicKey.toBase58() } }]);
+    const byTenant = await program.account.application.all([{ memcmp: { offset: 72, bytes: a.tenant.publicKey.toBase58() } }]);
+    expect(byLandlord.length).to.equal(1);
+    expect(byTenant.length).to.equal(1);
+  });
+
+  it("cannot apply twice, or to your own listing", async () => {
+    const a = await applicant();
+    await a.apply();
+    await expectFail(a.apply());
+    await airdrop(a.landlord);
+    await expectFail(a.apply(a.landlord), "SelfLease");
+  });
+
+  it("either side can close an application, a stranger cannot", async () => {
+    const a = await applicant();
+    const stranger = Keypair.generate();
+    await airdrop(stranger);
+    await a.apply();
+    await expectFail(a.close(stranger), "NotYourApplication");
+    await a.close(a.landlord);
+    expect(await connection.getAccountInfo(a.application)).to.equal(null);
+
+    await a.apply();
+    await a.close(a.tenant);
+    expect(await connection.getAccountInfo(a.application)).to.equal(null);
+  });
+
   it("rejects a lease with yourself", async () => {
     const env = await setup();
     await expectFail(env.propose({ tenant: env.landlord.publicKey }), "SelfLease");

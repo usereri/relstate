@@ -56,6 +56,14 @@ pub struct Listing {
 
 #[account]
 #[derive(InitSpace)]
+pub struct Application {
+    pub listing: Pubkey,
+    pub landlord: Pubkey,
+    pub tenant: Pubkey,
+}
+
+#[account]
+#[derive(InitSpace)]
 pub struct Profile {
     pub wallet: Pubkey,
     pub leases_completed: u32,

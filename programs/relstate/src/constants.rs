@@ -10,6 +10,9 @@ pub const VAULT_SEED: &[u8] = b"vault";
 pub const LISTING_SEED: &[u8] = b"listing";
 
 #[constant]
+pub const APPLICATION_SEED: &[u8] = b"application";
+
+#[constant]
 pub const PROFILE_SEED: &[u8] = b"profile";
 
 #[constant]

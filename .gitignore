@@ -14,3 +14,4 @@ txtx.yml
 .env*.local
 *.log
 *.tsbuildinfo
+.env

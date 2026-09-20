@@ -36,4 +36,6 @@ pub enum ErrorCode {
     InvalidRegion,
     #[msg("Listing text is too long")]
     TextTooLong,
+    #[msg("Only the applicant or the landlord can close an application")]
+    NotYourApplication,
 }

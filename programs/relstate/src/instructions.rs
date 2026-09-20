@@ -1,4 +1,6 @@
 pub mod claim_deposit;
+pub mod apply;
+pub mod close_application;
 pub mod create_listing;
 pub mod close_listing;
 pub mod propose_lease;
@@ -9,6 +11,8 @@ pub mod payout;
 pub mod release_deposit;
 
 pub use claim_deposit::*;
+pub use apply::*;
+pub use close_application::*;
 pub use create_listing::*;
 pub use close_listing::*;
 pub use propose_lease::*;

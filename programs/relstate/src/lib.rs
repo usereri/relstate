@@ -31,6 +31,14 @@ pub mod relstate {
         )
     }
 
+    pub fn apply(ctx: Context<Apply>) -> Result<()> {
+        crate::instructions::apply::handle_apply(ctx)
+    }
+
+    pub fn close_application(ctx: Context<CloseApplication>) -> Result<()> {
+        crate::instructions::close_application::handle_close_application(ctx)
+    }
+
     pub fn close_listing(ctx: Context<CloseListing>) -> Result<()> {
         crate::instructions::close_listing::handle_close_listing(ctx)
     }
