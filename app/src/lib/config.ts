@@ -9,7 +9,7 @@ export const CAN_FAST_FORWARD = IS_LOCAL;
 export const PERIOD_SECS = IS_LOCAL ? 30 * 86_400 : 45;
 export const GRACE_SECS = IS_LOCAL ? 3 * 86_400 : 20;
 export const TERM_PERIODS = 3;
-export const CLAIM_WINDOW_SECS = 10; // CLAIM_WINDOW_SECS of the `demo` program build
+export const CLAIM_WINDOW_SECS = 10;
 export const USDC = 1_000_000;
 
 // must equal ALLOWED_MINT in programs/relstate/src/constants.rs
@@ -19,13 +19,12 @@ export interface ListingData {
   id: string;
   title: string;
   city: string;
-  country: string; // ISO 3166-1 alpha-2, stored on the lease as its region
+  country: string; // ISO 3166-1 alpha-2
   blurb: string;
   rent: number;
   deposit: number;
-  /** landlord wallet; null = the demo landlord, the only one this demo can sign for */
   landlord: string | null;
-  photo?: string; // optional: drop a photo in app/public and reference it here
+  photo?: string; // by default app/public/listings/<id>.jpg is used when it exists
 }
 
 export const LISTINGS: ListingData[] = [

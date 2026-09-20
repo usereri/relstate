@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Listing } from "@/components/Terms";
 import { Listings, Profiles } from "@/views";
-import { AcceptLease, ActiveLease, CreateLease, Finished, Handlers, ProposedWaiting, Waiting } from "@/screens";
+import { AcceptLease, ActiveLease, ProposeLease, Finished, Handlers, ProposedWaiting, Waiting } from "@/screens";
 
 const stored = (key: string) => {
   try {
@@ -88,10 +88,10 @@ export default function App() {
   const lease = snap?.lease ?? null;
   const h: Handlers = {
     busy,
-    create: (doc: Doc) =>
-      run("Creating lease…", async () => {
+    propose: (doc: Doc) =>
+      run("Proposing lease…", async () => {
         const newId = chain.newLeaseId();
-        const sig = await chain.createLease(newId, listing.rent, listing.deposit, doc.hash, listing.country);
+        const sig = await chain.proposeLease(newId, listing.rent, listing.deposit, doc.hash, listing.country);
         store(LEASE, newId);
         setLeaseId(newId);
         setRole("tenant");
@@ -121,7 +121,7 @@ export default function App() {
   else if (!lease)
     screen =
       role === "landlord" ? (
-        <CreateLease snap={snap} listing={listing} h={h} />
+        <ProposeLease snap={snap} listing={listing} h={h} />
       ) : (
         <Waiting title="No lease yet" text="The landlord has not proposed a lease. Switch to Landlord to create one." />
       );

@@ -23,7 +23,7 @@ export function StickyAction({ children }: { children: React.ReactNode }) {
 
 export interface Handlers {
   busy: string | null;
-  create: (doc: Doc) => void;
+  propose: (doc: Doc) => void;
   fund: (doc: Doc) => void;
   pay: () => void;
   release: (deduction: number) => void;
@@ -66,7 +66,7 @@ function Waiting({ title, text }: { title: string; text: string }) {
 
 // ---- landlord: propose a lease ---------------------------------------------------------
 
-export function CreateLease({ snap, listing, h }: { snap: Snapshot; listing: ListingData; h: Handlers }) {
+export function ProposeLease({ snap, listing, h }: { snap: Snapshot; listing: ListingData; h: Handlers }) {
   const [doc, setDoc] = useState<Doc | null>(null);
   const discount = qualifiesForDiscount(snap.profiles.tenant, listing.rent);
   const tenantRecord = snap.profiles.tenant;
@@ -77,7 +77,7 @@ export function CreateLease({ snap, listing, h }: { snap: Snapshot; listing: Lis
     <>
       <div className="rise flex flex-col gap-4">
         <div>
-          <h2 className="text-2xl font-semibold">{snap.profiles.tenant?.leasesCompleted ? "Next lease" : "Create a lease"}</h2>
+          <h2 className="text-2xl font-semibold">{snap.profiles.tenant?.leasesCompleted ? "Next lease" : "Propose a lease"}</h2>
           <p className="text-sm text-muted-foreground">
             Attach the signed lease. Its fingerprint is stored on-chain, so both sides are bound to this exact document.
           </p>
@@ -119,8 +119,8 @@ export function CreateLease({ snap, listing, h }: { snap: Snapshot; listing: Lis
         </Card>
       </div>
       <StickyAction>
-        <Button size="lg" disabled={!doc || !!h.busy} onClick={() => doc && h.create(doc)}>
-          <Handshake /> {h.busy ?? "Create lease"}
+        <Button size="lg" disabled={!doc || !!h.busy} onClick={() => doc && h.propose(doc)}>
+          <Handshake /> {h.busy ?? "Propose lease"}
         </Button>
       </StickyAction>
     </>

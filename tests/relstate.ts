@@ -117,9 +117,9 @@ describe("relstate", () => {
       landlordProfile, tenantProfile,
 
       // overrides let tests try invalid lease terms
-      create: (o: { rent?: number; term?: number; grace?: number; region?: number[]; tenant?: anchor.web3.PublicKey; tenantProfile?: anchor.web3.PublicKey } = {}) =>
+      propose: (o: { rent?: number; term?: number; grace?: number; region?: number[]; tenant?: anchor.web3.PublicKey; tenantProfile?: anchor.web3.PublicKey } = {}) =>
         program.methods
-          .createLease(
+          .proposeLease(
             new BN(leaseId), new BN(o.rent ?? RENT), new BN(DEPOSIT), new BN(periodSecs),
             new BN(o.grace ?? GRACE), o.term ?? TERM, LEASE_HASH, o.region ?? REGION
           )
@@ -185,7 +185,7 @@ describe("relstate", () => {
 
   async function active(periodSecs = PERIOD) {
     const env = await setup(periodSecs);
-    await env.create();
+    await env.propose();
     await env.fund();
     return env;
   }
@@ -286,7 +286,7 @@ describe("relstate", () => {
     await finishLease(first);
 
     const second = await setup(PERIOD, MINT_KEYPAIR.publicKey, first);
-    await second.create();
+    await second.propose();
     const lease = await program.account.lease.fetch(second.lease);
     expect([lease.depositAmount.toNumber(), lease.discountPct]).to.deep.equal([DEPOSIT / 2, 50]);
 
@@ -299,11 +299,11 @@ describe("relstate", () => {
     await finishLease(first); // typical rent = RENT
 
     const within = await setup(PERIOD, MINT_KEYPAIR.publicKey, first);
-    await within.create({ rent: RENT * 1.5 });
+    await within.propose({ rent: RENT * 1.5 });
     expect((await program.account.lease.fetch(within.lease)).discountPct).to.equal(50);
 
     const above = await setup(PERIOD, MINT_KEYPAIR.publicKey, first);
-    await above.create({ rent: RENT * 1.5 + 1 });
+    await above.propose({ rent: RENT * 1.5 + 1 });
     expect((await program.account.lease.fetch(above.lease)).discountPct).to.equal(0);
   });
 
@@ -312,14 +312,14 @@ describe("relstate", () => {
     await finishLease(first, true);
 
     const second = await setup(PERIOD, MINT_KEYPAIR.publicKey, first);
-    await second.create();
+    await second.propose();
     const lease = await program.account.lease.fetch(second.lease);
     expect([lease.depositAmount.toNumber(), lease.discountPct]).to.deep.equal([DEPOSIT, 0]);
   });
 
   it("the landlord cannot dodge the discount by passing another record", async () => {
     const env = await setup();
-    await expectFail(env.create({ tenantProfile: env.landlordProfile }), "ConstraintSeeds");
+    await expectFail(env.propose({ tenantProfile: env.landlordProfile }), "ConstraintSeeds");
   });
 
   it("finds a wallet's leases by key offset (the app's profile lookup)", async () => {
@@ -339,14 +339,14 @@ describe("relstate", () => {
 
   it("cannot accept a lease with a different hash", async () => {
     const env = await setup();
-    await env.create();
+    await env.propose();
     await expectFail(env.fund(Array(32).fill(8)), "LeaseHashMismatch");
     await env.fund();
   });
 
   it("cannot pay before funding", async () => {
     const env = await setup();
-    await env.create();
+    await env.propose();
     // fails before the handler runs: the tenant profile doesn't exist until fund_deposit
     await expectFail(env.pay());
   });
@@ -386,40 +386,40 @@ describe("relstate", () => {
 
   it("rejects a lease with zero rent", async () => {
     const env = await setup();
-    await expectFail(env.create({ rent: 0 }), "ZeroRent");
+    await expectFail(env.propose({ rent: 0 }), "ZeroRent");
   });
 
   it("rejects a lease with zero periods", async () => {
     // would otherwise be "completed" with fund_deposit + release_deposit and no rent
     const env = await setup();
-    await expectFail(env.create({ term: 0 }), "ZeroTerm");
+    await expectFail(env.propose({ term: 0 }), "ZeroTerm");
   });
 
   it("rejects a period below the minimum", async () => {
     const env = await setup(0);
-    await expectFail(env.create(), "PeriodTooShort");
+    await expectFail(env.propose(), "PeriodTooShort");
   });
 
   it("rejects a region that is not two uppercase letters", async () => {
     const env = await setup();
-    await expectFail(env.create({ region: [112, 108] }), "InvalidRegion"); // "pl"
+    await expectFail(env.propose({ region: [112, 108] }), "InvalidRegion"); // "pl"
   });
 
   it("rejects a lease with yourself", async () => {
     const env = await setup();
-    await expectFail(env.create({ tenant: env.landlord.publicKey }), "SelfLease");
+    await expectFail(env.propose({ tenant: env.landlord.publicKey }), "SelfLease");
   });
 
   it("rejects a mint that is not allowed", async () => {
     const payer = (provider.wallet as anchor.Wallet).payer;
     const other = await createMint(freshConnection(), payer, payer.publicKey, null, 6);
     const env = await setup(PERIOD, other);
-    await expectFail(env.create(), "MintNotAllowed");
+    await expectFail(env.propose(), "MintNotAllowed");
   });
 
   it("rejects a grace longer than the period", async () => {
     const env = await setup();
-    await expectFail(env.create({ grace: PERIOD + 1 }), "InvalidGrace");
+    await expectFail(env.propose({ grace: PERIOD + 1 }), "InvalidGrace");
   });
 
   // Period k is due at start + k*PERIOD; a default needs the oldest unpaid one to be

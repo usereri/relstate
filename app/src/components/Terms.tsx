@@ -8,7 +8,7 @@ export function Listing({ l, children }: { l: ListingData; children?: React.Reac
       <div
         className="relative h-40 bg-cover bg-center"
         style={{
-          backgroundImage: `url(${l.photo ?? ""}), linear-gradient(135deg, #8f5a22 0%, #6b4226 55%, #3f2616 100%)`,
+          backgroundImage: `url(${l.photo ?? `/listings/${l.id}.jpg`}), linear-gradient(135deg, #8f5a22 0%, #6b4226 55%, #3f2616 100%)`,
         }}
       >
         <div className="absolute inset-0 bg-gradient-to-t from-[#2e2016]/70 via-transparent to-transparent" />

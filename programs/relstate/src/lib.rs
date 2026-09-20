@@ -15,8 +15,8 @@ declare_id!("5J52oGfo7BjC529vizEaM96QtxVFD4Kbv22Tw8aXa1Ar");
 pub mod relstate {
     use super::*;
 
-    pub fn create_lease(
-        ctx: Context<CreateLease>,
+    pub fn propose_lease(
+        ctx: Context<ProposeLease>,
         lease_id: u64,
         rent_amount: u64,
         standard_deposit: u64,
@@ -26,7 +26,7 @@ pub mod relstate {
         lease_hash: [u8; 32],
         region: [u8; 2],
     ) -> Result<()> {
-        crate::instructions::create_lease::handle_create_lease(
+        crate::instructions::propose_lease::handle_propose_lease(
             ctx,
             lease_id,
             rent_amount,

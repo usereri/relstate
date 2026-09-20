@@ -5,7 +5,7 @@ use crate::{constants::*, error::ErrorCode, state::*};
 
 #[derive(Accounts)]
 #[instruction(lease_id: u64)]
-pub struct CreateLease<'info> {
+pub struct ProposeLease<'info> {
     #[account(mut)]
     pub landlord: Signer<'info>,
     /// CHECK: only stored as the counterparty key. It signs later in fund_deposit 
@@ -45,8 +45,8 @@ pub struct CreateLease<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn handle_create_lease(
-    ctx: Context<CreateLease>,
+pub fn handle_propose_lease(
+    ctx: Context<ProposeLease>,
     lease_id: u64,
     rent_amount: u64,
     standard_deposit: u64,

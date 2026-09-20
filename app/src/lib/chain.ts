@@ -47,7 +47,7 @@ export const DISCOUNT_PCT = constant("GOOD_STANDING_DISCOUNT_PCT");
 export const RENT_HEADROOM_PCT = constant("RENT_HEADROOM_PCT");
 
 // Previews of Profile::good_standing / typical_rent / deserves_discount in the program;
-// the program applies the real rule at create_lease.
+// the program applies the real rule at propose_lease.
 export const goodStanding = (p: ProfileView | null) =>
   !!p && p.leasesCompleted >= 1 && p.paidLate === 0 && p.defaults === 0;
 
@@ -198,11 +198,11 @@ async function balanceOf(ata: PubKey) {
 
 // ---- instructions (each returns the transaction signature) -------------------------------
 
-export function createLease(id: string, rent: number, standardDeposit: number, hash: number[], region: string) {
+export function proposeLease(id: string, rent: number, standardDeposit: number, hash: number[], region: string) {
   const { landlord, tenant } = actors;
   const lease = leasePda(landlord.key, new BN(id));
   return landlord.program.methods
-    .createLease(new BN(id), new BN(rent), new BN(standardDeposit), new BN(PERIOD_SECS), new BN(GRACE_SECS), TERM_PERIODS, hash, Array.from(region, (c) => c.charCodeAt(0)))
+    .proposeLease(new BN(id), new BN(rent), new BN(standardDeposit), new BN(PERIOD_SECS), new BN(GRACE_SECS), TERM_PERIODS, hash, Array.from(region, (c) => c.charCodeAt(0)))
     .accountsPartial({
       landlord: landlord.key,
       tenant: tenant.key,
