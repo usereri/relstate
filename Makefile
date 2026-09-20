@@ -1,4 +1,4 @@
-include .env
+-include .env
 
 .PHONY: test-demo demo-chain demo-setup demo-app
 
