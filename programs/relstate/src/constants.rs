@@ -9,6 +9,14 @@ pub const VAULT_SEED: &[u8] = b"vault";
 #[constant]
 pub const PROFILE_SEED: &[u8] = b"profile";
 
+#[constant]
+pub const GOOD_STANDING_DISCOUNT_PCT: u8 = 50;
+
+// The discount only applies to a lease whose rent is at most this share of the tenant's typical
+// rent (see Profile::typical_rent), so tiny leases cannot buy a discount on big ones
+#[constant]
+pub const RENT_HEADROOM_PCT: u16 = 150;
+
 // For demo only devnet's USDC can back a lease, so a worthless token can't pay a Profile
 pub const ALLOWED_MINT: Pubkey = pubkey!("CpzHPiiCaJ6LUTcSXgcptmjr8fyto3GAxH48b1FJbYDQ");
 

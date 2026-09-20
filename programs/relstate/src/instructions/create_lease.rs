@@ -10,6 +10,10 @@ pub struct CreateLease<'info> {
     pub landlord: Signer<'info>,
     /// CHECK: only stored as the counterparty key. It signs later in fund_deposit 
     pub tenant: UncheckedAccount<'info>,
+    /// CHECK: the tenant's record PDA, forced by the seeds so the landlord cannot swap in another
+    /// account. It may not exist yet (first-time tenant), so it is read by hand in the handler.
+    #[account(seeds = [PROFILE_SEED, tenant.key().as_ref()], bump)]
+    pub tenant_profile: UncheckedAccount<'info>,
     #[account(address = ALLOWED_MINT @ ErrorCode::MintNotAllowed)]
     pub mint: Account<'info, Mint>,
     #[account(
@@ -45,7 +49,7 @@ pub fn handle_create_lease(
     ctx: Context<CreateLease>,
     lease_id: u64,
     rent_amount: u64,
-    deposit_amount: u64,
+    standard_deposit: u64,
     period_secs: i64,
     grace_secs: i64,
     term_periods: u16,
@@ -64,6 +68,15 @@ pub fn handle_create_lease(
 
     require!(region.iter().all(u8::is_ascii_uppercase), ErrorCode::InvalidRegion);
 
+    let record = &ctx.accounts.tenant_profile;
+    let discount_pct = if record.owner == &crate::ID && !record.data_is_empty() {
+        let tenant_profile = Profile::try_deserialize(&mut &record.try_borrow_data()?[..])?;
+        if tenant_profile.deserves_discount(rent_amount) { GOOD_STANDING_DISCOUNT_PCT } else { 0 }
+    } else {
+        0
+    };
+    let deposit_amount = (standard_deposit as u128 * (100 - discount_pct as u128) / 100) as u64;
+
     let lease = &mut ctx.accounts.lease;
     lease.landlord = landlord;
     lease.tenant = ctx.accounts.tenant.key();
@@ -78,6 +91,7 @@ pub fn handle_create_lease(
     lease.paid_count = 0;
     lease.lease_hash = lease_hash;
     lease.region = region;
+    lease.discount_pct = discount_pct;
     lease.status = Status::Proposed;
     lease.bump = ctx.bumps.lease;
 

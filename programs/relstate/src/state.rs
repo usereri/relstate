@@ -1,5 +1,7 @@
 use anchor_lang::prelude::*;
 
+use crate::constants::RENT_HEADROOM_PCT;
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
 pub enum Status {
     Proposed,
@@ -28,6 +30,8 @@ pub struct Lease {
     pub grace_secs: i64,
     // ISO 3166-1 alpha-2 country of the rented unit, e.g. *b"PL"
     pub region: [u8; 2],
+    // good-standing discount applied to this lease's deposit, 0 if none
+    pub discount_pct: u8,
 }
 
 #[account]
@@ -42,6 +46,27 @@ pub struct Profile {
     pub deducted_total: u64,
     pub defaults: u32,
     pub deposits_claimed: u32,
+    pub rent_paid_total: u64,
+}
+
+impl Profile {
+    pub fn good_standing(&self) -> bool {
+        self.leases_completed >= 1 && self.paid_late == 0 && self.defaults == 0
+    }
+
+    pub fn typical_rent(&self) -> u64 {
+        let payments = self.paid_on_time as u64 + self.paid_late as u64;
+        if payments == 0 {
+            0
+        } else {
+            self.rent_paid_total / payments
+        }
+    }
+
+    pub fn deserves_discount(&self, rent: u64) -> bool {
+        self.good_standing()
+            && (rent as u128) * 100 <= (self.typical_rent() as u128) * (RENT_HEADROOM_PCT as u128)
+    }
 }
 
 #[event]

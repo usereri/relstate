@@ -69,6 +69,7 @@ pub fn handle_pay_rent(ctx: Context<PayRent>) -> Result<()> {
     let on_time = now <= due + lease.grace_secs;
 
     let profile = &mut ctx.accounts.tenant_profile;
+    profile.rent_paid_total += lease.rent_amount;
     if on_time {
         profile.paid_on_time += 1;
     } else {
