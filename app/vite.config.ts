@@ -12,6 +12,7 @@ export default defineConfig({
       "@target": path.resolve(__dirname, "../target"),
     },
   },
+  base: process.env.BASE ?? "/",
   define: { global: "globalThis" },
   server: { fs: { allow: [".."] } },
 });

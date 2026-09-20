@@ -23,6 +23,7 @@ export function duration(secs: number) {
 /** A web address, a path served by the app, or just a file name from app/public/listings (".jpg" optional). */
 export const photoUrl = (p: string) => {
   const s = p.trim();
-  if (!s || /^(https?:)?\/\//.test(s) || s.startsWith("/")) return s;
-  return `/listings/${/\.[a-z0-9]{2,5}$/i.test(s) ? s : `${s}.jpg`}`;
+  if (!s || /^(https?:)?\/\//.test(s)) return s;
+  if (s.startsWith("/")) return import.meta.env.BASE_URL + s.slice(1); // works under a subpath like GitHub Pages
+  return `${import.meta.env.BASE_URL}listings/${/\.[a-z0-9]{2,5}$/i.test(s) ? s : `${s}.jpg`}`;
 };
