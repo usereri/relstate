@@ -1,6 +1,6 @@
 import { Card } from "@/components/ui/card";
 import { ListingView } from "@/lib/chain";
-import { duration, short, usdc } from "@/lib/utils";
+import { duration, photoUrl, short, usdc } from "@/lib/utils";
 
 export function Listing({ l, children }: { l: ListingView; children?: React.ReactNode }) {
   return (
@@ -8,7 +8,7 @@ export function Listing({ l, children }: { l: ListingView; children?: React.Reac
       <div
         className="relative h-48 bg-cover bg-center"
         style={{
-          backgroundImage: `${l.photo ? `url(${l.photo}), ` : ""}linear-gradient(135deg, var(--accent) 0%, var(--primary) 55%, #1d1410 100%)`,
+          backgroundImage: `${l.photo ? `url("${photoUrl(l.photo)}"), ` : ""}linear-gradient(135deg, var(--accent) 0%, var(--primary) 55%, #1d1410 100%)`,
         }}
       >
         <div className="absolute inset-0 bg-gradient-to-t from-[#2e2016]/70 via-transparent to-transparent" />

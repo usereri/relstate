@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowUpRight, Clock, FastForward, Gavel, Handshake, HandCoins, KeyRound, Plus, Sparkles } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { ProfileCard } from "@/components/ProfileCard";
 import { Terms, termRows } from "@/components/Terms";
 import { Doc } from "@/lib/hash";
 import * as chain from "@/lib/chain";
-import { DISCOUNT_PCT, LeaseView, ListingView, NewListing, Role, Snapshot, Status, isWallet, maxDiscountRent, qualifiesForDiscount } from "@/lib/chain";
+import { ApplicationView, DISCOUNT_PCT, LeaseView, ListingView, NewListing, Role, Snapshot, Status, isWallet, maxDiscountRent, qualifiesForDiscount } from "@/lib/chain";
 import { CAN_FAST_FORWARD, CLAIM_WINDOW_SECS, PERIOD_SECS, TERM_PERIODS, USDC } from "@/lib/config";
 import { useChain } from "@/lib/useChain";
 import { cn, duration, short, usdc } from "@/lib/utils";
@@ -27,7 +27,9 @@ export interface Handlers {
   busy: string | null;
   createListing: (f: NewListing) => Promise<boolean>;
   closeListing: (l: ListingView) => Promise<boolean>;
-  propose: (id: string, l: ListingView, tenant: string, doc: Doc) => Promise<boolean>;
+  apply: (l: ListingView) => Promise<boolean>;
+  closeApplication: (a: ApplicationView) => Promise<boolean>;
+  propose: (id: string, l: ListingView, tenant: string, doc: Doc, application?: ApplicationView) => Promise<boolean>;
   fund: (l: LeaseView, doc: Doc) => Promise<boolean>;
   pay: (l: LeaseView) => Promise<boolean>;
   release: (l: LeaseView, deduction: number) => Promise<boolean>;
@@ -88,16 +90,20 @@ export function ProposeLease({
   listings,
   h,
   goListings,
+  initial,
 }: {
   me: string;
   listings: ListingView[];
   h: Handlers;
   goListings: () => void;
+  initial?: { listing: string; tenant: string };
 }) {
   const [doc, setDoc] = useState<Doc | null>(null);
-  const [tenant, setTenant] = useState("");
-  const [pick, setPick] = useState("");
+  const [tenant, setTenant] = useState(initial?.tenant ?? "");
+  const [pick, setPick] = useState(initial?.listing ?? "");
   const listing = listings.find((l) => l.address === pick) ?? listings[0];
+  const applications = useChain(() => chain.loadApplications({ landlord: me }), [me]) ?? [];
+  const applicants = applications.filter((a) => a.listing === listing?.address);
 
   const who = tenant.trim();
   const valid = isWallet(who) && who !== me;
@@ -115,7 +121,8 @@ export function ProposeLease({
   const discount = valid && qualifiesForDiscount(record, listing.rent);
   const tooBig = valid && chain.goodStanding(record) && !discount;
   const deposit = discount ? (listing.deposit * (100 - DISCOUNT_PCT)) / 100 : listing.deposit;
-  const propose = () => doc && valid && h.propose(chain.newId(), listing, who, doc);
+  const propose = () =>
+    doc && valid && h.propose(chain.newId(), listing, who, doc, applicants.find((a) => a.tenant === who));
 
   return (
     <>
@@ -148,7 +155,7 @@ export function ProposeLease({
               Tenant wallet
               <Input
                 className="font-mono text-sm font-normal"
-                placeholder="Paste the address from the tenant's window"
+                placeholder="Pick an applicant, or paste a wallet address"
                 value={tenant}
                 onChange={(e) => setTenant(e.target.value)}
                 aria-invalid={!!who && !valid}
@@ -156,6 +163,21 @@ export function ProposeLease({
               {who && !valid && (
                 <span className="text-xs font-normal text-destructive">
                   {who === me ? "That is your own wallet." : "Not a valid wallet address."}
+                </span>
+              )}
+              {applicants.length > 0 && (
+                <span className="flex flex-wrap items-center gap-2 pt-1 text-xs font-normal text-muted-foreground">
+                  Applicants:
+                  {applicants.map((a) => (
+                    <button
+                      type="button"
+                      key={a.address}
+                      onClick={() => setTenant(a.tenant)}
+                      className={cn("rounded-full border px-2.5 py-1 font-mono", who === a.tenant ? "bg-secondary text-foreground" : "hover:bg-secondary/50")}
+                    >
+                      {short(a.tenant, 5)}
+                    </button>
+                  ))}
                 </span>
               )}
             </label>
@@ -446,6 +468,7 @@ export function LeaseTab({
   h,
   log,
   goListings,
+  prefill,
 }: {
   role: Role;
   me: string;
@@ -454,9 +477,15 @@ export function LeaseTab({
   h: Handlers;
   log: LogEntry[];
   goListings: () => void;
+  prefill?: { listing: string; tenant: string } | null;
 }) {
   const leases = useChain(() => chain.loadLeases(me, role), [me, role]);
   const [sel, setSel] = useState<string | null>(null); // a lease address, "new", or null = the sensible default
+
+  // an applicant chosen in My listings opens a proposal for them
+  useEffect(() => {
+    if (prefill) setSel("new");
+  }, [prefill]);
 
   const list = leases ?? [];
   const open = list.find((l) => l.status === "proposed" || l.status === "active");
@@ -469,8 +498,8 @@ export function LeaseTab({
   );
   const snap: Snapshot | null = now !== undefined && parties ? { now, profiles: { landlord: parties[0], tenant: parties[1] } } : null;
 
-  const proposeAndSelect: Handlers["propose"] = async (id, l, tenant, doc) => {
-    const ok = await h.propose(id, l, tenant, doc);
+  const proposeAndSelect: Handlers["propose"] = async (id, l, tenant, doc, application) => {
+    const ok = await h.propose(id, l, tenant, doc, application);
     if (ok) setSel(chain.leaseAddress(me, id));
     return ok;
   };
@@ -478,12 +507,14 @@ export function LeaseTab({
   let main: React.ReactNode;
   if (!leases || now === undefined) main = <Waiting title="Loading" text="Reading your leases from the network." />;
   else if (current === "new")
-    main = <ProposeLease me={me} listings={listings} h={{ ...h, propose: proposeAndSelect }} goListings={goListings} />;
+    main = (
+      <ProposeLease key={prefill ? prefill.listing + prefill.tenant : "blank"} me={me} listings={listings} h={{ ...h, propose: proposeAndSelect }} goListings={goListings} initial={prefill ?? undefined} />
+    );
   else if (!lease)
     main = (
       <Waiting
         title="No lease for you yet"
-        text="When a landlord proposes a lease to your wallet it shows up here. Give them the address from the wallet button at the top of this window."
+        text="Apply to an apartment in the Apartments tab. When the landlord proposes a lease to your wallet it shows up here."
       />
     );
   else if (!snap) main = <Waiting title="Loading" text="Reading both records from the network." />;

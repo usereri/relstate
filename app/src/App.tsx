@@ -179,6 +179,7 @@ function Shell({ role, switchRole, bump }: { role: Role; switchRole: () => void;
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [now, setNow] = useState<number>();
+  const [prefill, setPrefill] = useState<{ listing: string; tenant: string } | null>(null);
 
   const listings = useChain(() => chain.loadListings(), []);
   const balances = useChain(() => (address ? chain.loadBalances(address) : Promise.resolve(undefined)), [address]);
@@ -220,7 +221,10 @@ function Shell({ role, switchRole, bump }: { role: Role; switchRole: () => void;
     busy,
     createListing: (f) => run("Publishing listing…", (m) => chain.createListing(m, chain.newId(), f)),
     closeListing: (l) => run("Removing listing…", (m) => chain.closeListing(m, l)),
-    propose: (id, l, tenant, doc: Doc) => run("Proposing lease…", (m) => chain.proposeLease(m, id, l, tenant, doc.hash)),
+    apply: (l) => run("Applying…", (m) => chain.applyTo(m, l)),
+    closeApplication: (a) => run("Closing application…", (m) => chain.closeApplication(m, a)),
+    propose: (id, l, tenant, doc: Doc, application) =>
+      run("Proposing lease…", (m) => chain.proposeLease(m, id, l, tenant, doc.hash, application)).then((ok) => (ok && setPrefill(null), ok)),
     fund: (l, doc) => run("Funding deposit…", (m) => chain.fundDeposit(m, l, doc.hash)),
     pay: (l) => run("Paying rent…", (m) => chain.payRent(m, l)),
     release: (l, deduction) => run("Releasing deposit…", (m) => chain.releaseDeposit(m, l, deduction)),
@@ -296,10 +300,21 @@ function Shell({ role, switchRole, bump }: { role: Role; switchRole: () => void;
         )}
 
         {tab === "apartments" && <Listings mode="browse" me={address} listings={listings} h={h} />}
-        {tab === "listings" && <Listings mode="mine" me={address} listings={listings} h={h} />}
+        {tab === "listings" && (
+          <Listings
+            mode="mine"
+            me={address}
+            listings={listings}
+            h={h}
+            onPropose={(l, tenant) => {
+              setPrefill({ listing: l.address, tenant });
+              setTab("lease");
+            }}
+          />
+        )}
         {tab === "lease" &&
           (address ? (
-            <LeaseTab role={role} me={address} listings={(listings ?? []).filter((l) => l.landlord === address)} now={now} h={h} log={log} goListings={() => setTab("listings")} />
+            <LeaseTab role={role} me={address} listings={(listings ?? []).filter((l) => l.landlord === address)} now={now} h={h} log={log} goListings={() => setTab("listings")} prefill={prefill} />
           ) : (
             connectFirst
           ))}

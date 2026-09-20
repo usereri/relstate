@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Copy, Plus, Search, ShieldCheck, Trash2, UserRound } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Copy, Plus, Search, ShieldCheck, Trash2, UserRound, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -11,7 +11,7 @@ import * as chain from "@/lib/chain";
 import { LeaseView, ListingView, ProfileView, Role, typicalRent } from "@/lib/chain";
 import { MAX_TEXT, USDC } from "@/lib/config";
 import { useChain } from "@/lib/useChain";
-import { duration, short, usdc } from "@/lib/utils";
+import { duration, photoUrl, short, usdc } from "@/lib/utils";
 
 const unique = (xs: string[]) => [...new Set(xs)];
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -27,14 +27,32 @@ function useRecords(addresses: string[]) {
   );
 }
 
-export function Listings({ mode, me, listings, h }: { mode: "browse" | "mine"; me: string | null; listings: ListingView[] | undefined; h: Handlers }) {
+export function Listings({
+  mode,
+  me,
+  listings,
+  h,
+  onPropose,
+}: {
+  mode: "browse" | "mine";
+  me: string | null;
+  listings: ListingView[] | undefined;
+  h: Handlers;
+  onPropose?: (l: ListingView, tenant: string) => void;
+}) {
   const [q, setQ] = useState("");
   const words = q.toLowerCase().split(/\s+/).filter(Boolean);
   const shown = (listings ?? []).filter(
     (l) =>
       (mode === "browse" || l.landlord === me) && words.every((w) => `${l.title} ${l.city} ${l.blurb} ${l.region}`.toLowerCase().includes(w)),
   );
-  const records = useRecords(unique(shown.map((l) => l.landlord)));
+  // tenants see their own applications; landlords see the ones made to their listings
+  const applications =
+    useChain(
+      () => (me ? chain.loadApplications(mode === "mine" ? { landlord: me } : { tenant: me }) : Promise.resolve([])),
+      [me, mode],
+    ) ?? [];
+  const records = useRecords(unique(mode === "mine" ? applications.map((a) => a.tenant) : shown.map((l) => l.landlord)));
 
   if (mode === "mine" && !me)
     return <Waiting title="Connect your wallet" text="Your listings belong to your wallet. Connect it with the button at the top right." />;
@@ -43,27 +61,66 @@ export function Listings({ mode, me, listings, h }: { mode: "browse" | "mine"; m
     <div className={mode === "mine" ? "grid gap-5 sm:grid-cols-2" : "grid gap-5 sm:grid-cols-2 xl:grid-cols-3"}>
       {shown.map((l) => {
         const rec = records[l.landlord];
+        const forListing = applications.filter((a) => a.listing === l.address);
+        const applied = forListing[0];
         return (
           <Listing key={l.address} l={l}>
-            <div className="flex items-center justify-between gap-2 border-t px-4 py-3">
+            <div className="flex flex-col gap-3 border-t px-4 py-3">
               {mode === "browse" ? (
-                <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                  <UserRound className="size-3.5" />
-                  <span className="font-mono">{short(l.landlord)}</span>
-                  {rec ? (
-                    <Badge variant="success">
-                      <ShieldCheck /> {rec.leasesCompleted} completed · {count(rec.depositsReturnedFull, "deposit")} returned in full
-                    </Badge>
+                <>
+                  <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                    <UserRound className="size-3.5" />
+                    <span className="font-mono">{short(l.landlord)}</span>
+                    {rec ? (
+                      <Badge variant="success">
+                        <ShieldCheck /> {rec.leasesCompleted} completed · {count(rec.depositsReturnedFull, "deposit")} returned in full
+                      </Badge>
+                    ) : (
+                      <Badge>new landlord</Badge>
+                    )}
+                  </p>
+                  {!me ? (
+                    <p className="text-xs text-muted-foreground">Connect a wallet to apply.</p>
+                  ) : l.landlord === me ? (
+                    <p className="text-xs text-muted-foreground">This is your own listing.</p>
+                  ) : applied ? (
+                    <Button variant="outline" disabled={!!h.busy} onClick={() => h.closeApplication(applied)}>
+                      Applied · withdraw
+                    </Button>
                   ) : (
-                    <Badge>new landlord</Badge>
+                    <Button disabled={!!h.busy} onClick={() => h.apply(l)}>
+                      {h.busy ?? "Apply to rent"}
+                    </Button>
                   )}
-                </p>
+                </>
               ) : (
                 <>
-                  <span className="text-xs text-muted-foreground">Deposit {usdc(l.deposit)} USDC</span>
-                  <Button size="sm" variant="outline" disabled={!!h.busy} onClick={() => h.closeListing(l)}>
-                    <Trash2 /> Remove
-                  </Button>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-muted-foreground">Deposit {usdc(l.deposit)} USDC</span>
+                    <Button size="sm" variant="outline" disabled={!!h.busy} onClick={() => h.closeListing(l)}>
+                      <Trash2 /> Remove
+                    </Button>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Applicants ({forListing.length})</p>
+                    {forListing.length === 0 && <p className="text-xs text-muted-foreground">No applications yet.</p>}
+                    {forListing.map((a) => (
+                      <div key={a.address} className="flex flex-col gap-1.5 rounded-xl bg-secondary/50 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-mono text-xs">{short(a.tenant, 5)}</span>
+                          <span className="flex gap-1">
+                            <Button size="sm" disabled={!!h.busy} onClick={() => onPropose?.(l, a.tenant)}>
+                              Propose lease
+                            </Button>
+                            <Button size="sm" variant="ghost" title="Dismiss" aria-label="Dismiss application" disabled={!!h.busy} onClick={() => h.closeApplication(a)}>
+                              <X />
+                            </Button>
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground">{recordLine("tenant", records[a.tenant])}</p>
+                      </div>
+                    ))}
+                  </div>
                 </>
               )}
             </div>
@@ -125,10 +182,13 @@ function ListingForm({ h }: { h: Handlers }) {
   const deposit = Math.round(Number(f.deposit === "" ? f.rent : f.deposit) * USDC);
   const region = f.region.toUpperCase();
   const tooLong = (["title", "city", "blurb", "photo"] as const).find((k) => bytes(f[k]) > MAX_TEXT[k]);
-  const ok = !!f.title.trim() && rent > 0 && deposit >= 0 && /^[A-Z]{2}$/.test(region) && !tooLong;
+  const photo = photoUrl(f.photo);
+  const [photoOk, setPhotoOk] = useState<boolean | null>(null); // null = not checked yet
+  useEffect(() => setPhotoOk(null), [photo]);
+  const ok = !!f.title.trim() && rent > 0 && deposit >= 0 && /^[A-Z]{2}$/.test(region) && !tooLong && (!photo || photoOk === true);
 
   const submit = async () => {
-    if (await h.createListing({ rent, deposit, region, title: f.title.trim(), city: f.city.trim(), blurb: f.blurb.trim(), photo: f.photo.trim() })) setF(blank);
+    if (await h.createListing({ rent, deposit, region, title: f.title.trim(), city: f.city.trim(), blurb: f.blurb.trim(), photo })) setF(blank);
   };
 
   const field = (k: keyof typeof blank, label: string, props: React.InputHTMLAttributes<HTMLInputElement> = {}) => (
@@ -149,13 +209,27 @@ function ListingForm({ h }: { h: Handlers }) {
         {field("region", "Country", { placeholder: "PL", maxLength: 2, className: "font-normal uppercase" })}
       </div>
       {field("blurb", "Short description", { placeholder: "Furnished · 42 m² · fibre internet" })}
-      {field("photo", "Photo", { placeholder: "/listings/flat.jpg or https://…" })}
+      {field("photo", "Photo", { placeholder: "kazimierz.jpg, /listings/flat.jpg or https://…" })}
+      {photo && (
+        <div className="flex items-center gap-3 text-xs">
+          <img
+            key={photo}
+            src={photo}
+            alt=""
+            className={photoOk === true ? "h-16 w-24 rounded-lg object-cover" : "hidden"}
+            onLoad={() => setPhotoOk(true)}
+            onError={() => setPhotoOk(false)}
+          />
+          {photoOk === false && <span className="text-destructive">No image at {photo}. Check the name, or clear the field.</span>}
+          {photoOk === true && <span className="text-muted-foreground">Found {photo}</span>}
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-3">
         {field("rent", "Rent, USDC / period", { inputMode: "decimal", placeholder: "850" })}
         {field("deposit", "Deposit, USDC", { inputMode: "decimal", placeholder: f.rent || "same as rent" })}
       </div>
       <p className="text-xs text-muted-foreground">
-        Photo: a web address, or a file you put in <span className="font-mono">app/public</span>. The deposit is the standard one; the program halves it
+        Photo: a file name from <span className="font-mono">app/public/listings</span>, or a web address. The deposit is the standard one; the program halves it
         for tenants with a clean record.
         {tooLong && <span className="block text-destructive">The {tooLong} is too long for the chain (max {MAX_TEXT[tooLong]} bytes).</span>}
       </p>

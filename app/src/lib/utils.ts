@@ -19,3 +19,10 @@ export function duration(secs: number) {
   if (s >= 60) return `${Math.floor(s / 60)}m ${s % 60}s`;
   return `${s}s`;
 }
+
+/** A web address, a path served by the app, or just a file name from app/public/listings (".jpg" optional). */
+export const photoUrl = (p: string) => {
+  const s = p.trim();
+  if (!s || /^(https?:)?\/\//.test(s) || s.startsWith("/")) return s;
+  return `/listings/${/\.[a-z0-9]{2,5}$/i.test(s) ? s : `${s}.jpg`}`;
+};

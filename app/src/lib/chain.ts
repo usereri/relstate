@@ -54,6 +54,13 @@ export interface ProfileView {
   rentPaidTotal: number;
 }
 
+export interface ApplicationView {
+  address: string;
+  listing: string;
+  landlord: string;
+  tenant: string;
+}
+
 export interface Snapshot {
   profiles: Record<Role, ProfileView | null>;
   now: number;
@@ -127,12 +134,13 @@ const leasePda = (landlord: PubKey, id: string) => pda(Buffer.from("lease"), lan
 const listingPda = (landlord: PubKey, id: string) => pda(Buffer.from("listing"), landlord.toBuffer(), u64(new BN(id)));
 const vaultPda = (lease: PubKey) => pda(Buffer.from("vault"), lease.toBuffer());
 const profilePda = (wallet: PubKey) => pda(Buffer.from("profile"), wallet.toBuffer());
+const applicationPda = (listing: PubKey, tenant: PubKey) => pda(Buffer.from("application"), listing.toBuffer(), tenant.toBuffer());
 
 export const leaseAddress = (landlord: string, id: string) => leasePda(new PublicKey(landlord), id).toBase58();
 export const newId = () => String(Date.now());
 
 
-type Acc<K extends "lease" | "profile" | "listing"> = NonNullable<Awaited<ReturnType<(typeof reader.account)[K]["fetchNullable"]>>>;
+type Acc<K extends "lease" | "profile" | "listing" | "application"> = NonNullable<Awaited<ReturnType<(typeof reader.account)[K]["fetchNullable"]>>>;
 
 const hex = (bytes: number[]) => bytes.map((b) => b.toString(16).padStart(2, "0")).join("");
 const code = (region: number[]) => String.fromCharCode(...region);
@@ -181,10 +189,24 @@ const profileView = (p: Acc<"profile"> | null): ProfileView | null =>
     rentPaidTotal: p.rentPaidTotal.toNumber(),
   };
 
+const applicationView = (address: PubKey, a: Acc<"application">): ApplicationView => ({
+  address: address.toBase58(),
+  listing: a.listing.toBase58(),
+  landlord: a.landlord.toBase58(),
+  tenant: a.tenant.toBase58(),
+});
+
 const newestFirst = <T extends { id: string }>(rows: T[]) => rows.sort((a, b) => Number(b.id) - Number(a.id));
 
 export async function loadListings(): Promise<ListingView[]> {
   return newestFirst((await reader.account.listing.all()).map((r) => listingView(r.publicKey, r.account)));
+}
+
+// Key offsets in an application: landlord 40, tenant 72. Applications for a landlord's listings, or made by a tenant.
+export async function loadApplications(who: { landlord: string } | { tenant: string }): Promise<ApplicationView[]> {
+  const [offset, wallet] = "landlord" in who ? [40, who.landlord] : [72, who.tenant];
+  const rows = await reader.account.application.all([{ memcmp: { offset, bytes: new PublicKey(wallet).toBase58() } }]);
+  return rows.map((r) => applicationView(r.publicKey, r.account));
 }
 
 export async function loadLeases(wallet: string, role: Role): Promise<LeaseView[]> {
@@ -238,10 +260,29 @@ export function closeListing(me: Me, l: ListingView) {
     .rpc();
 }
 
-export function proposeLease(me: Me, id: string, l: ListingView, tenant: string, hash: number[]) {
+export function applyTo(me: Me, l: ListingView) {
+  const listing = new PublicKey(l.address);
+  return me.program.methods
+    .apply()
+    .accountsPartial({ tenant: me.key, listing, application: applicationPda(listing, me.key) })
+    .rpc();
+}
+
+const closeApplicationCall = (me: Me, a: ApplicationView) =>
+  me.program.methods
+    .closeApplication()
+    .accountsPartial({ signer: me.key, application: new PublicKey(a.address), tenant: new PublicKey(a.tenant) });
+
+// Either the applicant (withdraw) or the landlord (dismiss).
+export function closeApplication(me: Me, a: ApplicationView) {
+  return closeApplicationCall(me, a).rpc();
+}
+
+// When the tenant had applied, the application is closed in the same transaction.
+export async function proposeLease(me: Me, id: string, l: ListingView, tenant: string, hash: number[], application?: ApplicationView) {
   const tenantKey = new PublicKey(tenant);
   const lease = leasePda(me.key, id);
-  return me.program.methods
+  const call = me.program.methods
     .proposeLease(
       new BN(id),
       new BN(l.rent),
@@ -260,8 +301,8 @@ export function proposeLease(me: Me, id: string, l: ListingView, tenant: string,
       lease,
       vault: vaultPda(lease),
       landlordProfile: profilePda(me.key),
-    })
-    .rpc();
+    });
+  return application ? call.postInstructions([await closeApplicationCall(me, application).instruction()]).rpc() : call.rpc();
 }
 
 export function fundDeposit(me: Me, l: LeaseView, hash: number[]) {
