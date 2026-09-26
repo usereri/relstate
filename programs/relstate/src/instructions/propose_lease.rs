@@ -14,7 +14,9 @@ pub struct ProposeLease<'info> {
     /// account. It may not exist yet (first-time tenant), so it is read by hand in the handler.
     #[account(seeds = [PROFILE_SEED, tenant.key().as_ref()], bump)]
     pub tenant_profile: UncheckedAccount<'info>,
-    #[account(address = ALLOWED_MINT @ ErrorCode::MintNotAllowed)]
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, Config>,
+    #[account(constraint = config.mints.contains(&mint.key()) @ ErrorCode::MintNotAllowed)]
     pub mint: Account<'info, Mint>,
     #[account(
         init, 
@@ -92,6 +94,7 @@ pub fn handle_propose_lease(
     lease.lease_hash = lease_hash;
     lease.region = region;
     lease.discount_pct = discount_pct;
+    lease.reserved = [0; RESERVED_BYTES];
     lease.status = Status::Proposed;
     lease.bump = ctx.bumps.lease;
 

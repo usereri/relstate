@@ -16,6 +16,17 @@ pub const APPLICATION_SEED: &[u8] = b"application";
 pub const PROFILE_SEED: &[u8] = b"profile";
 
 #[constant]
+pub const CONFIG_SEED: &[u8] = b"config";
+
+// Config list capacities (fixed so the account never needs realloc)
+pub const MAX_MINTS: usize = 4;
+pub const MAX_ATTESTERS: usize = 4;
+pub const MAX_ARBITRATORS: usize = 5;
+
+// Spare bytes at the end of Profile and Lease, so later fields need no migration
+pub const RESERVED_BYTES: usize = 32;
+
+#[constant]
 pub const GOOD_STANDING_DISCOUNT_PCT: u8 = 50;
 
 // listing text limits, in bytes (the app mirrors them as MAX_TEXT in lib/config.ts)
@@ -28,9 +39,6 @@ pub const MAX_PHOTO: usize = 120;
 // rent (see Profile::typical_rent), so tiny leases cannot buy a discount on big ones
 #[constant]
 pub const RENT_HEADROOM_PCT: u16 = 150;
-
-// For demo only devnet's USDC can back a lease, so a worthless token can't pay a Profile
-pub const ALLOWED_MINT: Pubkey = pubkey!("CpzHPiiCaJ6LUTcSXgcptmjr8fyto3GAxH48b1FJbYDQ");
 
 // demo allows 1 sec leases, on mainnet minimum 28 days
 pub const MIN_PERIOD_SECS: i64 = if cfg!(feature = "demo") {

@@ -1,6 +1,9 @@
 use anchor_lang::prelude::*;
 
-use crate::constants::{MAX_BLURB, MAX_CITY, MAX_PHOTO, MAX_TITLE, RENT_HEADROOM_PCT};
+use crate::constants::{
+    MAX_ARBITRATORS, MAX_ATTESTERS, MAX_BLURB, MAX_CITY, MAX_MINTS, MAX_PHOTO, MAX_TITLE,
+    RENT_HEADROOM_PCT, RESERVED_BYTES,
+};
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
 pub enum Status {
@@ -32,6 +35,7 @@ pub struct Lease {
     pub region: [u8; 2],
     // good-standing discount applied to this lease's deposit, 0 if none
     pub discount_pct: u8,
+    pub reserved: [u8; RESERVED_BYTES],
 }
 
 #[account]
@@ -75,6 +79,24 @@ pub struct Profile {
     pub defaults: u32,
     pub deposits_claimed: u32,
     pub rent_paid_total: u64,
+    pub reserved: [u8; RESERVED_BYTES],
+}
+
+// Protocol settings, one PDA. The admin sets who may back a lease (mints), vouch for wallets
+// (attesters) and rule on disputes (arbitrators). Only mints and treasury/fee are used so far.
+#[account]
+#[derive(InitSpace)]
+pub struct Config {
+    pub admin: Pubkey,
+    pub treasury: Pubkey,
+    pub fee_bps: u16,
+    pub bump: u8,
+    #[max_len(MAX_MINTS)]
+    pub mints: Vec<Pubkey>,
+    #[max_len(MAX_ATTESTERS)]
+    pub attesters: Vec<Pubkey>,
+    #[max_len(MAX_ARBITRATORS)]
+    pub arbitrators: Vec<Pubkey>,
 }
 
 impl Profile {

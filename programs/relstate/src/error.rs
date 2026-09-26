@@ -38,4 +38,10 @@ pub enum ErrorCode {
     TextTooLong,
     #[msg("Only the applicant or the landlord can close an application")]
     NotYourApplication,
+    #[msg("Only the config admin can change the settings")]
+    NotAdmin,
+    #[msg("Too many entries in a config list")]
+    ConfigListTooLong,
+    #[msg("Fee cannot exceed 100%")]
+    FeeTooHigh,
 }

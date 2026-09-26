@@ -31,6 +31,19 @@ pub mod relstate {
         )
     }
 
+    pub fn set_config(
+        ctx: Context<SetConfig>,
+        treasury: Pubkey,
+        fee_bps: u16,
+        mints: Vec<Pubkey>,
+        attesters: Vec<Pubkey>,
+        arbitrators: Vec<Pubkey>,
+    ) -> Result<()> {
+        crate::instructions::set_config::handle_set_config(
+            ctx, treasury, fee_bps, mints, attesters, arbitrators,
+        )
+    }
+
     pub fn apply(ctx: Context<Apply>) -> Result<()> {
         crate::instructions::apply::handle_apply(ctx)
     }
