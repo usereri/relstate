@@ -99,6 +99,7 @@ export const isWallet = (s: string) => {
 
 export const connection = new Connection(RPC, "confirmed");
 const mint = new PublicKey(MINT);
+const configPda = PublicKey.findProgramAddressSync([Buffer.from("config")], new PublicKey(idl.address))[0];
 
 interface WalletLike {
   publicKey: PubKey;
@@ -319,6 +320,7 @@ export async function proposeLease(me: Me, id: string, l: ListingView, tenant: s
       tenant: tenantKey,
       tenantProfile: profilePda(tenantKey),
       mint,
+      config: configPda,
       lease,
       vault: vaultPda(lease),
       landlordProfile: profilePda(me.key),

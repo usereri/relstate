@@ -42,13 +42,21 @@ async function programReady(conn: anchor.web3.Connection, id: anchor.web3.Public
   }
 }
 
-async function seedListings(conn: anchor.web3.Connection, payer: anchor.web3.Keypair) {
+async function seedListings(conn: anchor.web3.Connection, payer: anchor.web3.Keypair, mint: anchor.web3.PublicKey) {
   const idl = JSON.parse(fs.readFileSync(path.join(__dirname, "../target/idl/relstate.json"), "utf8"));
   if (!(await programReady(conn, new PublicKey(idl.address)))) {
     console.warn(`program ${idl.address} is not deployed on ${RPC}: skipped the default listings. Deploy it, then run this again.`);
     return;
   }
   const program = new anchor.Program(idl, new anchor.AnchorProvider(conn, new anchor.Wallet(payer), { commitment: "confirmed" }));
+
+  // The payer becomes the admin on the first call. Later runs must use the same payer.
+  const [config] = PublicKey.findProgramAddressSync([Buffer.from("config")], program.programId);
+  await program.methods
+    .setConfig(payer.publicKey, 0, [mint], [], [])
+    .accountsPartial({ admin: payer.publicKey, config })
+    .rpc();
+
   let created = 0;
   for (const l of DEFAULT_LISTINGS) {
     const id = new anchor.BN(l.id);
@@ -101,7 +109,7 @@ async function main() {
     console.log(`${wallet.toBase58()}  ${WALLET_USDC / USDC} test USDC`);
   }
 
-  await seedListings(conn, payer);
+  await seedListings(conn, payer, mintKp.publicKey);
 }
 
 main().catch((e) => {

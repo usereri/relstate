@@ -22,7 +22,7 @@ const START_BALANCE = 10_000;
 const LEASE_HASH = Array(32).fill(7);
 const REGION = [80, 76]; // "PL"
 
-// The program only accepts this mint (ALLOWED_MINT in constants.rs).
+// The only mint the test config allows (set in `before`).
 const MINT_KEYPAIR = Keypair.fromSecretKey(
   Uint8Array.from(JSON.parse(fs.readFileSync(`${__dirname}/test-usdc-mint.json`, "utf8")))
 );
@@ -84,10 +84,29 @@ describe("relstate", () => {
   }
 
   // Created once by the provider wallet, which stays the mint authority.
+  const config = pda(Buffer.from("config"));
+  const setConfig = (fee = 0, mints = [MINT_KEYPAIR.publicKey], signer?: anchor.web3.Keypair) => {
+    const call = program.methods
+      .setConfig(provider.wallet.publicKey, fee, mints, [], [])
+      .accountsPartial({ admin: signer?.publicKey ?? provider.wallet.publicKey, config });
+    return (signer ? call.signers([signer]) : call).rpc();
+  };
+
+  // The provider wallet stays the mint authority and becomes the config admin.
   before(async () => {
-    if (await connection.getAccountInfo(MINT_KEYPAIR.publicKey)) return;
-    const payer = (provider.wallet as anchor.Wallet).payer;
-    await createMint(connection, payer, payer.publicKey, null, 6, MINT_KEYPAIR);
+    if (!(await connection.getAccountInfo(MINT_KEYPAIR.publicKey))) {
+      const payer = (provider.wallet as anchor.Wallet).payer;
+      await createMint(connection, payer, payer.publicKey, null, 6, MINT_KEYPAIR);
+    }
+    await setConfig();
+  });
+
+  it("only the admin can change the config", async () => {
+    const stranger = Keypair.generate();
+    await airdrop(stranger);
+    await expectFail(setConfig(0, [MINT_KEYPAIR.publicKey], stranger), "NotAdmin");
+    await expectFail(setConfig(10_001), "FeeTooHigh");
+    await expectFail(setConfig(0, Array(5).fill(MINT_KEYPAIR.publicKey)), "ConfigListTooLong");
   });
 
   // `returning` = an earlier Env whose tenant (wallet, token account, record) takes another lease
@@ -125,7 +144,7 @@ describe("relstate", () => {
           )
           .accountsPartial({
             landlord: landlord.publicKey, tenant: o.tenant ?? tenant.publicKey,
-            mint, lease, vault, landlordProfile,
+            mint, lease, vault, landlordProfile, config,
             tenantProfile: o.tenantProfile ?? (o.tenant ? pda(Buffer.from("profile"), o.tenant.toBuffer()) : tenantProfile),
           })
           .signers([landlord])
