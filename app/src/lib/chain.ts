@@ -100,7 +100,7 @@ export const isWallet = (s: string) => {
 export const connection = new Connection(RPC, "confirmed");
 const mint = new PublicKey(MINT);
 
-interface WalletLike {
+export interface WalletLike {
   publicKey: PubKey;
   signTransaction: <T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(tx: T) => Promise<T>;
   signAllTransactions: <T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(txs: T[]) => Promise<T[]>;
@@ -132,8 +132,43 @@ export interface Me {
 
 const tokenAccount = (wallet: PubKey) => getAssociatedTokenAddressSync(mint, wallet);
 
-export function makeMe(wallet: WalletLike): Me {
-  const provider = new AnchorProvider(connection, wallet as never, { commitment: "confirmed" });
+/** A relay that pays the network fee: it validates the transaction, co-signs as fee payer and submits it. */
+export interface Sponsor {
+  feePayer: PubKey;
+  submit: (tx: anchor.web3.Transaction) => Promise<string>;
+}
+
+/**
+ * Anchor provider whose transactions name the sponsor as fee payer. The user signs first, then the
+ * relay adds the fee payer signature and submits, so the user never needs SOL for fees.
+ */
+class SponsoredProvider extends AnchorProvider {
+  constructor(private wallet_: WalletLike, private sponsor: Sponsor) {
+    super(connection, wallet_ as never, { commitment: "confirmed" });
+  }
+  private async prepare(tx: anchor.web3.Transaction, signers: anchor.web3.Signer[] = []) {
+    tx.feePayer = this.sponsor.feePayer;
+    tx.recentBlockhash = (await connection.getLatestBlockhash("confirmed")).blockhash;
+    signers.forEach((s) => tx.partialSign(s));
+    return tx;
+  }
+  async sendAndConfirm(tx: anchor.web3.Transaction | anchor.web3.VersionedTransaction, signers?: anchor.web3.Signer[]) {
+    if ("version" in tx) throw new Error("Sponsored transactions must be legacy transactions");
+    await this.prepare(tx, signers);
+    return this.sponsor.submit(await this.wallet_.signTransaction(tx));
+  }
+  async simulate(tx: anchor.web3.Transaction | anchor.web3.VersionedTransaction, signers?: anchor.web3.Signer[], commitment?: anchor.web3.Commitment) {
+    if ("version" in tx) throw new Error("Sponsored transactions must be legacy transactions");
+    await this.prepare(tx, signers);
+    const res = await connection.simulateTransaction(tx, undefined, undefined);
+    if (res.value.err) throw new Error(`Simulation failed: ${JSON.stringify(res.value.err)}\n${(res.value.logs ?? []).join("\n")}`);
+    void commitment;
+    return res.value as never;
+  }
+}
+
+export function makeMe(wallet: WalletLike, sponsor?: Sponsor): Me {
+  const provider = sponsor ? new SponsoredProvider(wallet, sponsor) : new AnchorProvider(connection, wallet as never, { commitment: "confirmed" });
   return { key: wallet.publicKey, ata: tokenAccount(wallet.publicKey), program: new Program<Relstate>(idl as Relstate, provider) };
 }
 

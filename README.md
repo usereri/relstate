@@ -217,3 +217,14 @@ Anchor 1.1 (Rust) · Solana · SPL Token · TypeScript · React 19 · Vite 7 · 
 ## License
 
 MIT
+
+## Email sign-in with sponsored fees (optional)
+
+Users can sign in with an email address: [Privy](https://privy.io) creates an embedded Solana wallet and a small fee relay pays the network fees, so nobody needs a wallet app or SOL.
+
+1. In the Privy dashboard create an app, enable **Email** login and **Solana** embedded wallets, and add your app's URL to the allowed origins.
+2. Copy `app/.env.example` to `app/.env.local` and set `VITE_PRIVY_APP_ID`.
+3. Start the relay with a funded devnet keypair: `FEE_PAYER_KEYPAIR=~/.config/solana/id.json RPC=https://api.devnet.solana.com npm run relay`.
+4. `npm run app`, then pick **Continue with email** in the wallet menu.
+
+The relay (`relay/server.ts`) co-signs only transactions that call Relstate, the token program or ATA setup, never lets its own key appear inside an instruction, and tops up a small SOL buffer (rent for the accounts a lease creates) per new wallet. Test USDC for new accounts is still funded with `make demo-setup`.

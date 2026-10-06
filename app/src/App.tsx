@@ -10,6 +10,8 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { PrivyWalletProvider } from "@/components/PrivyWallet";
+import { SPONSOR_URL } from "@/lib/sponsor";
 import { LocalWalletProvider, WalletButton, useMe } from "@/components/WalletButton";
 import { Handlers, LeaseTab, LogEntry, Waiting } from "@/screens";
 import { Listings, MyProfile } from "@/views";
@@ -66,6 +68,7 @@ export default function App() {
     );
 
   return (
+    <PrivyWalletProvider>
     <WalletProvider key={role} wallets={[]} autoConnect localStorageKey={`relstate.wallet.${role}`}>
       <LocalWalletProvider role={role}>
         <Workspace
@@ -77,6 +80,7 @@ export default function App() {
         />
       </LocalWalletProvider>
     </WalletProvider>
+    </PrivyWalletProvider>
   );
 }
 
@@ -213,7 +217,7 @@ function Shell({ role, switchRole, bump, readError }: { role: Role; switchRole: 
       setError("Connect your wallet first.");
       return false;
     }
-    if (balances && balances.sol < 0.01) {
+    if (!SPONSOR_URL && balances && balances.sol < 0.01) {
       setError(`This wallet has ${balances.sol.toFixed(3)} SOL on this network, not enough to pay fees. Fund it first (see the box at the top).`);
       return false;
     }
@@ -253,7 +257,7 @@ function Shell({ role, switchRole, bump, readError }: { role: Role; switchRole: 
     jump: (secs) => run("Moving the clock…", () => chain.fastForward(secs)),
   };
 
-  const needsFunds = !!address && !!balances && (balances.usdc === null || balances.sol < 0.01);
+  const needsFunds = !!address && !!balances && (balances.usdc === null || (!SPONSOR_URL && balances.sol < 0.01));
   const fundCommand = `${IS_LOCAL ? "" : `RPC=${RPC} `}make demo-setup WALLETS=${address}`;
   const connectFirst = (
     <Waiting title="Connect your wallet" text={`This window acts as a ${role}. Connect the wallet you want to use with the button at the top right.`} />
