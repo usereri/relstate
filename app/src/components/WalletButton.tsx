@@ -33,6 +33,8 @@ export function LocalWalletProvider({ role, children }: { role: Role; children: 
   return <LocalContext.Provider value={{ role, on, set }}>{children}</LocalContext.Provider>;
 }
 
+export const useLocalWallet = () => useContext(LocalContext);
+
 /** The signer for every transaction: null until a wallet is connected. */
 export function useMe(): chain.Me | null {
   const local = useContext(LocalContext);

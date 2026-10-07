@@ -205,7 +205,7 @@ export function ProposeLease({
               </p>
             )}
             {discount && (
-              <p className="flex items-start gap-2 rounded-xl bg-[#eef2e4] p-3 text-sm text-success">
+              <p className="flex items-start gap-2 rounded-xl bg-success-soft p-3 text-sm text-success">
                 <Sparkles className="mt-0.5 size-4 shrink-0" />
                 Good standing: no late payments, no defaults. The program takes {DISCOUNT_PCT}% off the deposit when the lease is proposed.
               </p>
@@ -443,7 +443,7 @@ function Finished({ lease, snap, onNew }: { lease: LeaseView; snap: Snapshot; on
         </div>
         <ProfileCard role={who} address={lease[who]} profile={snap.profiles[who]} />
         {lease.status === "closed" && chain.goodStanding(snap.profiles.tenant) && (
-          <p className="flex items-start gap-2 rounded-xl bg-[#eef2e4] p-3 text-sm text-success">
+          <p className="flex items-start gap-2 rounded-xl bg-success-soft p-3 text-sm text-success">
             <Sparkles className="mt-0.5 size-4 shrink-0" />
             This record qualifies the tenant for a {DISCOUNT_PCT}% smaller deposit on the next lease with rent up to{" "}
             {usdc(maxDiscountRent(snap.profiles.tenant))} USDC.

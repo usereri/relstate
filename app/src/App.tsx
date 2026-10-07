@@ -1,6 +1,10 @@
 import { useContext, useEffect, useRef, useState } from "react";
-import { Building2, Copy, Home, KeyRound, LogOut } from "lucide-react";
-import { WalletProvider } from "@solana/wallet-adapter-react";
+import { UserRound, ArrowLeftRight, Building2, ChevronDown, Copy, Home, KeyRound, LogOut } from "lucide-react";
+import { AuthPage } from "@/Auth";
+import { Landing } from "@/Landing";
+import { Logo, go, useRoute } from "@/components/Brand";
+import { initials, loadAccount } from "@/lib/account";
+import { WalletProvider, useWallet } from "@solana/wallet-adapter-react";
 import * as chain from "@/lib/chain";
 import { Role } from "@/lib/chain";
 import { IS_LOCAL, RPC } from "@/lib/config";
@@ -10,7 +14,7 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { LocalWalletProvider, WalletButton, useMe } from "@/components/WalletButton";
+import { LocalWalletProvider, WalletButton, useLocalWallet, useMe } from "@/components/WalletButton";
 import { Handlers, LeaseTab, LogEntry, Waiting } from "@/screens";
 import { Listings, MyProfile } from "@/views";
 
@@ -48,22 +52,41 @@ const ROLES: Record<Role, { label: string; icon: typeof Home; blurb: string; doe
 };
 
 export default function App() {
+  const route = useRoute();
   const [role, setRole] = useState<Role | null>(storedRole);
 
   useEffect(() => {
+    if (route !== "app") return;
     document.documentElement.dataset.role = role ?? "";
-    document.title = role ? `Relstate · ${ROLES[role].label}` : "Relstate";
-  }, [role]);
+    document.title = role ? `${ROLES[role].label} · Relstate` : "Relstate";
+  }, [role, route]);
 
-  if (!role)
+  useEffect(() => {
+    if (route === "home") {
+      document.documentElement.dataset.role = "tenant";
+      document.title = "Relstate · Rent with a record";
+    }
+  }, [route]);
+
+  // the app needs a role; without one, sign in first
+  useEffect(() => {
+    if (route === "app" && !role) go("signin");
+  }, [route, role]);
+
+  if (route === "signup" || route === "signin")
     return (
-      <Landing
-        onPick={(r) => {
+      <AuthPage
+        key={route}
+        mode={route}
+        onDone={(r) => {
           storeRole(r);
           setRole(r);
+          go("app");
         }}
       />
     );
+
+  if (route !== "app" || !role) return <Landing />;
 
   return (
     <WalletProvider key={role} wallets={[]} autoConnect localStorageKey={`relstate.wallet.${role}`}>
@@ -71,80 +94,20 @@ export default function App() {
         <Workspace
           role={role}
           switchRole={() => {
+            const next: Role = role === "tenant" ? "landlord" : "tenant";
+            storeRole(next);
+            setRole(next);
+          }}
+          signOut={() => {
             storeRole(null);
             setRole(null);
+            go("home");
           }}
         />
       </LocalWalletProvider>
     </WalletProvider>
   );
 }
-
-
-function Landing({ onPick }: { onPick: (r: Role) => void }) {
-  return (
-    <div className="mx-auto flex min-h-dvh max-w-6xl flex-col gap-10 px-8 py-8">
-      <header className="flex items-center justify-between">
-        <Logo />
-        <Badge variant="outline">{IS_LOCAL ? "local network" : "devnet"}</Badge>
-      </header>
-
-      <section className="grid flex-1 items-center gap-12 lg:grid-cols-[1fr_1fr]">
-        <div className="flex flex-col gap-5">
-          <h1 className="text-5xl font-semibold leading-[1.05] lg:text-6xl">Rent with a record nobody can edit.</h1>
-          <p className="max-w-xl text-lg text-muted-foreground">
-            Deposits sit in an on-chain vault. Every payment and every deduction is written to the wallet's profile by the program itself, so a good
-            tenant or landlord takes their reputation to any city.
-          </p>
-          <p className="max-w-xl text-sm text-muted-foreground">
-            Each browser window plays one role with its own wallet. Open a second window, ideally another browser profile with its own wallet, for the
-            other side.
-          </p>
-        </div>
-
-        <div className="grid gap-4">
-          {(Object.keys(ROLES) as Role[]).map((r) => {
-            const R = ROLES[r];
-            return (
-              <button
-                key={r}
-                onClick={() => onPick(r)}
-                data-pick={r}
-                className={cn(
-                  "group flex flex-col gap-3 rounded-3xl p-6 text-left text-white shadow-lg transition-transform hover:-translate-y-0.5",
-                  r === "landlord" ? "bg-[#6b4226]" : "bg-[#1d5f6c]",
-                )}
-              >
-                <span className="flex items-center gap-3">
-                  <span className="grid size-11 place-items-center rounded-xl bg-white/15">
-                    <R.icon className="size-6" />
-                  </span>
-                  <span className="font-serif text-2xl font-semibold">I'm a {R.label.toLowerCase()}</span>
-                </span>
-                <span className="text-white/85">{R.blurb}</span>
-                <ul className="flex flex-col gap-1 text-sm text-white/75">
-                  {R.does.map((d) => (
-                    <li key={d}>· {d}</li>
-                  ))}
-                </ul>
-              </button>
-            );
-          })}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-const Logo = () => (
-  <div className="flex items-center gap-2.5">
-    <span className="grid size-9 place-items-center rounded-xl bg-primary text-primary-foreground">
-      <Home className="size-5" />
-    </span>
-    <span className="font-serif text-2xl font-semibold tracking-tight">Relstate</span>
-  </div>
-);
-
 
 type Tab = "apartments" | "listings" | "lease" | "profile";
 const TABS: Record<Role, [Tab, string][]> = {
@@ -160,7 +123,7 @@ const TABS: Record<Role, [Tab, string][]> = {
   ],
 };
 
-function Workspace({ role, switchRole }: { role: Role; switchRole: () => void }) {
+function Workspace({ role, switchRole, signOut }: { role: Role; switchRole: () => void; signOut: () => void }) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
     const t = setInterval(() => setTick((x) => x + 1), 5000);
@@ -177,13 +140,25 @@ function Workspace({ role, switchRole }: { role: Role; switchRole: () => void })
   return (
     <Tick.Provider value={tick}>
       <ReadErrors.Provider value={report}>
-        <Shell role={role} switchRole={switchRole} bump={() => setTick((x) => x + 1)} readError={readError} />
+        <Shell role={role} switchRole={switchRole} signOut={signOut} bump={() => setTick((x) => x + 1)} readError={readError} />
       </ReadErrors.Provider>
     </Tick.Provider>
   );
 }
 
-function Shell({ role, switchRole, bump, readError }: { role: Role; switchRole: () => void; bump: () => void; readError: string | null }) {
+function Shell({
+  role,
+  switchRole,
+  signOut,
+  bump,
+  readError,
+}: {
+  role: Role;
+  switchRole: () => void;
+  signOut: () => void;
+  bump: () => void;
+  readError: string | null;
+}) {
   const me = useMe();
   const address = me?.key.toBase58() ?? null;
   const [tab, setTab] = useState<Tab>(TABS[role][0][0]);
@@ -259,19 +234,15 @@ function Shell({ role, switchRole, bump, readError }: { role: Role; switchRole: 
     <Waiting title="Connect your wallet" text={`This window acts as a ${role}. Connect the wallet you want to use with the button at the top right.`} />
   );
 
+  const account = address ? loadAccount(address) : null;
+  const firstName = account?.name.split(" ")[0];
+
   return (
     <div className="min-h-dvh">
-      <div className="h-2 bg-primary" aria-hidden />
-      <div className="mx-auto flex max-w-7xl flex-col gap-6 px-8 pb-16 pt-5">
-        <header className="flex flex-wrap items-center gap-x-8 gap-y-3 border-b border-border pb-4">
-          <div className="flex items-center gap-3">
-            <Logo />
-            <span className="rounded-full bg-primary px-3 py-1 text-xs font-semibold uppercase tracking-wider text-primary-foreground">
-              {ROLES[role].label} window
-            </span>
-          </div>
-
-          <nav role="tablist" aria-label="Sections" className="flex gap-1">
+      <header className="sticky top-0 z-40 border-b bg-card/85 backdrop-blur-md">
+        <div className="mx-auto flex h-16 max-w-7xl items-center gap-6 px-5 sm:px-8">
+          <Logo />
+          <nav role="tablist" aria-label="Sections" className="hidden gap-1 md:flex">
             {TABS[role].map(([t, label]) => (
               <button
                 key={t}
@@ -279,32 +250,57 @@ function Shell({ role, switchRole, bump, readError }: { role: Role; switchRole: 
                 aria-selected={tab === t}
                 onClick={() => setTab(t)}
                 className={cn(
-                  "min-h-11 rounded-xl px-4 text-sm font-semibold transition-colors",
-                  tab === t ? "bg-secondary text-secondary-foreground" : "text-muted-foreground hover:bg-secondary/50",
+                  "relative h-16 px-3 text-sm font-medium transition-colors",
+                  tab === t ? "text-foreground" : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 {label}
+                {tab === t && <span className="absolute inset-x-3 bottom-0 h-0.5 rounded-full bg-primary" />}
               </button>
             ))}
           </nav>
-
-          <div className="ml-auto flex items-center gap-3">
-            <Badge variant="outline">{IS_LOCAL ? "local network" : "devnet"}</Badge>
+          <div className="ml-auto flex items-center gap-2">
+            <span className="hidden items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[11px] text-muted-foreground sm:flex">
+              <span className="size-1.5 rounded-full bg-success" /> {IS_LOCAL ? "localnet" : "devnet"}
+            </span>
             <WalletButton balances={balances} />
-            <Button variant="ghost" size="sm" title="Pick the other role in this window" onClick={switchRole}>
-              <LogOut /> Switch role
-            </Button>
+            <AccountMenu role={role} name={account?.name} switchRole={switchRole} signOut={signOut} />
           </div>
-        </header>
+        </div>
+        <nav role="tablist" aria-label="Sections" className="flex gap-1 overflow-x-auto px-3 md:hidden">
+          {TABS[role].map(([t, label]) => (
+            <button
+              key={t}
+              role="tab"
+              aria-selected={tab === t}
+              onClick={() => setTab(t)}
+              className={cn("h-11 shrink-0 border-b-2 px-3 text-sm font-medium", tab === t ? "border-primary text-foreground" : "border-transparent text-muted-foreground")}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+      </header>
+      <div className="mx-auto flex max-w-7xl flex-col gap-6 px-5 pb-16 pt-8 sm:px-8">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <p className="eyebrow">{ROLES[role].label} dashboard</p>
+            <h1 className="mt-1 text-3xl font-semibold sm:text-4xl">
+              {GREETING[tab]}
+              {firstName && tab === TABS[role][0][0] ? `, ${firstName}` : ""}
+            </h1>
+          </div>
+          <p className="max-w-md text-sm text-muted-foreground">{SUBTITLE[role][tab]}</p>
+        </div>
 
         {error && (
-          <p role="alert" className="rounded-xl border border-destructive/30 bg-[#f6e4df] p-3 text-sm text-destructive">
+          <p role="alert" className="rounded-xl border border-destructive/30 bg-danger-soft p-3 text-sm text-destructive">
             {error}
           </p>
         )}
 
         {readError && !error && (
-          <p role="alert" className="rounded-xl border border-destructive/30 bg-[#f6e4df] p-3 text-sm text-destructive">
+          <p role="alert" className="rounded-xl border border-destructive/30 bg-danger-soft p-3 text-sm text-destructive">
             Could not read from the network: {readError}
             {/mainnet|remote|datasource/i.test(readError) && IS_LOCAL && " Restart the local chain with `make demo-chain` (it now runs offline)."}
           </p>
@@ -348,3 +344,75 @@ function Shell({ role, switchRole, bump, readError }: { role: Role; switchRole: 
   );
 }
 
+
+const GREETING: Record<Tab, string> = {
+  apartments: "Find your next home",
+  listings: "Your properties",
+  lease: "Leases",
+  profile: "Your rental record",
+};
+const SUBTITLE: Record<Role, Partial<Record<Tab, string>>> = {
+  tenant: {
+    apartments: "Every landlord's record is verified on-chain. Apply in one click.",
+    lease: "Accept proposals, pay rent and get your deposit back.",
+    profile: "Written only by the protocol. Take it to any city.",
+  },
+  landlord: {
+    listings: "Publish apartments and review applicants with a verified history.",
+    lease: "Propose leases, track rent and release deposits.",
+    profile: "Tenants see this before they apply. Keep it clean.",
+  },
+};
+
+function AccountMenu({ role, name, switchRole, signOut }: { role: Role; name?: string; switchRole: () => void; signOut: () => void }) {
+  const [open, setOpen] = useState(false);
+  const { disconnect } = useWallet();
+  const local = useLocalWallet();
+  // signing out drops the wallet session too, otherwise the next sign-in would skip the wallet entirely
+  const leave = async () => {
+    setOpen(false);
+    local.set(false);
+    await disconnect().catch(() => {});
+    try {
+      localStorage.removeItem(`relstate.wallet.${role}`);
+    } catch {
+      /* private mode: nothing was stored */
+    }
+    signOut();
+  };
+  const other: Role = role === "tenant" ? "landlord" : "tenant";
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-label="Account menu"
+        className="flex h-11 items-center gap-1.5 rounded-xl px-1.5 hover:bg-muted"
+      >
+        <span className="grid size-8 place-items-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">{name ? initials(name) : <UserRound className="size-4" />}</span>
+        <ChevronDown className="size-4 text-muted-foreground" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden />
+          <div className="absolute right-0 z-50 mt-2 w-64 rounded-2xl border bg-card p-2 shadow-card">
+            <div className="px-3 py-2">
+              <p className="font-medium">{name || "Your account"}</p>
+              <p className="text-xs capitalize text-muted-foreground">{role} account</p>
+            </div>
+            <div className="my-1 h-px bg-border" />
+            <button onClick={() => (setOpen(false), switchRole())} className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-sm hover:bg-muted">
+              <ArrowLeftRight className="size-4" /> Switch to {other}
+            </button>
+            <a href="#/" className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-sm hover:bg-muted">
+              <Home className="size-4" /> Relstate home
+            </a>
+            <button onClick={leave} className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-sm text-destructive hover:bg-danger-soft">
+              <LogOut className="size-4" /> Sign out
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
