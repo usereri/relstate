@@ -1,5 +1,7 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{transfer_checked, Mint, Token, TokenAccount, TransferChecked};
+use anchor_spl::token_interface::{
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
+};
 
 use crate::{constants::*, error::ErrorCode, state::*};
 
@@ -14,26 +16,26 @@ pub struct PayRent<'info> {
         bump = lease.bump
     )]
     pub lease: Account<'info, Lease>,
-    pub mint: Account<'info, Mint>,
+    pub mint: InterfaceAccount<'info, Mint>,
     #[account(
         mut, 
         token::mint = mint, 
         token::authority = tenant
     )]
-    pub tenant_ata: Account<'info, TokenAccount>,
+    pub tenant_ata: InterfaceAccount<'info, TokenAccount>,
     #[account(
         mut, 
         token::mint = mint, 
         token::authority = lease.landlord
     )]
-    pub landlord_ata: Account<'info, TokenAccount>,
+    pub landlord_ata: InterfaceAccount<'info, TokenAccount>,
     #[account(
         mut, 
         seeds = [PROFILE_SEED, tenant.key().as_ref()],
         bump
     )]
     pub tenant_profile: Account<'info, Profile>,
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handle_pay_rent(ctx: Context<PayRent>) -> Result<()> {

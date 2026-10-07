@@ -1,6 +1,7 @@
 import * as anchor from "@anchor-lang/core";
 import { BN, Program } from "@anchor-lang/core";
 import {
+  TOKEN_PROGRAM_ID,
   createAssociatedTokenAccount,
   createMint,
   getAccount,
@@ -79,8 +80,8 @@ describe("relstate", () => {
     });
   }
 
-  async function balance(ata: anchor.web3.PublicKey) {
-    return Number((await getAccount(connection, ata)).amount);
+  async function balance(ata: anchor.web3.PublicKey, tokenProgram = TOKEN_PROGRAM_ID) {
+    return Number((await getAccount(connection, ata, undefined, tokenProgram)).amount);
   }
 
   // Created once by the provider wallet, which stays the mint authority.
@@ -91,20 +92,22 @@ describe("relstate", () => {
   });
 
   // `returning` = an earlier Env whose tenant (wallet, token account, record) takes another lease
-  async function setup(periodSecs = PERIOD, mint = MINT_KEYPAIR.publicKey, returning?: { tenant: anchor.web3.Keypair; tenantAta: anchor.web3.PublicKey }) {
+  async function setup(periodSecs = PERIOD, mint = MINT_KEYPAIR.publicKey, returning?: { tenant: anchor.web3.Keypair; tenantAta: anchor.web3.PublicKey }, tokenProgram = TOKEN_PROGRAM_ID) {
     const conn = freshConnection();
     const landlord = Keypair.generate();
     const tenant = returning?.tenant ?? Keypair.generate();
     await Promise.all([airdrop(landlord), returning ? null : airdrop(tenant)]);
 
     const landlordAta = await createAssociatedTokenAccount(
-      conn, landlord, mint, landlord.publicKey
+      conn, landlord, mint, landlord.publicKey, undefined, tokenProgram
     );
     const tenantAta = returning?.tenantAta ?? await createAssociatedTokenAccount(
-      conn, tenant, mint, tenant.publicKey
+      conn, tenant, mint, tenant.publicKey, undefined, tokenProgram
     );
     const payer = (provider.wallet as anchor.Wallet).payer;
-    if (!returning) await mintTo(conn, payer, mint, tenantAta, payer, START_BALANCE);
+    if (!returning) {
+      await mintTo(conn, payer, mint, tenantAta, payer, START_BALANCE, [], undefined, tokenProgram);
+    }
 
     const leaseId = nextLeaseId++;
     const lease = pda(Buffer.from("lease"), landlord.publicKey.toBuffer(), u64(leaseId));
@@ -114,7 +117,7 @@ describe("relstate", () => {
 
     return {
       landlord, tenant, mint, landlordAta, tenantAta, lease, vault,
-      landlordProfile, tenantProfile,
+      landlordProfile, tenantProfile, tokenProgram,
 
       // overrides let tests try invalid lease terms
       propose: (o: { rent?: number; term?: number; grace?: number; region?: number[]; tenant?: anchor.web3.PublicKey; tenantProfile?: anchor.web3.PublicKey } = {}) =>
@@ -125,7 +128,7 @@ describe("relstate", () => {
           )
           .accountsPartial({
             landlord: landlord.publicKey, tenant: o.tenant ?? tenant.publicKey,
-            mint, lease, vault, landlordProfile,
+            mint, lease, vault, landlordProfile, tokenProgram,
             tenantProfile: o.tenantProfile ?? (o.tenant ? pda(Buffer.from("profile"), o.tenant.toBuffer()) : tenantProfile),
           })
           .signers([landlord])
@@ -136,6 +139,7 @@ describe("relstate", () => {
           .fundDeposit(hash)
           .accountsPartial({
             tenant: tenant.publicKey, lease, mint, vault, tenantAta, tenantProfile,
+            tokenProgram,
           })
           .signers([tenant])
           .rpc(),
@@ -145,6 +149,7 @@ describe("relstate", () => {
           .payRent()
           .accountsPartial({
             tenant: tenant.publicKey, lease, mint, tenantAta, landlordAta, tenantProfile,
+            tokenProgram,
           })
           .signers([tenant])
           .rpc(),
@@ -154,7 +159,7 @@ describe("relstate", () => {
           .claimDeposit()
           .accountsPartial({
             tenant: signer.publicKey, lease, mint, vault,
-            tenantAta, landlordAta, tenantProfile, landlordProfile,
+            tenantAta, landlordAta, tenantProfile, landlordProfile, tokenProgram,
           })
           .signers([signer])
           .rpc(),
@@ -164,7 +169,7 @@ describe("relstate", () => {
           .markDefault()
           .accountsPartial({
             landlord: signer.publicKey, lease, mint, vault,
-            tenantAta, landlordAta, tenantProfile,
+            tenantAta, landlordAta, tenantProfile, tokenProgram,
           })
           .signers([signer])
           .rpc(),
@@ -175,7 +180,7 @@ describe("relstate", () => {
           .releaseDeposit(new BN(deduction))
           .accountsPartial({
             landlord: signer.publicKey, lease, mint, vault,
-            tenantAta, landlordAta, tenantProfile, landlordProfile,
+            tenantAta, landlordAta, tenantProfile, landlordProfile, tokenProgram,
           })
           .signers([signer])
           .rpc(),
