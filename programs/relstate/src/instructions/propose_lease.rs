@@ -14,7 +14,9 @@ pub struct ProposeLease<'info> {
     /// account. It may not exist yet (first-time tenant), so it is read by hand in the handler.
     #[account(seeds = [PROFILE_SEED, tenant.key().as_ref()], bump)]
     pub tenant_profile: UncheckedAccount<'info>,
-    #[account(address = ALLOWED_MINT @ ErrorCode::MintNotAllowed)]
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, Config>,
+    #[account(constraint = config.allows(&mint.key()) @ ErrorCode::MintNotAllowed)]
     pub mint: InterfaceAccount<'info, Mint>,
     #[account(
         init, 

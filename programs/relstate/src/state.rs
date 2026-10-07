@@ -1,6 +1,25 @@
 use anchor_lang::prelude::*;
 
-use crate::constants::{MAX_BLURB, MAX_CITY, MAX_PHOTO, MAX_TITLE, RENT_HEADROOM_PCT};
+use crate::constants::{
+    MAX_ALLOWED_MINTS, MAX_BLURB, MAX_CITY, MAX_PHOTO, MAX_TITLE, RENT_HEADROOM_PCT,
+};
+
+/// Program-wide settings, one account at seeds `[CONFIG_SEED]`. Holds the mints a lease may be
+/// denominated in: whoever runs `init_config` on a fresh network becomes the admin that edits it.
+#[account]
+#[derive(InitSpace)]
+pub struct Config {
+    pub admin: Pubkey,
+    pub bump: u8,
+    #[max_len(MAX_ALLOWED_MINTS)]
+    pub mints: Vec<Pubkey>,
+}
+
+impl Config {
+    pub fn allows(&self, mint: &Pubkey) -> bool {
+        self.mints.contains(mint)
+    }
+}
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
 pub enum Status {

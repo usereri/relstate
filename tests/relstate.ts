@@ -1,14 +1,17 @@
 import * as anchor from "@anchor-lang/core";
 import { BN, Program } from "@anchor-lang/core";
 import {
+  ExtensionType,
+  TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
   createAssociatedTokenAccount,
+  createInitializeMint2Instruction,
   createMint,
   getAccount,
+  getMintLen,
   mintTo,
 } from "@solana/spl-token";
 import { expect } from "chai";
-import * as fs from "fs";
 import type { Relstate } from "../target/types/relstate.ts";
 
 const { Keypair, PublicKey, LAMPORTS_PER_SOL } = anchor.web3;
@@ -23,10 +26,60 @@ const START_BALANCE = 10_000;
 const LEASE_HASH = Array(32).fill(7);
 const REGION = [80, 76]; // "PL"
 
-// The program only accepts this mint (ALLOWED_MINT in constants.rs).
-const MINT_KEYPAIR = Keypair.fromSecretKey(
-  Uint8Array.from(JSON.parse(fs.readFileSync(`${import.meta.dirname}/test-usdc-mint.json`, "utf8")))
-);
+// Leases are only allowed on a mint the admin has put in the on-chain Config, so the suite
+// creates its own mints in before() and allows them: a classic SPL one for the existing flows
+// and a Token-2022 one carrying ConfidentialTransferMint for the confidential rent path.
+let USDC: anchor.web3.PublicKey;
+let USDC_2022: anchor.web3.PublicKey;
+
+// Token-2022 instruction bytes. @solana/spl-token 0.4 knows the ConfidentialTransferMint
+// extension type but ships no builder for its instructions, so the two the suite needs are
+// encoded by hand: [TokenInstruction, ConfidentialTransferInstruction, ...data].
+const CONFIDENTIAL_TRANSFER_EXTENSION = 27;
+const CT_INITIALIZE_MINT = 0;
+const CT_TRANSFER = 7;
+
+/// A Token-2022 mint with the ConfidentialTransferMint extension: auto-approving new accounts,
+/// no auditor key. `InitializeMint` for the extension has to run before the mint itself is
+/// initialized, or another party could claim the configuration.
+async function createConfidentialMint(
+  conn: anchor.web3.Connection,
+  payer: anchor.web3.Keypair,
+  decimals = 6,
+) {
+  const mint = Keypair.generate();
+  const space = getMintLen([ExtensionType.ConfidentialTransferMint]);
+
+  // InitializeMintData: authority (32) | auto_approve_new_accounts (1) | auditor key (32).
+  // All-zero means None, so the auditor is left unset.
+  const data = Buffer.alloc(2 + 32 + 1 + 32);
+  data[0] = CONFIDENTIAL_TRANSFER_EXTENSION;
+  data[1] = CT_INITIALIZE_MINT;
+  payer.publicKey.toBuffer().copy(data, 2);
+  data[34] = 1; // auto_approve_new_accounts
+
+  const tx = new anchor.web3.Transaction().add(
+    anchor.web3.SystemProgram.createAccount({
+      fromPubkey: payer.publicKey,
+      newAccountPubkey: mint.publicKey,
+      space,
+      lamports: await conn.getMinimumBalanceForRentExemption(space),
+      programId: TOKEN_2022_PROGRAM_ID,
+    }),
+    new anchor.web3.TransactionInstruction({
+      programId: TOKEN_2022_PROGRAM_ID,
+      keys: [{ pubkey: mint.publicKey, isSigner: false, isWritable: true }],
+      data,
+    }),
+    createInitializeMint2Instruction(
+      mint.publicKey, decimals, payer.publicKey, null, TOKEN_2022_PROGRAM_ID
+    ),
+  );
+  await anchor.web3.sendAndConfirmTransaction(conn, tx, [payer, mint], {
+    commitment: "confirmed",
+  });
+  return mint.publicKey;
+}
 
 describe("relstate", () => {
   anchor.setProvider(anchor.AnchorProvider.env());
@@ -84,15 +137,40 @@ describe("relstate", () => {
     return Number((await getAccount(connection, ata, undefined, tokenProgram)).amount);
   }
 
-  // Created once by the provider wallet, which stays the mint authority.
+  const configPda = pda(Buffer.from("config"));
+
+  // Adds or removes a mint from the Config allowlist, as `admin` (the provider wallet is the
+  // admin because it claimed the Config in before()).
+  const setMintAllowed = (
+    mint: anchor.web3.PublicKey,
+    allowed: boolean,
+    admin?: anchor.web3.Keypair,
+  ) => {
+    const call = program.methods
+      .setMintAllowed(mint, allowed)
+      .accountsPartial({ admin: admin?.publicKey ?? provider.wallet.publicKey, config: configPda });
+    return (admin ? call.signers([admin]) : call).rpc();
+  };
+
+  // The mints and the Config are created once by the provider wallet, which stays mint authority
+  // and becomes the Config admin.
   before(async () => {
-    if (await connection.getAccountInfo(MINT_KEYPAIR.publicKey)) return;
     const payer = (provider.wallet as anchor.Wallet).payer;
-    await createMint(connection, payer, payer.publicKey, null, 6, MINT_KEYPAIR);
+    USDC = await createMint(connection, payer, payer.publicKey, null, 6);
+    USDC_2022 = await createConfidentialMint(freshConnection(), payer);
+
+    if (!(await program.account.config.fetchNullable(configPda))) {
+      await program.methods
+        .initConfig()
+        .accountsPartial({ admin: payer.publicKey, config: configPda })
+        .rpc();
+    }
+    await setMintAllowed(USDC, true);
+    await setMintAllowed(USDC_2022, true);
   });
 
   // `returning` = an earlier Env whose tenant (wallet, token account, record) takes another lease
-  async function setup(periodSecs = PERIOD, mint = MINT_KEYPAIR.publicKey, returning?: { tenant: anchor.web3.Keypair; tenantAta: anchor.web3.PublicKey }, tokenProgram = TOKEN_PROGRAM_ID) {
+  async function setup(periodSecs = PERIOD, mint = USDC, returning?: { tenant: anchor.web3.Keypair; tenantAta: anchor.web3.PublicKey }, tokenProgram = TOKEN_PROGRAM_ID) {
     const conn = freshConnection();
     const landlord = Keypair.generate();
     const tenant = returning?.tenant ?? Keypair.generate();
@@ -290,7 +368,7 @@ describe("relstate", () => {
     const first = await active();
     await finishLease(first);
 
-    const second = await setup(PERIOD, MINT_KEYPAIR.publicKey, first);
+    const second = await setup(PERIOD, USDC, first);
     await second.propose();
     const lease = await program.account.lease.fetch(second.lease);
     expect([lease.depositAmount.toNumber(), lease.discountPct]).to.deep.equal([DEPOSIT / 2, 50]);
@@ -303,11 +381,11 @@ describe("relstate", () => {
     const first = await active();
     await finishLease(first); // typical rent = RENT
 
-    const within = await setup(PERIOD, MINT_KEYPAIR.publicKey, first);
+    const within = await setup(PERIOD, USDC, first);
     await within.propose({ rent: RENT * 1.5 });
     expect((await program.account.lease.fetch(within.lease)).discountPct).to.equal(50);
 
-    const above = await setup(PERIOD, MINT_KEYPAIR.publicKey, first);
+    const above = await setup(PERIOD, USDC, first);
     await above.propose({ rent: RENT * 1.5 + 1 });
     expect((await program.account.lease.fetch(above.lease)).discountPct).to.equal(0);
   });
@@ -316,7 +394,7 @@ describe("relstate", () => {
     const first = await active();
     await finishLease(first, true);
 
-    const second = await setup(PERIOD, MINT_KEYPAIR.publicKey, first);
+    const second = await setup(PERIOD, USDC, first);
     await second.propose();
     const lease = await program.account.lease.fetch(second.lease);
     expect([lease.depositAmount.toNumber(), lease.discountPct]).to.deep.equal([DEPOSIT, 0]);
@@ -529,6 +607,50 @@ describe("relstate", () => {
     const other = await createMint(freshConnection(), payer, payer.publicKey, null, 6);
     const env = await setup(PERIOD, other);
     await expectFail(env.propose(), "MintNotAllowed");
+  });
+
+  // ---- config ----
+
+  it("the admin can allow a mint and take it away again", async () => {
+    const payer = (provider.wallet as anchor.Wallet).payer;
+    const extra = await createMint(freshConnection(), payer, payer.publicKey, null, 6);
+
+    const before = await setup(PERIOD, extra);
+    await expectFail(before.propose(), "MintNotAllowed");
+
+    await setMintAllowed(extra, true);
+    expect((await program.account.config.fetch(configPda)).mints.map(String))
+      .to.include(extra.toBase58());
+    const allowed = await setup(PERIOD, extra);
+    await allowed.propose();
+
+    await setMintAllowed(extra, false);
+    expect((await program.account.config.fetch(configPda)).mints.map(String))
+      .to.not.include(extra.toBase58());
+    const after = await setup(PERIOD, extra);
+    await expectFail(after.propose(), "MintNotAllowed");
+  });
+
+  it("only the admin can change the allowed mints", async () => {
+    const stranger = Keypair.generate();
+    await airdrop(stranger);
+    await expectFail(setMintAllowed(USDC, false, stranger), "NotAdmin");
+    // the list is untouched, so leases on it still work
+    expect((await program.account.config.fetch(configPda)).mints.map(String))
+      .to.include(USDC.toBase58());
+  });
+
+  it("a Token-2022 mint backs a lease and funds the vault", async () => {
+    const env = await setup(PERIOD, USDC_2022, undefined, TOKEN_2022_PROGRAM_ID);
+    await env.propose();
+    await env.fund();
+
+    expect(await balance(env.vault, TOKEN_2022_PROGRAM_ID)).to.equal(DEPOSIT);
+    expect(await balance(env.tenantAta, TOKEN_2022_PROGRAM_ID))
+      .to.equal(START_BALANCE - DEPOSIT);
+    const lease = await program.account.lease.fetch(env.lease);
+    expect(lease.mint.toBase58()).to.equal(USDC_2022.toBase58());
+    expect(lease.status).to.have.property("active");
   });
 
   it("rejects a grace longer than the period", async () => {

@@ -15,6 +15,22 @@ declare_id!("G4iMjveQKXztnGoxigAeWPrb5evT9yt6qaLkgQEp2dXm");
 pub mod relstate {
     use super::*;
 
+    pub fn init_config(ctx: Context<InitConfig>) -> Result<()> {
+        crate::instructions::config::handle_init_config(ctx)
+    }
+
+    pub fn set_mint_allowed(
+        ctx: Context<UpdateConfig>,
+        mint: Pubkey,
+        allowed: bool,
+    ) -> Result<()> {
+        crate::instructions::config::handle_set_mint_allowed(ctx, mint, allowed)
+    }
+
+    pub fn set_admin(ctx: Context<UpdateConfig>, new_admin: Pubkey) -> Result<()> {
+        crate::instructions::config::handle_set_admin(ctx, new_admin)
+    }
+
     pub fn create_listing(
         ctx: Context<CreateListing>,
         listing_id: u64,
