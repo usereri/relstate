@@ -57,13 +57,13 @@ export function WalletButton({ balances }: { balances?: { sol: number; usdc: num
     return (
       <div className="flex items-center gap-2">
         <button
-          title="Copy full address"
+          title={`Copy full address${balances ? ` · ${balances.sol.toFixed(2)} SOL · ${balances.usdc === null ? "no USDC account" : `${usdc(balances.usdc)} USDC`}` : ""}`}
           onClick={() => {
             navigator.clipboard?.writeText(address);
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
           }}
-          className="flex h-11 items-center gap-2.5 rounded-xl border bg-card px-3 text-left transition-colors hover:bg-secondary/60"
+          className="flex h-10 items-center gap-2 whitespace-nowrap rounded-xl border bg-card px-3 text-left transition-colors hover:bg-secondary/60"
         >
           {local.on ? (
             <FlaskConical className="size-4" />
@@ -72,15 +72,9 @@ export function WalletButton({ balances }: { balances?: { sol: number; usdc: num
           ) : (
             <Wallet className="size-4" />
           )}
-          <span className="leading-tight">
-            <span className="flex items-center gap-1.5 font-mono text-xs font-medium">
-              {short(address, 4)} {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5 text-muted-foreground" />}
-              {local.on && <span className="font-sans text-[10px] font-semibold uppercase tracking-wider text-accent">test wallet</span>}
-            </span>
-            <span className="block text-[11px] tabular-nums text-muted-foreground">
-              {balances ? `${balances.sol.toFixed(2)} SOL · ${balances.usdc === null ? "no USDC account" : `${usdc(balances.usdc)} USDC`}` : "…"}
-            </span>
-          </span>
+          <span className="font-mono text-xs font-medium">{short(address, 4)}</span>
+          {local.on && <span className="text-[10px] font-semibold uppercase tracking-wider text-accent">test</span>}
+          {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5 text-muted-foreground" />}
         </button>
         <Button
           variant="ghost"
