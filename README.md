@@ -103,7 +103,7 @@ Program ID: `5J52oGfo7BjC529vizEaM96QtxVFD4Kbv22Tw8aXa1Ar`
 
 ## Quick start (local)
 
-**Prerequisites:** Rust (pinned by `rust-toolchain.toml`), the Solana CLI tools (for `cargo build-sbf`), [Anchor](https://www.anchor-lang.com/) 1.1, [Surfpool](https://surfpool.run/) 1.5, Node 20+ (developed on 24). A wallet extension such as Phantom is optional locally.
+**Prerequisites:** Rust (pinned by `rust-toolchain.toml`), the Solana CLI tools (for `cargo build-sbf`), [Anchor](https://www.anchor-lang.com/) 1.1, [Surfpool](https://surfpool.run/) 1.5, Node 22.18+ (developed on 26; runs the TypeScript tests and scripts natively). A wallet extension such as Phantom is optional locally.
 
 ### First time only
 
@@ -172,7 +172,7 @@ make test-demo      # anchor test -- --features demo   (needs port 8899 free)
 
 ```
 programs/relstate/     Anchor program (state, instructions, constants, errors)
-tests/                 program tests (ts-mocha)
+tests/                 program tests (mocha, run by Node's built-in TypeScript support)
 app/                   Vite + React + Tailwind frontend
   src/lib/chain.ts     every read and transaction the UI performs
   src/screens.tsx      lease screens (propose, accept, pay, release, ...)
