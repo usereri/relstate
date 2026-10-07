@@ -15,7 +15,7 @@ demo-chain:
 	surfpool start -y --host 0.0.0.0 --offline
 
 demo-setup:
-	npx ts-node --transpile-only scripts/setup-demo.ts $(if $(WALLETS),$(WALLETS),$(LANDLORD_WALLET) $(TENANT_WALLET))
+	node scripts/setup-demo.ts $(if $(WALLETS),$(WALLETS),$(LANDLORD_WALLET) $(TENANT_WALLET))
 
 demo-app:
 	npm run app
