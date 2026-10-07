@@ -16,3 +16,4 @@ txtx.yml
 *.tsbuildinfo
 .env
 docs/contracts
+spikes/

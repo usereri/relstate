@@ -2,7 +2,7 @@
 // (the ones you connect in the browser windows) and, on a local network, for the app's built-in
 // landlord and tenant test wallets, plus four default listings so the tenant's view is not empty.
 // Safe to run again: existing accounts are left alone.
-//   RPC=https://api.devnet.solana.com npx ts-node --transpile-only scripts/setup-demo.ts [<wallet> ...]
+//   RPC=https://api.devnet.solana.com node scripts/setup-demo.ts [<wallet> ...]
 // The payer (ANCHOR_WALLET or ~/.config/solana/id.json) becomes the mint authority, pays account rent
 // and owns the default listings (import that keypair into a wallet to lease them yourself).
 import * as anchor from "@anchor-lang/core";
@@ -43,7 +43,7 @@ async function programReady(conn: anchor.web3.Connection, id: anchor.web3.Public
 }
 
 async function seedListings(conn: anchor.web3.Connection, payer: anchor.web3.Keypair) {
-  const idl = JSON.parse(fs.readFileSync(path.join(__dirname, "../target/idl/relstate.json"), "utf8"));
+  const idl = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "../target/idl/relstate.json"), "utf8"));
   if (!(await programReady(conn, new PublicKey(idl.address)))) {
     console.warn(`program ${idl.address} is not deployed on ${RPC}: skipped the default listings. Deploy it, then run this again.`);
     return;
@@ -75,7 +75,7 @@ async function main() {
 
   const conn = new Connection(RPC, "confirmed");
   const payer = load(process.env.ANCHOR_WALLET ?? path.join(os.homedir(), ".config/solana/id.json"));
-  const mintKp = load(path.join(__dirname, "../tests/test-usdc-mint.json"));
+  const mintKp = load(path.join(import.meta.dirname, "../tests/test-usdc-mint.json"));
 
   const topUp = async (key: anchor.web3.PublicKey, minSol: number) => {
     if ((await conn.getBalance(key)) >= minSol * LAMPORTS_PER_SOL) return;

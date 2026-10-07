@@ -8,7 +8,7 @@ import {
 } from "@solana/spl-token";
 import { expect } from "chai";
 import * as fs from "fs";
-import { Relstate } from "../target/types/relstate";
+import type { Relstate } from "../target/types/relstate.ts";
 
 const { Keypair, PublicKey, LAMPORTS_PER_SOL } = anchor.web3;
 
@@ -24,7 +24,7 @@ const REGION = [80, 76]; // "PL"
 
 // The program only accepts this mint (ALLOWED_MINT in constants.rs).
 const MINT_KEYPAIR = Keypair.fromSecretKey(
-  Uint8Array.from(JSON.parse(fs.readFileSync(`${__dirname}/test-usdc-mint.json`, "utf8")))
+  Uint8Array.from(JSON.parse(fs.readFileSync(`${import.meta.dirname}/test-usdc-mint.json`, "utf8")))
 );
 
 describe("relstate", () => {

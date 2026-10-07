@@ -100,7 +100,7 @@ export const isWallet = (s: string) => {
 export const connection = new Connection(RPC, "confirmed");
 const mint = new PublicKey(MINT);
 
-interface WalletLike {
+export interface WalletLike {
   publicKey: PubKey;
   signTransaction: <T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(tx: T) => Promise<T>;
   signAllTransactions: <T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(txs: T[]) => Promise<T[]>;
