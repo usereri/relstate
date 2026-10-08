@@ -5,7 +5,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-relstate = "G4iMjveQKXztnGoxigAeWPrb5evT9yt6qaLkgQEp2dXm"
+relstate = "7fGDQbi5i1BWmiHEFoTKvs8rRfV8fSxn6yRTvWKqRpRs"
 
 [provider]
 cluster = "localnet"

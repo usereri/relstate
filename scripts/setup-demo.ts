@@ -17,6 +17,7 @@ import { createHash } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import type { Relstate } from "../target/types/relstate.ts";
 
 const { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } = anchor.web3;
 
@@ -44,12 +45,12 @@ async function programReady(conn: anchor.web3.Connection, id: anchor.web3.Public
 }
 
 async function setupProgram(conn: anchor.web3.Connection, payer: anchor.web3.Keypair, mint: anchor.web3.PublicKey) {
-  const idl = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "../target/idl/relstate.json"), "utf8"));
+  const idl: Relstate = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "../target/idl/relstate.json"), "utf8"));
   if (!(await programReady(conn, new PublicKey(idl.address)))) {
     console.warn(`program ${idl.address} is not deployed on ${RPC}: skipped config + default listings. Deploy it, then run this again.`);
     return;
   }
-  const program = new anchor.Program(idl, new anchor.AnchorProvider(conn, new anchor.Wallet(payer), { commitment: "confirmed" }));
+  const program = new anchor.Program<Relstate>(idl, new anchor.AnchorProvider(conn, new anchor.Wallet(payer), { commitment: "confirmed" }));
 
   // A lease can only use a mint the on-chain Config allows, and the Config must exist first.
   // Whoever runs init_config first owns the allowlist (docs/contracts/program-interface.md §2),

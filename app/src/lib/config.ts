@@ -1,7 +1,8 @@
 // Network + lease timing. Point the app at devnet with VITE_RPC in app/.env.local, for example
 //   VITE_RPC=https://api.devnet.solana.com
 export const RPC: string =
-  import.meta.env.VITE_RPC ?? `http://${location.hostname}:8899`;
+  import.meta.env.VITE_RPC ??
+  `http://${globalThis.location?.hostname ?? "localhost"}:8899`;
 
 // Local Surfpool can jump the clock, so a local run can show a realistic 30-day rent period.
 // On devnet the clock is real, so periods are compressed (say so out loud).
