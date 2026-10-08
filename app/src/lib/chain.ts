@@ -132,15 +132,26 @@ export interface Me {
  * client could infer, to `Interface<TokenInterface>`, which accepts both token programs and so
  * cannot be inferred (docs/contracts/program-interface.md §1). Every instruction that moves
  * tokens now has to name it, and the associated-token address depends on it too, so both come
- * from the mint account itself rather than a hard-coded guess. Read once per session.
+ * from the mint account itself rather than a hard-coded guess.
+ *
+ * Only a successful read is cached. A failed one — an RPC blip, a 429 that outlived its retries,
+ * or a mint that does not exist yet — must not pin the session to a guess: on a Token-2022 mint
+ * that would derive wrong ATAs until the page reloaded. So a failure clears the cache and is
+ * raised to the caller, which fails the flow with a message naming the mint instead of sending a
+ * transaction built against the wrong token program.
  */
 let resolving: Promise<PubKey> | undefined;
 export const tokenProgram = (): Promise<PubKey> =>
-  (resolving ??= connection.getAccountInfo(mint).then(
-    (info) => (info?.owner.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID),
-    // An unreachable mint is reported by the read that needs it; classic is the safe assumption.
-    () => TOKEN_PROGRAM_ID,
-  ));
+  (resolving ??= connection
+    .getAccountInfo(mint)
+    .then((info) => {
+      if (!info) throw new Error(`The lease mint ${MINT} does not exist on ${RPC}.`);
+      return info.owner.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+    })
+    .catch((e) => {
+      resolving = undefined;
+      throw e;
+    }));
 
 const ataWith = (wallet: PubKey, program: PubKey) => getAssociatedTokenAddressSync(mint, wallet, false, program);
 
