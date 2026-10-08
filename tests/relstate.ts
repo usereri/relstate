@@ -7,6 +7,7 @@ import {
   createAssociatedTokenAccount,
   createInitializeMint2Instruction,
   createMint,
+  createTransferCheckedInstruction,
   getAccount,
   getMintLen,
   mintTo,
@@ -742,5 +743,61 @@ describe("relstate", () => {
     await timeTravel(CLAIM_WINDOW + 10);
     await expectFail(env.claim(env.landlord));
     expect(await balance(env.vault)).to.equal(DEPOSIT);
+  });
+
+  // ---- confidential rent ----
+
+  // pay_rent on a confidential mint cannot move tokens itself: the amount is encrypted, so the
+  // tenant's confidential Transfer has to sit directly before it and pay_rent only checks its
+  // shape. Only the "no confidential transfer" cases are tested on chain. The destination,
+  // mint and ordering checks cannot be: a confidential Transfer with a dummy payload fails
+  // inside Token-2022, at the instruction before pay_rent, so pay_rent never runs and any
+  // assertion about its error would pass for the wrong reason. Those dimensions are covered by
+  // the unit tests in `mod tests` in programs/relstate/src/instructions/pay_rent.rs
+  // (rejects_a_transfer_to_someone_else, rejects_a_transfer_from_someone_else,
+  // rejects_a_transfer_on_another_mint, rejects_another_token_2022_instruction,
+  // accepts_a_matching_transfer and the rest), and end to end by the devnet run in the
+  // Phase 1 exit gate. Do not add on-chain tests for them without real proofs.
+
+  async function confidentialEnv() {
+    const env = await setup(PERIOD, USDC_2022, undefined, TOKEN_2022_PROGRAM_ID);
+    await env.propose();
+    await env.fund();
+    return env;
+  }
+
+  it("rejects paying rent on a confidential mint with no transfer in the transaction", async () => {
+    const env = await confidentialEnv();
+    await expectFail(env.pay(), "MissingConfidentialTransfer");
+
+    // the rejection must leave no bookkeeping behind
+    expect((await program.account.lease.fetch(env.lease)).paidCount).to.equal(0);
+    const t = await program.account.profile.fetch(env.tenantProfile);
+    expect([t.paidOnTime, t.paidLate, t.rentPaidTotal.toNumber()]).to.deep.equal([0, 0, 0]);
+  });
+
+  it("rejects a public transfer_checked in place of a confidential transfer", async () => {
+    const env = await confidentialEnv();
+    // The public transfer succeeds on its own, so this is the real property: a tenant cannot
+    // pay in the clear on a confidential mint and still be credited by pay_rent.
+    const publicTransfer = createTransferCheckedInstruction(
+      env.tenantAta, USDC_2022, env.landlordAta, env.tenant.publicKey, RENT, 6, [], TOKEN_2022_PROGRAM_ID
+    );
+    const payRent = await program.methods
+      .payRent()
+      .accountsPartial({
+        tenant: env.tenant.publicKey, lease: env.lease, mint: env.mint,
+        tenantAta: env.tenantAta, landlordAta: env.landlordAta,
+        tenantProfile: env.tenantProfile, tokenProgram: env.tokenProgram,
+      })
+      .instruction();
+    const tx = new anchor.web3.Transaction().add(publicTransfer, payRent);
+    await expectFail(
+      anchor.web3.sendAndConfirmTransaction(freshConnection(), tx, [env.tenant]),
+      "MissingConfidentialTransfer"
+    );
+    // the whole transaction reverted, including the public transfer
+    expect((await program.account.lease.fetch(env.lease)).paidCount).to.equal(0);
+    expect(await balance(env.landlordAta, TOKEN_2022_PROGRAM_ID)).to.equal(0);
   });
 });
