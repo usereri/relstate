@@ -15,4 +15,3 @@ txtx.yml
 *.log
 *.tsbuildinfo
 .env
-spikes/
