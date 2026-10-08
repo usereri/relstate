@@ -67,6 +67,14 @@ describe("server (mock mode, no secrets)", () => {
     assert.equal(next.status, 400, "got past auth and failed on the transaction");
   });
 
+  it("POST /api/auth/mock refuses to issue a session for the fee payer", async () => {
+    const { feePayer } = (await (await app.request("/api/sponsor")).json()) as { feePayer: string };
+    const res = await post("/api/auth/mock", { wallet: feePayer });
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as { code: string }).code, "wallet-is-sponsor");
+    assert.equal((await post("/api/auth/mock", { wallet: ` ${feePayer} ` })).status, 400, "surrounding whitespace does not get around it");
+  });
+
   it("POST /api/auth/mock requires a wallet", async () => {
     assert.equal((await post("/api/auth/mock", { wallet: "  " })).status, 400);
     assert.equal((await post("/api/auth/mock", "nope")).status, 400);

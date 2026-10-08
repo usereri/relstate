@@ -1,7 +1,18 @@
 import "./noenv.ts";
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { isRetryableStatus, nextDelayMs, parseRetryAfter, retryingFetch, type RetryConfig } from "../src/rpc.ts";
+import { getBase64Encoder, getSignatureFromTransaction, getTransactionDecoder, type RpcTransport } from "@solana/kit";
+import {
+  createRetryingTransport,
+  isRetryableStatus,
+  nextDelayMs,
+  parseRetryAfter,
+  retryingFetch,
+  sendAndConfirmByPolling,
+  type RetryConfig,
+  type SolanaClient,
+} from "../src/rpc.ts";
+import { buildTx, ixSignedBy, twoKeys } from "./txfixtures.ts";
 
 const cfg = (over: Partial<RetryConfig> = {}): RetryConfig => ({
   maxRetries: 3,
@@ -113,5 +124,108 @@ describe("retryingFetch", () => {
 
     stub([new Error("programmer error")]);
     await assert.rejects(retryingFetch("http://x.test", undefined, cfg()), /programmer error/);
+  });
+});
+
+describe("createRetryingTransport", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  const send = (transport: RpcTransport) => transport<{ result: number }>({ payload: { jsonrpc: "2.0", id: 1, method: "getSlot", params: [] } });
+
+  it("retries a 429 through the real HTTP transport and then returns the result", async () => {
+    const statuses = [429, 503, 200];
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      const status = statuses[calls++] ?? 500;
+      return status === 200
+        ? new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: 42 }), { status, headers: { "content-type": "application/json" } })
+        : new Response("busy", { status, headers: { "retry-after": "1" } });
+    }) as typeof fetch;
+    const slept: number[] = [];
+    const transport = createRetryingTransport("http://rpc.test", cfg({ sleep: async (ms) => void slept.push(ms) }));
+    assert.equal(((await send(transport)) as { result: unknown }).result, 42n);
+    assert.equal(calls, 3);
+    assert.deepEqual(slept, [1000, 1000]);
+  });
+
+  it("does not retry a 400", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response("bad", { status: 400 });
+    }) as typeof fetch;
+    await assert.rejects(send(createRetryingTransport("http://rpc.test", cfg())));
+    assert.equal(calls, 1);
+  });
+
+  it("gives up after maxRetries", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response("busy", { status: 429 });
+    }) as typeof fetch;
+    await assert.rejects(send(createRetryingTransport("http://rpc.test", cfg({ maxRetries: 2 }))));
+    assert.equal(calls, 3);
+  });
+});
+
+describe("sendAndConfirmByPolling", () => {
+  type Status = { err: unknown; confirmationStatus: string } | null;
+  const fakeClient = (statuses: Status[], blockhashValid = true) => {
+    const calls = { send: 0, polls: 0, valid: 0 };
+    const client = {
+      rpc: {
+        sendTransaction: () => ({ send: async () => void calls.send++ }),
+        getSignatureStatuses: () => ({ send: async () => ({ value: [statuses[Math.min(calls.polls++, statuses.length - 1)] ?? null] }) }),
+        isBlockhashValid: () => ({ send: async () => (calls.valid++, { value: blockhashValid }) }),
+      },
+    } as unknown as SolanaClient;
+    return { client, calls };
+  };
+  const opts = { pollMs: 0, resendEveryPolls: 2, timeoutMs: 2000 };
+
+  const signedTx = async () => {
+    const { user } = await twoKeys();
+    const b64 = await buildTx({ feePayer: user.address, instructions: [ixSignedBy(user)] });
+    return getTransactionDecoder().decode(new Uint8Array(getBase64Encoder().encode(b64)));
+  };
+
+  it("returns once the status is confirmed, re-sending while the transaction is not seen", async () => {
+    const tx = await signedTx();
+    const { client, calls } = fakeClient([null, null, null, null, { err: null, confirmationStatus: "confirmed" }]);
+    const sig = await sendAndConfirmByPolling(client, tx as never, { ...opts, blockhash: "11111111111111111111111111111111" as never });
+    assert.equal(sig, getSignatureFromTransaction(tx as never));
+    assert.equal(calls.polls, 5);
+    assert.equal(calls.send, 3, "initial send + a re-send on polls 2 and 4");
+    assert.equal(calls.valid, 2);
+  });
+
+  it("does not treat 'processed' as confirmed", async () => {
+    const tx = await signedTx();
+    const { client, calls } = fakeClient([{ err: null, confirmationStatus: "processed" }, { err: null, confirmationStatus: "finalized" }]);
+    await sendAndConfirmByPolling(client, tx as never, opts);
+    assert.equal(calls.polls, 2);
+  });
+
+  it("throws when the transaction landed with an error", async () => {
+    const tx = await signedTx();
+    const { client } = fakeClient([{ err: { InstructionError: [0, "Custom"] }, confirmationStatus: "confirmed" }]);
+    await assert.rejects(sendAndConfirmByPolling(client, tx as never, opts), /failed/);
+  });
+
+  it("throws 'expired' when the blockhash is no longer valid", async () => {
+    const tx = await signedTx();
+    const { client, calls } = fakeClient([null], false);
+    await assert.rejects(sendAndConfirmByPolling(client, tx as never, { ...opts, blockhash: "11111111111111111111111111111111" as never }), /expired/);
+    assert.equal(calls.send, 1, "no re-send after expiry");
+  });
+
+  it("times out when never seen and no blockhash was given", async () => {
+    const tx = await signedTx();
+    const { client } = fakeClient([null]);
+    await assert.rejects(sendAndConfirmByPolling(client, tx as never, { pollMs: 1, resendEveryPolls: 1000, timeoutMs: 30 }), /not confirmed within/);
   });
 });

@@ -157,12 +157,14 @@ describe("sponsor service", () => {
     assert.equal(s.limiter.snapshot(other, 1_000_000).walletLastHour, 0);
   });
 
-  it("does not accept the fee payer as the session wallet", { todo: "BUG: sponsor.ts only checks that the wallet is *a* signer, and the fee payer always is; reported to the implementer" }, async () => {
+  it("does not accept the fee payer as the session wallet", async () => {
     const s = await setup();
-    // The fee payer is a required signer of the message, so naming it as the wallet
-    // would let a session spend its own budget on someone else's transaction.
+    // The fee payer is a required signer of the message, so it would satisfy "the wallet signs"
+    // with no user signature at all. It is its own fault, with its own code.
     const code = await codeOf(s.service.sponsor({ txBase64: s.txBase64, wallet: s.feePayer.address }));
-    assert.equal(code, "wallet-mismatch");
+    assert.equal(code, "wallet-is-sponsor");
+    assert.equal(s.calls.simulate, 0);
+    assert.equal(s.limiter.snapshot(s.feePayer.address, 1_000_000).walletLastHour, 0);
   });
 
   it("runs the static checks before anything touches the network", async () => {

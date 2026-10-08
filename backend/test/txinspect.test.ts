@@ -237,6 +237,18 @@ describe("compute budget", () => {
     assert.deepEqual(readComputeBudget(tx), { unitLimit: 300_000n, unitPriceMicroLamports: 5_000n });
   });
 
+  it("rejects a truncated SetComputeUnitLimit instead of ignoring it", async () => {
+    const tx = await build([{ programAddress: COMPUTE_BUDGET_PROGRAM, data: new Uint8Array([2, 1, 0]) }]);
+    assert.equal(await codeOf(() => readComputeBudget(tx)), "malformed-compute-budget");
+    assert.equal(await codeOf(() => assertComputeBudgetWithinPolicy(tx, policy)), "malformed-compute-budget");
+  });
+
+  it("rejects a truncated SetComputeUnitPrice instead of ignoring it", async () => {
+    const tx = await build([{ programAddress: COMPUTE_BUDGET_PROGRAM, data: new Uint8Array([3, 1, 0, 0, 0]) }]);
+    assert.equal(await codeOf(() => readComputeBudget(tx)), "malformed-compute-budget");
+    assert.equal(await codeOf(() => worstCaseFeeLamports(tx)), "malformed-compute-budget");
+  });
+
   it("rejects a unit limit above the cap", async () => {
     const tx = await build([computeLimit(400_001)]);
     assert.equal(await codeOf(() => assertComputeBudgetWithinPolicy(tx, policy)), "compute-limit");

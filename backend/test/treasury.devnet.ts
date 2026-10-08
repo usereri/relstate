@@ -75,16 +75,13 @@ describe("treasury on devnet", () => {
       return report;
     };
 
-    // The mint is shared across runs, so earlier runs may have left supply behind.
-    // The mock ledger starts empty; account for that supply as already-backed.
+    // The mint is shared across runs. In mock mode the reserve ledger is seeded from the
+    // mint's existing supply, so a fresh process starts at exactly zero headroom.
     const baseline = (await fetchMint(rpc, mint)).data.supply;
-    if (baseline > 0n) {
-      treasury.creditReserve(baseline, "baseline: supply from earlier devnet runs");
-      step(`mint already had ${baseline} supply; credited it to the mock ledger`);
-    }
     const start = await assertInvariant("start");
     assert.equal(start.supply, baseline);
     assert.equal(start.reserve, baseline);
+    assert.equal(start.headroom, 0n);
 
     // 1. A wrap with nothing backing it must fail and must not mint.
     await assert.rejects(treasury.wrap({ wallet: tenant.address, amount: 1n }), InvariantViolation);
@@ -138,6 +135,10 @@ describe("treasury on devnet", () => {
     assert.equal(audited.destinationToken, landlordToken);
     assert.equal(audited.mint, mint);
     step(`auditor decrypted ${audited.amount} from ${audited.signature}`);
+
+    // The tenant's remaining 350k confidential balance (and 400k public) is left behind on purpose:
+    // recovering it costs another proof plan on a throwaway key, for nothing on a devnet demo mint.
+    // Do not "fix" this; the next run's baseline accounts for it.
 
     // 6. Landlord applies the pending balance, withdraws to public, and unwraps.
     const common = { run: createPlanRunner(client), rpc, payer: treasuryKey.signer };
