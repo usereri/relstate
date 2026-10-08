@@ -33,14 +33,22 @@ export function LocalWalletProvider({ role, children }: { role: Role; children: 
   return <LocalContext.Provider value={{ role, on, set }}>{children}</LocalContext.Provider>;
 }
 
-/** The signer for every transaction: null until a wallet is connected. */
+/**
+ * The signer for every transaction: null until a wallet is connected.
+ *
+ * `signMessage` is threaded through because the wallet contract derives the confidential-balance
+ * keys from it; without it an extension wallet cannot pay rent privately. It stays optional —
+ * not every adapter offers it.
+ */
 export function useMe(): chain.Me | null {
   const local = useContext(LocalContext);
-  const { publicKey, signTransaction, signAllTransactions } = useWallet();
+  const { publicKey, signTransaction, signAllTransactions, signMessage } = useWallet();
   return useMemo(() => {
     if (local.on) return chain.makeMe(chain.localWallet(local.role));
-    return publicKey && signTransaction && signAllTransactions ? chain.makeMe({ publicKey, signTransaction, signAllTransactions }) : null;
-  }, [local.on, local.role, publicKey, signTransaction, signAllTransactions]);
+    return publicKey && signTransaction && signAllTransactions
+      ? chain.makeMe({ publicKey, signTransaction, signAllTransactions, signMessage })
+      : null;
+  }, [local.on, local.role, publicKey, signTransaction, signAllTransactions, signMessage]);
 }
 
 export function WalletButton({ balances }: { balances?: { sol: number; usdc: number | null } }) {
