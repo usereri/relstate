@@ -134,19 +134,27 @@ async function main() {
 
   step("building the confidential transfer plan (equality + validity + range proofs)");
   const amount = 250_000n;
-  // A marker instruction stands in for pay_rent until Lane P publishes the layout; it proves the
-  // caller can put its own instruction in the same transaction as the transfer itself.
+  // A memo stands in for pay_rent. What matters is its POSITION: the program matches the transfer
+  // by position, so pay_rent has to be the instruction directly after it.
+  const MEMO = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
   const marker = await conf.fromWeb3Instruction({
-    programId: { toBase58: () => "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr" },
+    programId: { toBase58: () => MEMO },
     keys: [],
     data: new TextEncoder().encode("pay_rent stand-in"),
   });
-  const messages = await conf.planTransfer(session, { destinationToken: destination, amount, alsoInLastTransaction: [marker] });
+  const messages = await conf.planTransfer(session, { destinationToken: destination, amount, rightAfterTransfer: [marker] });
   pass(`plan: ${messages.length} transactions, instruction counts ${messages.map((m) => m.instructions.length).join(", ")}`);
-  const last = messages[messages.length - 1];
-  if (last.instructions[last.instructions.length - 1].programAddress !== "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
-    throw new Error("the appended instruction did not land last in the final transaction");
-  pass("the caller's instruction rides in the same transaction as the transfer");
+
+  const withTransfer = messages.findIndex((m) =>
+    m.instructions.some((i) => i.programAddress === conf.TOKEN_2022_PROGRAM && i.data?.[0] === 27 && i.data?.[1] === 7),
+  );
+  if (withTransfer < 0) throw new Error("no ConfidentialTransfer instruction found in the plan");
+  const ixs = messages[withTransfer].instructions;
+  write(`       tx ${withTransfer + 1}/${messages.length}: ${ixs.map((i) => `${i.programAddress.slice(0, 4)}#${i.data?.[0] ?? "-"},${i.data?.[1] ?? "-"}`).join(" | ")}`, "dim");
+  const at = ixs.findIndex((i) => i.programAddress === conf.TOKEN_2022_PROGRAM && i.data?.[0] === 27 && i.data?.[1] === 7);
+  if (ixs[at + 1]?.programAddress !== MEMO)
+    throw new Error(`pay_rent stand-in is not directly after the transfer (transfer at ${at}, next is ${ixs[at + 1]?.programAddress ?? "nothing"})`);
+  pass(`the transfer is at index ${at} and pay_rent's slot is ${at + 1}: directly after, as the program requires`);
 
   step("submitting the transfer");
   const signatures = await conf.runPlan(session, messages);

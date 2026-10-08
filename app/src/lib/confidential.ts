@@ -247,13 +247,27 @@ export async function loadBalance(session: ConfidentialSession): Promise<Confide
 const flatten = (plan: { kind: string; message?: PlannedMessage; plans?: unknown[] }): PlannedMessage[] =>
   plan.kind === "single" ? [plan.message!] : (plan.plans as typeof plan[]).flatMap(flatten);
 
-async function plan(session: ConfidentialSession, instructionPlan: unknown, extra: Instruction[], l: Libs): Promise<PlannedMessage[]> {
+export const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+/** `TokenInstruction::ConfidentialTransferExtension`, then `ConfidentialTransferInstruction::Transfer`. */
+const TRANSFER_DISCRIMINATOR = [27, 7];
+
+const isConfidentialTransfer = (ix: Instruction) =>
+  ix.programAddress === TOKEN_2022_PROGRAM &&
+  !!ix.data &&
+  ix.data[0] === TRANSFER_DISCRIMINATOR[0] &&
+  ix.data[1] === TRANSFER_DISCRIMINATOR[1];
+
+async function plan(session: ConfidentialSession, instructionPlan: unknown, l: Libs): Promise<PlannedMessage[]> {
   const { kit } = l;
   const planner = kit.createTransactionPlanner({
     createTransactionMessage: () =>
       kit.pipe(kit.createTransactionMessage({ version: 0 }), (m) => kit.setTransactionMessageFeePayerSigner(session.payer, m)),
   });
-  const messages = flatten(await planner(instructionPlan as Parameters<typeof planner>[0]));
+  return flatten(await planner(instructionPlan as Parameters<typeof planner>[0]));
+}
+
+/** Appends to the last transaction of a plan, for callers with nothing to be adjacent to. */
+function appendToLast(messages: PlannedMessage[], extra: Instruction[], { kit }: Libs): PlannedMessage[] {
   if (!extra.length) return messages;
   const last = messages.length - 1;
   messages[last] = kit.appendTransactionMessageInstructions(extra, messages[last]);
@@ -267,7 +281,7 @@ async function plan(session: ConfidentialSession, instructionPlan: unknown, extr
  */
 export async function planCreateAccount(session: ConfidentialSession, alsoInLastTransaction: Instruction[] = []): Promise<PlannedMessage[]> {
   const l = await libs();
-  return plan(
+  const messages = await plan(
     session,
     await l.confidential.getCreateConfidentialTransferAccountInstructionPlan({
       payer: session.payer,
@@ -278,9 +292,9 @@ export async function planCreateAccount(session: ConfidentialSession, alsoInLast
       elgamalKeypair: session.keys.elgamal,
       aesKey: session.keys.ae,
     }),
-    alsoInLastTransaction,
     l,
   );
+  return appendToLast(messages, alsoInLastTransaction, l);
 }
 
 /**
@@ -291,7 +305,7 @@ export async function planCreateAccount(session: ConfidentialSession, alsoInLast
 export async function planApplyPending(session: ConfidentialSession, alsoInLastTransaction: Instruction[] = []): Promise<PlannedMessage[]> {
   const l = await libs();
   const { data } = await l.token.fetchToken(session.rpc, session.token);
-  return plan(
+  const messages = await plan(
     session,
     l.kit.sequentialInstructionPlan([
       l.confidential.getApplyConfidentialPendingBalanceInstructionFromToken({
@@ -302,25 +316,30 @@ export async function planApplyPending(session: ConfidentialSession, alsoInLastT
         aesKey: session.keys.ae,
       }),
     ]),
-    alsoInLastTransaction,
     l,
   );
+  return appendToLast(messages, alsoInLastTransaction, l);
 }
 
 /**
  * Builds a confidential transfer of `amount` base units to `destinationToken`.
  *
  * The amount is split into lo/hi halves and the three required proofs are staged in context-state
- * accounts; the returned messages must run in order, and the LAST one carries the
- * `ConfidentialTransfer` instruction itself. Pass `alsoInLastTransaction` to put `pay_rent`
- * alongside it, which is what the program's instruction introspection expects.
+ * accounts; the returned messages must run in order, and the last one carries the
+ * `ConfidentialTransfer` instruction itself.
+ *
+ * `rightAfterTransfer` is for `pay_rent`. The program matches the transfer by position, not by
+ * searching the transaction: it must be the instruction DIRECTLY before `pay_rent`
+ * (docs/contracts/program-interface.md §3), so these instructions are spliced in immediately
+ * after the transfer rather than appended to the end — the planner puts the context-state closes
+ * after the transfer, and anything between the two would fail as `MissingConfidentialTransfer`.
  *
  * The auditor ElGamal key is read off the mint by the helper, so every transfer stays decryptable
  * by us for compliance without the app ever holding that key.
  */
 export async function planTransfer(
   session: ConfidentialSession,
-  opts: { destinationToken: Address; amount: bigint; alsoInLastTransaction?: Instruction[] },
+  opts: { destinationToken: Address; amount: bigint; rightAfterTransfer?: Instruction[] },
 ): Promise<PlannedMessage[]> {
   const l = await libs();
   const [source, destination, mint] = await Promise.all([
@@ -328,7 +347,7 @@ export async function planTransfer(
     l.token.fetchToken(session.rpc, opts.destinationToken),
     l.token.fetchMint(session.rpc, session.mint),
   ]);
-  return plan(
+  const messages = await plan(
     session,
     await l.confidential.getConfidentialTransferInstructionPlan({
       payer: session.payer,
@@ -344,9 +363,30 @@ export async function planTransfer(
       sourceElgamalKeypair: session.keys.elgamal,
       aesKey: session.keys.ae,
     }),
-    opts.alsoInLastTransaction ?? [],
     l,
   );
+  return opts.rightAfterTransfer?.length ? spliceAfterTransfer(messages, opts.rightAfterTransfer, l) : messages;
+}
+
+/**
+ * Puts `extra` directly after the `ConfidentialTransfer` instruction, wherever the planner placed
+ * it. Throws rather than guessing if the plan has no such instruction, because a silently wrong
+ * position only shows up on chain as `MissingConfidentialTransfer`.
+ */
+function spliceAfterTransfer(messages: PlannedMessage[], extra: Instruction[], { kit }: Libs): PlannedMessage[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const instructions = messages[i].instructions as readonly Instruction[];
+    const at = instructions.findIndex(isConfidentialTransfer);
+    if (at < 0) continue;
+    const reordered = [...instructions.slice(0, at + 1), ...extra, ...instructions.slice(at + 1)];
+    messages[i] = kit.appendTransactionMessageInstructions(
+      reordered,
+      // appendTransactionMessageInstructions only adds, so rebuild the instruction list from empty.
+      { ...messages[i], instructions: [] } as PlannedMessage,
+    );
+    return messages;
+  }
+  throw new Error("No ConfidentialTransfer instruction in the plan, so there is nothing for pay_rent to sit behind.");
 }
 
 /** Runs planned messages in order, returning one signature per transaction. */
