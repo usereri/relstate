@@ -33,6 +33,12 @@ export type CreateRusdcMintResult = {
  * - **mint and freeze authority both on the treasury key**: minting happens only
  *   against a confirmed on-ramp deposit, and freeze is the compliance
  *   kill-switch (not exercised in the demo).
+ *
+ * `ConfidentialTransferMint` is the **only** extension on purpose. The
+ * program's `set_mint_allowed` rejects a confidential mint with no auditor key,
+ * and also rejects TransferFee, NonTransferable, PermanentDelegate,
+ * TransferHook, DefaultAccountState and Pausable. Adding any of those here
+ * would produce a mint no lease could be denominated in.
  */
 export async function createRusdcMint(options: {
   client: SolanaClient;

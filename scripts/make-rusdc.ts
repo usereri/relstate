@@ -29,8 +29,11 @@ const has = (name: string): boolean => args.includes(`--${name}`);
 
 const ENV_PATH = resolve(REPO_ROOT, ".env");
 const KEYS_DIR = resolve(REPO_ROOT, ".keys");
-/** The mint's rent plus enough headroom for the integration test's transactions. */
-const MIN_TREASURY_LAMPORTS = 200_000_000n;
+/**
+ * The mint's rent plus headroom for the confidential-transfer proof plans,
+ * whose context-state accounts are large. `spikes/ct` used the same threshold.
+ */
+const MIN_TREASURY_LAMPORTS = 300_000_000n;
 
 /** Upserts keys in .env, leaving every other line untouched. Never logs a value. */
 function writeEnv(updates: Record<string, string>): void {
