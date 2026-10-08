@@ -13,7 +13,7 @@ export const GRACE_SECS = IS_LOCAL ? 3 * 86_400 : 20;
 export const TERM_PERIODS = 3;
 export const CLAIM_WINDOW_SECS = 10;
 export const USDC = 1_000_000;
-export const MINT = "CpzHPiiCaJ6LUTcSXgcptmjr8fyto3GAxH48b1FJbYDQ";
+export const MINT = "DLr6atdFNPUoAsQ2zpBdsJNmjV9E1wHMKUh9kmB4k8Dq";
 
 /**
  * The Token-2022 confidential mint rent is settled in (`scripts/make-rusdc.ts` creates it and the
