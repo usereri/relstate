@@ -289,7 +289,7 @@ mod tests {
     fn rejects_a_public_transfer_checked() {
         let (source, mint, destination) = keys();
         let mut ix = transfer_ix(source, mint, destination);
-        ix.data = vec![u8::from(12u8), 0, 0, 0, 0, 0, 0, 0, 0, 6]; // TransferChecked
+        ix.data = vec![12, 0, 0, 0, 0, 0, 0, 0, 0, 6]; // TransferChecked
         assert!(!is_confidential_transfer_to(&ix, &source, &mint, &destination));
     }
 

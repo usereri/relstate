@@ -9,7 +9,7 @@ Relstate is a rental marketplace on Solana where the deposit sits in an on-chain
 <p>
   <img alt="Solana" src="https://img.shields.io/badge/Solana-Anchor%201.1-9945FF?logo=solana&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white">
-  <img alt="Tests" src="https://img.shields.io/badge/program%20tests-39%20passing-2ea44f">
+  <img alt="Tests" src="https://img.shields.io/badge/program%20tests-54%20passing-2ea44f">
   <img alt="Status" src="https://img.shields.io/badge/status-hackathon%20prototype-orange">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
@@ -99,7 +99,7 @@ The third rule closes the cheap trick of finishing a tiny lease to earn a discou
 | `release_deposit` | landlord | After the term: returns the deposit minus an optional deduction. Both records show it. |
 | `claim_deposit` | tenant | If the landlord does not release within the claim window, the tenant takes it back and the landlord's record shows it. |
 
-Program ID: `5J52oGfo7BjC529vizEaM96QtxVFD4Kbv22Tw8aXa1Ar`
+Program ID: `G4iMjveQKXztnGoxigAeWPrb5evT9yt6qaLkgQEp2dXm`
 
 ## Quick start (local)
 
@@ -113,15 +113,35 @@ npm install
 # the payer that funds accounts and owns the default listings
 solana-keygen new              # skip if ~/.config/solana/id.json already exists
 
-# the test-USDC mint. Its address is baked into the program, so use your own key:
+# the test-USDC mint the app uses. The program no longer bakes in a mint address (see
+# "Allowed mints" below), so only the app needs to be told about it:
 solana-keygen new --no-bip39-passphrase -o tests/test-usdc-mint.json
 solana-keygen pubkey tests/test-usdc-mint.json
-#   -> put that address in ALLOWED_MINT (programs/relstate/src/constants.rs)
-#      and in MINT (app/src/lib/config.ts)
-
-# only if you do not have the program's deploy keypair:
-anchor keys sync
+#   -> put that address in MINT (app/src/lib/config.ts)
 ```
+
+`make test-demo` does not need that mint: the test suite creates and allows its own.
+
+#### Program keypair
+
+The deploy keypair lives **outside the repo**, at `~/.config/relstate/program-keypair.json`, so
+every worktree and machine deploys the same program id without the private key being in git. The
+Makefile copies it into `target/deploy/` before each build. Copy it from whoever has it, or
+regenerate the id if you are starting a deployment of your own:
+
+```bash
+solana-keygen new --no-bip39-passphrase -o ~/.config/relstate/program-keypair.json
+chmod 600 ~/.config/relstate/program-keypair.json
+make program-keypair && anchor keys sync   # rewrites declare_id! and Anchor.toml to match
+```
+
+Override the location with `PROGRAM_KEYPAIR=/path/to/key.json make test-demo`.
+
+#### Allowed mints
+
+A lease can only be denominated in a mint the program's `Config` account allows, so a fresh
+network needs `init_config` once and then `set_mint_allowed` per mint. See
+[`docs/contracts/program-interface.md`](docs/contracts/program-interface.md).
 
 Optionally copy `.env.example` to `.env` to list wallets that `make demo-setup` should fund.
 
@@ -166,7 +186,7 @@ On devnet a rent period is 45 seconds and the demo-clock is hidden. The built-in
 make test-demo      # anchor test -- --features demo   (needs port 8899 free)
 ```
 
-39 program tests cover the lease lifecycle, listings, applications, the discount rules, defaults and every rejection path. They run against Surfpool and jump its clock to simulate months.
+44 program tests cover the lease lifecycle, listings, applications, the discount rules, defaults, the mint allowlist, a Token-2022 lease and every rejection path. They run against Surfpool and jump its clock to simulate months. `anchor test` runs 10 Rust unit tests first, covering the confidential-transfer introspection in `pay_rent`.
 
 ## Project layout
 
@@ -183,9 +203,9 @@ Makefile               demo-chain, demo-setup, demo-app, test-demo
 
 ## Design notes and limits
 
-This is a prototype, not audited, and it only accepts one test token.
+This is a prototype, not audited, and it only accepts test tokens an admin has allowed.
 
-- **Mint.** Leases accept a single hard-coded test-USDC mint, so a worthless token cannot build a reputation.
+- **Mint.** Leases are only allowed on a mint in the program's `Config` allowlist, so a worthless token cannot build a reputation. Whoever calls `init_config` first on a network owns that list.
 - **Timing.** The `demo` build allows 1-second periods and a 10-second claim window. Without it, a period is at least **28 days** and the landlord has **14 days** to release the deposit.
 - **Deductions are the landlord's call.** They are recorded on both profiles, but there is no dispute process yet.
 - **A wallet is not a person.** A bad tenant can start a fresh wallet. New wallets get no discount, but identity attestation is the real answer and is not built.
@@ -212,7 +232,7 @@ Dispute resolution for deductions, identity attestations, importing rental histo
 
 ## Tech
 
-Anchor 1.1 (Rust) · Solana · SPL Token · TypeScript · React 19 · Vite 7 · Tailwind 4 · Solana wallet-adapter · Surfpool for local networks and tests.
+Anchor 1.1 (Rust) · Solana · SPL Token / Token-2022 · TypeScript · React 19 · Vite 7 · Tailwind 4 · Solana wallet-adapter · Surfpool for local networks and tests.
 
 ## License
 

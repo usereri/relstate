@@ -5,10 +5,16 @@ Lane B (rUSDC mint, backend, scripts) code against this.
 
 Program id: **`G4iMjveQKXztnGoxigAeWPrb5evT9yt6qaLkgQEp2dXm`**
 
-> Regenerated: no keypair for the previously declared `5J52oGfo7Bj…` exists any more, so the
-> program could not be deployed or tested. `anchor keys sync` wrote a fresh one. The app and the
-> scripts read the id from `target/idl/relstate.json`, so a rebuild picks it up; the id in
-> `README.md` is stale. If a canonical keypair turns up, `anchor keys sync` moves it back.
+Regenerated, because no keypair for the previously declared `5J52oGfo7Bj…` exists any more, so
+the program could not be deployed or tested at all. The app and the scripts read the id from
+`target/idl/relstate.json`, so a rebuild picks it up.
+
+The deploy keypair lives **outside the repo**, at `~/.config/relstate/program-keypair.json`, so
+every worktree and machine deploys the same id without the private key being in git. `make
+test-demo` and `make demo-chain` copy it into `target/deploy/` first (target is generated, and
+`cargo clean` wipes it); without the file, anchor silently generates a new id that no longer
+matches `declare_id!`. Override with `PROGRAM_KEYPAIR=/path/to/key.json`. See "Program keypair"
+in `README.md`.
 
 ## 1. Three breaking changes
 
@@ -175,6 +181,16 @@ needs its own `solana-keygen` step.
 | Gap | Where |
 |---|---|
 | The settled confidential amount is unverified on chain | by design, `docs/privacy.md` |
-| **The deposit is still public.** `fund_deposit` does a public `transfer_checked` into the vault, and `release_deposit` / `claim_deposit` / `mark_default` pay out publicly | not in Phase 1 scope. A confidential vault needs the lease PDA to hold ElGamal keys, which it cannot. `docs/privacy.md` lists deposit transfer amounts as hidden, so either the doc or the vault design needs revisiting after the gate |
+| The deposit stays public: `fund_deposit` moves a public amount into the vault, and `release_deposit` / `claim_deposit` / `mark_default` pay out publicly | settled, `docs/privacy.md`. The vault is a PDA-owned token account and a PDA cannot hold ElGamal keys, so its balance cannot be confidential. Only rent is private |
 | `init_config` is first-caller-wins | acceptable for a demo; `set_admin` is the recovery path |
-| The confidential accept path is not covered on chain by `make test-demo` | the ZK ElGamal proof program is not exercised locally. Covered by 10 Rust unit tests on the matcher plus the Phase 1 exit-gate devnet run |
+| The confidential **accept** path is not covered on chain by `make test-demo` | a confidential `Transfer` needs real ZK proofs, which the local suite cannot produce: with a dummy payload the transfer fails inside Token-2022 *before* `pay_rent` runs, so any assertion about `pay_rent`'s behaviour would pass for the wrong reason. Covered instead by 10 Rust unit tests over the matcher in `programs/relstate/src/instructions/pay_rent.rs`, and end to end by the Phase 1 exit-gate devnet run |
+
+### For Lane B: keep enough public rUSDC to fund a deposit
+
+`docs/contracts/treasury.md` has the backend mint rUSDC to the tenant and then sponsor `deposit`
++ `apply pending`, which moves the balance into the confidential side. `fund_deposit` needs a
+**public** balance, so a tenant whose whole balance is confidential cannot accept a lease — the
+`transfer_checked` into the vault fails with insufficient funds.
+
+So either hold back `lease.deposit_amount` from the confidential move, or withdraw that much back
+to the public balance before `fund_deposit`. Only rent needs to be confidential.
