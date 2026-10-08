@@ -50,8 +50,8 @@ program.methods.initConfig()
   .signers([admin]).rpc();
 
 // Adds (allowed = true) or removes (false) a mint. Idempotent either way. Admin only.
-program.methods.setMintAllowed(mint /* PublicKey */, allowed /* boolean */)
-  .accountsPartial({ admin: admin.publicKey, config })
+program.methods.setMintAllowed(allowed /* boolean */)
+  .accountsPartial({ admin: admin.publicKey, config, mint /* PublicKey of the mint account */ })
   .signers([admin]).rpc();
 
 // Hands the config to another key. Admin only.
@@ -61,10 +61,21 @@ program.methods.setAdmin(newAdmin /* PublicKey */)
 ```
 
 `admin` is the signer in all three. `initConfig` needs it writable (it pays rent); the other two
-do not. `setMintAllowed` and `setAdmin` share one accounts struct, so their account lists are
-identical.
+do not. `setMintAllowed` additionally takes the `mint` account (read-only, no token program),
+because it inspects the mint's extensions.
 
-Errors: `NotAdmin` for the wrong signer, `MintListFull` at capacity. `init_config` on an existing
+**The allowlist is a security control.** When `allowed = true`, `set_mint_allowed` rejects, at setup
+time rather than at first use:
+
+- a `ConfidentialTransferMint` with no auditor ElGamal pubkey (`ConfidentialMintNeedsAuditor`);
+- a mint carrying `TransferFeeConfig`, `NonTransferable`, `PermanentDelegate`, `TransferHook`,
+  `Pausable`, or `DefaultAccountState` set to frozen (`DisallowedMintExtension`).
+
+Removing a mint (`allowed = false`) never inspects it. `TransferWithFee` (Token-2022 confidential
+discriminant 13) is intentionally unmatched by `pay_rent`, since fee mints cannot be allowed.
+
+Errors: `NotAdmin` for the wrong signer, `MintListFull` at capacity, `InvalidNewAdmin` if
+`setAdmin` is given the all-zero pubkey. `init_config` on an existing
 config fails inside Anchor's `init` (account already in use) — check with
 `program.account.config.fetchNullable(config)` first rather than catching it.
 
@@ -128,13 +139,29 @@ The transfer must be **the instruction directly before `pay_rent`**, and must ma
 | `accounts[1]` | mint == the lease mint |
 | `accounts[2]` | destination token account == `landlord_ata` |
 
-Nothing past `accounts[2]` is inspected, so **both proof modes work**: inline proofs (where
-`accounts[3]` is the instructions sysvar) and proofs pre-verified into context state accounts.
-Build the transfer however the proof plan requires.
+Nothing past `accounts[2]` is inspected, so both proof modes are acceptable *in shape*: inline
+proofs (where `accounts[3]` is the instructions sysvar) and proofs pre-verified into context state
+accounts. The adjacency rule is what actually constrains the build:
+
+**The standard `spl-token` `transfer()` builder cannot be used as-is.** It hard-requires a
+`proof_instruction_offset` of exactly `1, 2, 3` and appends the three proof-verify instructions
+*after* the transfer, which lands them between the transfer and `pay_rent` — `MissingConfidentialTransfer`.
+
+- **Pre-verified context state accounts are the easy, supported path**, and the one the app's
+  confidential flow uses. The proofs are verified in earlier instructions and the transfer
+  references the resulting context state accounts instead of the instructions sysvar, so nothing
+  sits between the transfer and `pay_rent` and no offset contortion is needed.
+- **Inline proofs** are still reachable, but only by hand-building the transfer instruction with
+  *negative* `proof_instruction_offset`s (`-3, -2, -1`) so the three verify instructions precede the
+  transfer. `verify_and_extract_context` resolves the offset relatively and accepts negatives. This
+  path is correct but is **not** exercised on chain by the local suite (see [§5](#5-known-gaps)).
+
+Both shapes are covered at the matcher level by the Rust unit tests (`accepts_a_matching_transfer`
+for the inline/sysvar shape, `accepts_a_transfer_with_pre_verified_proofs` for context state
+accounts); neither is driven on chain locally, because that needs real ZK proofs.
 
 Other instructions in the transaction are fine as long as none comes between the transfer and
-`pay_rent`. A `ComputeBudget` instruction at the front of the transaction is fine. Proof
-verification instructions that must sit next to the transfer go **before** it, not between.
+`pay_rent`. A `ComputeBudget` instruction at the front of the transaction is fine.
 
 `MissingConfidentialTransfer` is the error for anything that does not match: no preceding
 instruction, a classic `transfer_checked` instead, a different Token-2022 instruction, the wrong
@@ -169,6 +196,8 @@ Before any lease can be proposed, on localnet or devnet:
 3. `set_mint_allowed(mint, true)` for every mint leases may use — the classic test-USDC mint, and
    the Token-2022 rUSDC mint once Lane B has created it.
 
+Steps 1-2 must run in the same scripted sequence (`scripts/setup-demo.ts` does this): `init_config`
+is first-caller-wins, so a deployed program with no config is claimable by anyone until it runs.
 Step 2 is skipped if `program.account.config.fetchNullable(configPda)` already returns an account.
 Step 3 is idempotent, so running it again is harmless.
 
