@@ -6,9 +6,13 @@
 //   RPC=https://api.devnet.solana.com node scripts/setup-demo.ts [<wallet> ...]
 // The payer (ANCHOR_WALLET or ~/.config/solana/id.json) becomes the mint authority, pays account rent
 // and owns the default listings (import that keypair into a wallet to lease them yourself).
+// The mint's address is derived from the payer (createWithSeed), so no mint keypair file is needed
+// and every worktree and branch gets the same mint as long as it uses the same wallet.
 import * as anchor from "@anchor-lang/core";
 import {
-  createMint,
+  MINT_SIZE,
+  TOKEN_PROGRAM_ID,
+  createInitializeMint2Instruction,
   getAccount,
   getOrCreateAssociatedTokenAccount,
   mintTo,
@@ -19,11 +23,12 @@ import * as os from "os";
 import * as path from "path";
 import type { Relstate } from "../target/types/relstate.ts";
 
-const { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } = anchor.web3;
+const { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction } = anchor.web3;
 
 const RPC = process.env.RPC ?? "http://localhost:8899";
 const USDC = 1_000_000; // 6 decimals
 const WALLET_USDC = 10_000 * USDC;
+const MINT_SEED = "relstate-test-usdc";
 
 const DEFAULT_LISTINGS = [
   { id: 1, title: "Sunlit 1-bedroom, Kazimierz", city: "Kraków", blurb: "Furnished · 42 m² · fibre internet · desk by the window", photo: "/listings/kazimierz.jpg", rent: 850 },
@@ -92,7 +97,7 @@ async function main() {
 
   const conn = new Connection(RPC, "confirmed");
   const payer = load(process.env.ANCHOR_WALLET ?? path.join(os.homedir(), ".config/solana/id.json"));
-  const mintKp = load(path.join(import.meta.dirname, "../tests/test-usdc-mint.json"));
+  const mint = await PublicKey.createWithSeed(payer.publicKey, MINT_SEED, TOKEN_PROGRAM_ID);
 
   const topUp = async (key: anchor.web3.PublicKey, minSol: number) => {
     if ((await conn.getBalance(key)) >= minSol * LAMPORTS_PER_SOL) return;
@@ -105,20 +110,33 @@ async function main() {
   };
   await topUp(payer.publicKey, 1);
 
-  if (!(await conn.getAccountInfo(mintKp.publicKey))) {
-    await createMint(conn, payer, payer.publicKey, null, 6, mintKp);
-    console.log("created test-USDC mint", mintKp.publicKey.toBase58());
+  if (!(await conn.getAccountInfo(mint))) {
+    const tx = new Transaction().add(
+      SystemProgram.createAccountWithSeed({
+        fromPubkey: payer.publicKey,
+        basePubkey: payer.publicKey,
+        seed: MINT_SEED,
+        newAccountPubkey: mint,
+        lamports: await conn.getMinimumBalanceForRentExemption(MINT_SIZE),
+        space: MINT_SIZE,
+        programId: TOKEN_PROGRAM_ID,
+      }),
+      createInitializeMint2Instruction(mint, 6, payer.publicKey, null),
+    );
+    await sendAndConfirmTransaction(conn, tx, [payer]);
+    console.log("created test-USDC mint", mint.toBase58());
   }
+  console.log(`test-USDC mint ${mint.toBase58()} (MINT in app/src/lib/config.ts must match)`);
 
   for (const wallet of wallets) {
     await topUp(wallet, 1);
-    const ata = await getOrCreateAssociatedTokenAccount(conn, payer, mintKp.publicKey, wallet);
+    const ata = await getOrCreateAssociatedTokenAccount(conn, payer, mint, wallet);
     const have = Number((await getAccount(conn, ata.address)).amount);
-    if (have < WALLET_USDC) await mintTo(conn, payer, mintKp.publicKey, ata.address, payer, WALLET_USDC - have);
+    if (have < WALLET_USDC) await mintTo(conn, payer, mint, ata.address, payer, WALLET_USDC - have);
     console.log(`${wallet.toBase58()}  ${WALLET_USDC / USDC} test USDC`);
   }
 
-  await setupProgram(conn, payer, mintKp.publicKey);
+  await setupProgram(conn, payer, mint);
 }
 
 main().catch((e) => {
