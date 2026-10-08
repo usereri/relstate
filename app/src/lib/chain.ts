@@ -1,6 +1,6 @@
 import * as anchor from "@anchor-lang/core";
 import { AnchorProvider, BN, Program } from "@anchor-lang/core";
-import { getAccount, getAssociatedTokenAddressSync } from "@solana/spl-token";
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, getAccount, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import idl from "@target/idl/relstate.json";
 import type { Relstate } from "@target/types/relstate";
 import { GRACE_SECS, IS_LOCAL, MINT, PERIOD_SECS, RPC, TERM_PERIODS } from "./config";
@@ -121,17 +121,36 @@ export const confidential = () => import("./confidential");
 
 export interface Me {
   key: PubKey;
-  ata: PubKey;
   program: Program<Relstate>;
   wallet: WalletProvider;
 }
 
-const tokenAccount = (wallet: PubKey) => getAssociatedTokenAddressSync(mint, wallet);
+/**
+ * Which token program owns the lease mint.
+ *
+ * The program moved from `anchor_spl::token::Token`, which had one known address the Anchor
+ * client could infer, to `Interface<TokenInterface>`, which accepts both token programs and so
+ * cannot be inferred (docs/contracts/program-interface.md §1). Every instruction that moves
+ * tokens now has to name it, and the associated-token address depends on it too, so both come
+ * from the mint account itself rather than a hard-coded guess. Read once per session.
+ */
+let resolving: Promise<PubKey> | undefined;
+export const tokenProgram = (): Promise<PubKey> =>
+  (resolving ??= connection.getAccountInfo(mint).then(
+    (info) => (info?.owner.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID),
+    // An unreachable mint is reported by the read that needs it; classic is the safe assumption.
+    () => TOKEN_PROGRAM_ID,
+  ));
+
+const ataWith = (wallet: PubKey, program: PubKey) => getAssociatedTokenAddressSync(mint, wallet, false, program);
+
+/** The lease mint's associated token account for a wallet, on whichever token program owns it. */
+export const tokenAccountFor = async (wallet: PubKey) => ataWith(wallet, await tokenProgram());
 
 export function makeMe(w: WalletProvider | AdapterWallet): Me {
   const wallet = asWalletProvider(w);
   const provider = new AnchorProvider(connection, wallet as never, { commitment: "confirmed" });
-  return { key: wallet.publicKey, ata: tokenAccount(wallet.publicKey), program: new Program<Relstate>(idl as Relstate, provider), wallet };
+  return { key: wallet.publicKey, program: new Program<Relstate>(idl as Relstate, provider), wallet };
 }
 
 const reader = new Program<Relstate>(idl as Relstate, new AnchorProvider(connection, readOnlyWallet() as never, { commitment: "confirmed" }));
@@ -237,10 +256,12 @@ export async function loadBalances(wallet: string): Promise<{ sol: number; usdc:
   const key = new PublicKey(wallet);
   const [lamports, usdc] = await Promise.all([
     connection.getBalance(key),
-    getAccount(connection, tokenAccount(key)).then(
-      (a) => Number(a.amount),
-      () => null,
-    ),
+    tokenProgram()
+      .then(async (program) => getAccount(connection, ataWith(key, program), undefined, program))
+      .then(
+        (a) => Number(a.amount),
+        () => null,
+      ),
   ]);
   return { sol: lamports / anchor.web3.LAMPORTS_PER_SOL, usdc };
 }
@@ -326,6 +347,7 @@ export function closeApplication(me: Me, a: ApplicationView) {
 export async function proposeLease(me: Me, id: string, l: ListingView, tenant: string, hash: number[], application?: ApplicationView) {
   const tenantKey = new PublicKey(tenant);
   const lease = leasePda(me.key, id);
+  const tokenProgramId = await tokenProgram();
   const call = me.program.methods
     .proposeLease(
       new BN(id),
@@ -345,6 +367,7 @@ export async function proposeLease(me: Me, id: string, l: ListingView, tenant: s
       lease,
       vault: vaultPda(lease),
       landlordProfile: profilePda(me.key),
+      tokenProgram: tokenProgramId,
     });
   return send(me, application ? call.postInstructions([await closeApplicationCall(me, application).instruction()]) : call);
 }
@@ -353,6 +376,7 @@ export async function proposeLease(me: Me, id: string, l: ListingView, tenant: s
 // so nothing stale is left to withdraw.
 export async function fundDeposit(me: Me, l: LeaseView, hash: number[], applications: ApplicationView[] = []) {
   const lease = new PublicKey(l.address);
+  const tokenProgramId = await tokenProgram();
   const call = me.program.methods
     .fundDeposit(hash)
     .accountsPartial({
@@ -360,29 +384,42 @@ export async function fundDeposit(me: Me, l: LeaseView, hash: number[], applicat
       lease,
       mint,
       vault: vaultPda(lease),
-      tenantAta: me.ata,
+      tenantAta: await tokenAccountFor(me.key),
       tenantProfile: profilePda(me.key),
+      tokenProgram: tokenProgramId,
     });
   const closes = await Promise.all(applications.map((a) => closeApplicationCall(me, a).instruction()));
   return send(me, closes.length ? call.postInstructions(closes) : call);
 }
 
-export function payRent(me: Me, l: LeaseView) {
+/**
+ * The public rent path: `pay_rent` moves `rent_amount` itself. On a confidential mint the program
+ * moves nothing and instead expects a confidential transfer directly before this instruction --
+ * that transaction is built by `confidential.ts` and composed by the caller, not here.
+ */
+export async function payRent(me: Me, l: LeaseView) {
+  const [tokenProgramId, tenantAta, landlordAta] = await Promise.all([
+    tokenProgram(),
+    tokenAccountFor(me.key),
+    tokenAccountFor(new PublicKey(l.landlord)),
+  ]);
   return send(me, me.program.methods
     .payRent()
     .accountsPartial({
       tenant: me.key,
       lease: new PublicKey(l.address),
       mint,
-      tenantAta: me.ata,
-      landlordAta: tokenAccount(new PublicKey(l.landlord)),
+      tenantAta,
+      landlordAta,
       tenantProfile: profilePda(me.key),
+      tokenProgram: tokenProgramId,
     }));
 }
 
-export function releaseDeposit(me: Me, l: LeaseView, deduction: number) {
+export async function releaseDeposit(me: Me, l: LeaseView, deduction: number) {
   const lease = new PublicKey(l.address);
   const tenant = new PublicKey(l.tenant);
+  const [tokenProgramId, tenantAta, landlordAta] = await Promise.all([tokenProgram(), tokenAccountFor(tenant), tokenAccountFor(me.key)]);
   return send(me, me.program.methods
     .releaseDeposit(new BN(deduction))
     .accountsPartial({
@@ -390,16 +427,18 @@ export function releaseDeposit(me: Me, l: LeaseView, deduction: number) {
       lease,
       mint,
       vault: vaultPda(lease),
-      tenantAta: tokenAccount(tenant),
-      landlordAta: me.ata,
+      tenantAta,
+      landlordAta,
       tenantProfile: profilePda(tenant),
       landlordProfile: profilePda(me.key),
+      tokenProgram: tokenProgramId,
     }));
 }
 
-export function markDefault(me: Me, l: LeaseView) {
+export async function markDefault(me: Me, l: LeaseView) {
   const lease = new PublicKey(l.address);
   const tenant = new PublicKey(l.tenant);
+  const [tokenProgramId, tenantAta, landlordAta] = await Promise.all([tokenProgram(), tokenAccountFor(tenant), tokenAccountFor(me.key)]);
   return send(me, me.program.methods
     .markDefault()
     .accountsPartial({
@@ -407,15 +446,17 @@ export function markDefault(me: Me, l: LeaseView) {
       lease,
       mint,
       vault: vaultPda(lease),
-      tenantAta: tokenAccount(tenant),
-      landlordAta: me.ata,
+      tenantAta,
+      landlordAta,
       tenantProfile: profilePda(tenant),
+      tokenProgram: tokenProgramId,
     }));
 }
 
-export function claimDeposit(me: Me, l: LeaseView) {
+export async function claimDeposit(me: Me, l: LeaseView) {
   const lease = new PublicKey(l.address);
   const landlord = new PublicKey(l.landlord);
+  const [tokenProgramId, tenantAta, landlordAta] = await Promise.all([tokenProgram(), tokenAccountFor(me.key), tokenAccountFor(landlord)]);
   return send(me, me.program.methods
     .claimDeposit()
     .accountsPartial({
@@ -423,10 +464,11 @@ export function claimDeposit(me: Me, l: LeaseView) {
       lease,
       mint,
       vault: vaultPda(lease),
-      tenantAta: me.ata,
-      landlordAta: tokenAccount(landlord),
+      tenantAta,
+      landlordAta,
       tenantProfile: profilePda(me.key),
       landlordProfile: profilePda(landlord),
+      tokenProgram: tokenProgramId,
     }));
 }
 
