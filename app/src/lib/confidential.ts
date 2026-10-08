@@ -373,7 +373,7 @@ export async function planTransfer(
  * it. Throws rather than guessing if the plan has no such instruction, because a silently wrong
  * position only shows up on chain as `MissingConfidentialTransfer`.
  */
-function spliceAfterTransfer(messages: PlannedMessage[], extra: Instruction[], { kit }: Libs): PlannedMessage[] {
+export function spliceAfterTransfer(messages: PlannedMessage[], extra: Instruction[], { kit }: Libs): PlannedMessage[] {
   for (let i = messages.length - 1; i >= 0; i--) {
     const instructions = messages[i].instructions as readonly Instruction[];
     const at = instructions.findIndex(isConfidentialTransfer);
@@ -396,8 +396,12 @@ export async function runPlan(session: ConfidentialSession, messages: PlannedMes
   return signatures;
 }
 
-/** The Token-2022 associated token account a wallet receives confidential rUSDC into. */
-export async function tokenAccountFor(owner: string, mint?: string): Promise<Address> {
+/**
+ * The Token-2022 associated token account a wallet receives confidential rUSDC into. Distinct
+ * from `chain.tokenAccountFor`, which is the lease mint's account on whichever token program
+ * owns that mint.
+ */
+export async function confidentialTokenAccount(owner: string, mint?: string): Promise<Address> {
   const l = await libs();
   return ataFor(l.kit.address(owner), l.kit.address(requireMint(mint)), l);
 }

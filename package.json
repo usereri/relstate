@@ -8,6 +8,7 @@
         "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
         "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
         "app": "vite app --host",
+        "app:test": "vitest run --config app/vitest.config.ts",
         "app:build": "tsc -p app --noEmit && vite build app",
         "typecheck": "tsc --noEmit -p ."
     },
@@ -44,6 +45,7 @@
         "tailwindcss": "^4.1.17",
         "typescript": "^5.7.3",
         "vite": "^7.0.0",
-        "vite-plugin-wasm": "^3.6.0"
+        "vite-plugin-wasm": "^3.6.0",
+        "vitest": "^5.0.3"
     }
 }

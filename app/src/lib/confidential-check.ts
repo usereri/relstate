@@ -114,7 +114,7 @@ async function main() {
   const recipientKeys = await conf.deriveKeys(localWallet("landlord"));
   const recipientSession = await conf.openLocalSession({ signer: payer, keys: recipientKeys, mint, rpcUrl: RPC });
   // Same payer, but the account is owned by the recipient and keyed with the recipient's keys.
-  const destination = await conf.tokenAccountFor(recipient.address, mint);
+  const destination = await conf.confidentialTokenAccount(recipient.address, mint);
   await conf.runPlan(
     recipientSession,
     await planMessages(
