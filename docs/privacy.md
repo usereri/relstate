@@ -6,7 +6,8 @@ Settled decisions for the demo. Change only by agreement.
 
 | Data | Visibility | Why |
 |---|---|---|
-| Amount of every rent payment and deposit transfer (rUSDC confidential transfer) | **Hidden** (encrypted) | the pitch: "settled amounts are private" |
+| Amount of every **rent payment** (rUSDC confidential transfer) | **Hidden** (encrypted) | the pitch: "what you pay each month is private" |
+| **Deposit** funding, release, claim, default payouts | **Public** | the vault is a PDA-owned token account; a PDA cannot hold ElGamal keys, so its balance cannot be confidential. A backend-held confidential escrow is post-demo |
 | Listing price, `Lease.rent_amount`, `deposit_amount`, term | **Public** | the program computes discounts and default arithmetic on them; moving to commitments is out of scope |
 | That a payment happened, who paid whom, when | Public | reputation counters need it |
 | Contract text | Never on chain; only SHA-256 (`lease_hash`) | already true |
@@ -32,3 +33,7 @@ It does NOT verify the amount equals `rent_amount`. Residual gap: a tenant could
 ## Out of scope for the demo
 
 Hiding the sender/receiver graph, hiding listing prices, trust-minimised wrapper (see treasury contract).
+
+## pay_rent transaction layout
+
+The confidential transfer instruction must be the instruction **immediately before** `pay_rent` (proof instructions ahead of it; a leading ComputeBudget ix is fine). Strict on purpose: it stops two `pay_rent` instructions matching one transfer. Full layout: `program-interface.md`.

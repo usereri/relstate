@@ -15,5 +15,4 @@ txtx.yml
 *.log
 *.tsbuildinfo
 .env
-docs/contracts
 spikes/
