@@ -1,11 +1,18 @@
 import * as anchor from "@anchor-lang/core";
 import { BN, Program } from "@anchor-lang/core";
 import {
+  AccountState,
   ExtensionType,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
   createAssociatedTokenAccount,
+  createInitializeDefaultAccountStateInstruction,
   createInitializeMint2Instruction,
+  createInitializeNonTransferableMintInstruction,
+  createInitializePausableConfigInstruction,
+  createInitializePermanentDelegateInstruction,
+  createInitializeTransferFeeConfigInstruction,
+  createInitializeTransferHookInstruction,
   createMint,
   createTransferCheckedInstruction,
   getAccount,
@@ -40,24 +47,28 @@ const CONFIDENTIAL_TRANSFER_EXTENSION = 27;
 const CT_INITIALIZE_MINT = 0;
 const CT_TRANSFER = 7;
 
-/// A Token-2022 mint with the ConfidentialTransferMint extension: auto-approving new accounts,
-/// no auditor key. `InitializeMint` for the extension has to run before the mint itself is
-/// initialized, or another party could claim the configuration.
+/// A Token-2022 mint with the ConfidentialTransferMint extension: auto-approving new accounts and
+/// carrying an auditor ElGamal key, which `set_mint_allowed` requires (a confidential mint with no
+/// auditor would make every rent payment undecryptable by the backend). `InitializeMint` for the
+/// extension has to run before the mint itself is initialized, or another party could claim the
+/// configuration. Pass `auditor = null` to build one with no auditor key, for the rejection test.
 async function createConfidentialMint(
   conn: anchor.web3.Connection,
   payer: anchor.web3.Keypair,
   decimals = 6,
+  auditor: Buffer | null = payer.publicKey.toBuffer(), // any non-zero 32 bytes: the program only checks it is set
 ) {
   const mint = Keypair.generate();
   const space = getMintLen([ExtensionType.ConfidentialTransferMint]);
 
   // InitializeMintData: authority (32) | auto_approve_new_accounts (1) | auditor key (32).
-  // All-zero means None, so the auditor is left unset.
+  // All-zero means None, so leaving the auditor bytes unset is exactly the "no auditor" case.
   const data = Buffer.alloc(2 + 32 + 1 + 32);
   data[0] = CONFIDENTIAL_TRANSFER_EXTENSION;
   data[1] = CT_INITIALIZE_MINT;
   payer.publicKey.toBuffer().copy(data, 2);
   data[34] = 1; // auto_approve_new_accounts
+  if (auditor) auditor.copy(data, 35);
 
   const tx = new anchor.web3.Transaction().add(
     anchor.web3.SystemProgram.createAccount({
@@ -74,6 +85,38 @@ async function createConfidentialMint(
     }),
     createInitializeMint2Instruction(
       mint.publicKey, decimals, payer.publicKey, null, TOKEN_2022_PROGRAM_ID
+    ),
+  );
+  await anchor.web3.sendAndConfirmTransaction(conn, tx, [payer, mint], {
+    commitment: "confirmed",
+  });
+  return mint.publicKey;
+}
+
+/// A Token-2022 mint carrying the given extensions, built from their initialize instructions.
+/// Used to prove `set_mint_allowed` refuses extensions that would break the escrow arithmetic.
+/// Extension init must run before the mint itself is initialized.
+async function createExtensionMint(
+  conn: anchor.web3.Connection,
+  payer: anchor.web3.Keypair,
+  extensions: ExtensionType[],
+  init: (mint: anchor.web3.PublicKey) => anchor.web3.TransactionInstruction[],
+  decimals = 6,
+  freezeAuthority: anchor.web3.PublicKey | null = null,
+) {
+  const mint = Keypair.generate();
+  const space = getMintLen(extensions);
+  const tx = new anchor.web3.Transaction().add(
+    anchor.web3.SystemProgram.createAccount({
+      fromPubkey: payer.publicKey,
+      newAccountPubkey: mint.publicKey,
+      space,
+      lamports: await conn.getMinimumBalanceForRentExemption(space),
+      programId: TOKEN_2022_PROGRAM_ID,
+    }),
+    ...init(mint.publicKey),
+    createInitializeMint2Instruction(
+      mint.publicKey, decimals, payer.publicKey, freezeAuthority, TOKEN_2022_PROGRAM_ID
     ),
   );
   await anchor.web3.sendAndConfirmTransaction(conn, tx, [payer, mint], {
@@ -141,15 +184,16 @@ describe("relstate", () => {
   const configPda = pda(Buffer.from("config"));
 
   // Adds or removes a mint from the Config allowlist, as `admin` (the provider wallet is the
-  // admin because it claimed the Config in before()).
+  // admin because it claimed the Config in before()). The mint is passed as an account so the
+  // program can inspect its extensions before allowing it.
   const setMintAllowed = (
     mint: anchor.web3.PublicKey,
     allowed: boolean,
     admin?: anchor.web3.Keypair,
   ) => {
     const call = program.methods
-      .setMintAllowed(mint, allowed)
-      .accountsPartial({ admin: admin?.publicKey ?? provider.wallet.publicKey, config: configPda });
+      .setMintAllowed(allowed)
+      .accountsPartial({ admin: admin?.publicKey ?? provider.wallet.publicKey, config: configPda, mint });
     return (admin ? call.signers([admin]) : call).rpc();
   };
 
@@ -639,6 +683,58 @@ describe("relstate", () => {
     // the list is untouched, so leases on it still work
     expect((await program.account.config.fetch(configPda)).mints.map(String))
       .to.include(USDC.toBase58());
+  });
+
+  // ---- allowlist guards the mint itself (findings 3, 4, 6) ----
+
+  it("rejects allowing a confidential mint that carries no auditor key", async () => {
+    const payer = (provider.wallet as anchor.Wallet).payer;
+    const noAuditor = await createConfidentialMint(freshConnection(), payer, 6, null);
+    await expectFail(setMintAllowed(noAuditor, true), "ConfidentialMintNeedsAuditor");
+    // the suite's own confidential mint does carry an auditor, so it was allowed in before()
+    expect((await program.account.config.fetch(configPda)).mints.map(String))
+      .to.include(USDC_2022.toBase58());
+  });
+
+  it("rejects mints whose extensions would break the escrow or block payouts", async () => {
+    const payer = (provider.wallet as anchor.Wallet).payer;
+    const conn = () => freshConnection();
+    const hookProgram = Keypair.generate().publicKey;
+
+    const cases: [string, () => Promise<anchor.web3.PublicKey>][] = [
+      ["TransferFeeConfig", () => createExtensionMint(conn(), payer, [ExtensionType.TransferFeeConfig],
+        (m) => [createInitializeTransferFeeConfigInstruction(m, payer.publicKey, payer.publicKey, 100, 1_000_000n, TOKEN_2022_PROGRAM_ID)])],
+      ["NonTransferable", () => createExtensionMint(conn(), payer, [ExtensionType.NonTransferable],
+        (m) => [createInitializeNonTransferableMintInstruction(m, TOKEN_2022_PROGRAM_ID)])],
+      ["PermanentDelegate", () => createExtensionMint(conn(), payer, [ExtensionType.PermanentDelegate],
+        (m) => [createInitializePermanentDelegateInstruction(m, payer.publicKey, TOKEN_2022_PROGRAM_ID)])],
+      ["TransferHook", () => createExtensionMint(conn(), payer, [ExtensionType.TransferHook],
+        (m) => [createInitializeTransferHookInstruction(m, payer.publicKey, hookProgram, TOKEN_2022_PROGRAM_ID)])],
+      ["PausableConfig", () => createExtensionMint(conn(), payer, [ExtensionType.PausableConfig],
+        (m) => [createInitializePausableConfigInstruction(m, payer.publicKey, TOKEN_2022_PROGRAM_ID)])],
+      ["DefaultAccountState(Frozen)", () => createExtensionMint(conn(), payer, [ExtensionType.DefaultAccountState],
+        (m) => [createInitializeDefaultAccountStateInstruction(m, AccountState.Frozen, TOKEN_2022_PROGRAM_ID)],
+        6, payer.publicKey)],
+    ];
+
+    for (const [, build] of cases) {
+      const mint = await build();
+      await expectFail(setMintAllowed(mint, true), "DisallowedMintExtension");
+      expect((await program.account.config.fetch(configPda)).mints.map(String))
+        .to.not.include(mint.toBase58());
+    }
+  });
+
+  it("set_admin refuses to hand the config to the default pubkey", async () => {
+    await expectFail(
+      program.methods
+        .setAdmin(PublicKey.default)
+        .accountsPartial({ admin: provider.wallet.publicKey, config: configPda })
+        .rpc(),
+      "InvalidNewAdmin"
+    );
+    expect((await program.account.config.fetch(configPda)).admin.toBase58())
+      .to.equal(provider.wallet.publicKey.toBase58());
   });
 
   it("a Token-2022 mint backs a lease and funds the vault", async () => {
