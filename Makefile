@@ -5,7 +5,8 @@
 # The program's deploy keypair is kept outside the repo, so every worktree and machine deploys
 # the same program id without the private key living in git. target/ is generated and wiped by
 # `cargo clean`, so the keypair is copied back in before any build. Without the file, anchor
-# generates a fresh keypair and the id stops matching declare_id!.
+# generates a fresh keypair and the id stops matching declare_id!, so every instruction fails
+# with DeclaredProgramIdMismatch long after the reason scrolled off - fail immediately instead.
 PROGRAM_KEYPAIR ?= $(HOME)/.config/relstate/program-keypair.json
 
 program-keypair:
@@ -13,9 +14,11 @@ program-keypair:
 		mkdir -p target/deploy; \
 		cp "$(PROGRAM_KEYPAIR)" target/deploy/relstate-keypair.json; \
 	else \
-		echo "warning: no program keypair at $(PROGRAM_KEYPAIR)."; \
-		echo "         anchor will generate a new program id, which will not match declare_id!."; \
-		echo "         See \"Program keypair\" in README.md."; \
+		echo "error: no program keypair at $(PROGRAM_KEYPAIR)." >&2; \
+		echo "       anchor would generate a new program id that does not match declare_id!," >&2; \
+		echo "       and every instruction would fail with DeclaredProgramIdMismatch." >&2; \
+		echo "       Copy it from whoever has it, or regenerate the id; see \"Program keypair\" in README.md." >&2; \
+		exit 1; \
 	fi
 
 test-demo: program-keypair

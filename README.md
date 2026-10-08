@@ -139,9 +139,12 @@ Override the location with `PROGRAM_KEYPAIR=/path/to/key.json make test-demo`.
 
 #### Allowed mints
 
-A lease can only be denominated in a mint the program's `Config` account allows, so a fresh
-network needs `init_config` once and then `set_mint_allowed` per mint. See
-[`docs/contracts/program-interface.md`](docs/contracts/program-interface.md).
+A lease can only be denominated in a mint the program's on-chain `Config` allowlist accepts, so a
+fresh network needs `init_config` once and then `set_mint_allowed` per mint. **`make demo-setup`
+does both**: it initializes the `Config` (the payer becomes admin) and allows the test-USDC mint it
+creates, so the local quick start below is fully scripted — there is no manual allowlist step. For a
+manual or devnet setup, see [`docs/contracts/program-interface.md`](docs/contracts/program-interface.md)
+§2 and §4.
 
 Optionally copy `.env.example` to `.env` to list wallets that `make demo-setup` should fund.
 

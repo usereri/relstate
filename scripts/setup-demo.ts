@@ -1,7 +1,8 @@
 // Prepares a network for the app: the test-USDC mint, SOL + test USDC for the wallets you name
 // (the ones you connect in the browser windows) and, on a local network, for the app's built-in
-// landlord and tenant test wallets, plus four default listings so the tenant's view is not empty.
-// Safe to run again: existing accounts are left alone.
+// landlord and tenant test wallets. It also initializes the program's Config allowlist and allows
+// the test-USDC mint (so a lease can use it), plus four default listings so the tenant's view is
+// not empty. Safe to run again: existing accounts are left alone and the allowlist step is a no-op.
 //   RPC=https://api.devnet.solana.com node scripts/setup-demo.ts [<wallet> ...]
 // The payer (ANCHOR_WALLET or ~/.config/solana/id.json) becomes the mint authority, pays account rent
 // and owns the default listings (import that keypair into a wallet to lease them yourself).
@@ -42,13 +43,28 @@ async function programReady(conn: anchor.web3.Connection, id: anchor.web3.Public
   }
 }
 
-async function seedListings(conn: anchor.web3.Connection, payer: anchor.web3.Keypair) {
+async function setupProgram(conn: anchor.web3.Connection, payer: anchor.web3.Keypair, mint: anchor.web3.PublicKey) {
   const idl = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "../target/idl/relstate.json"), "utf8"));
   if (!(await programReady(conn, new PublicKey(idl.address)))) {
-    console.warn(`program ${idl.address} is not deployed on ${RPC}: skipped the default listings. Deploy it, then run this again.`);
+    console.warn(`program ${idl.address} is not deployed on ${RPC}: skipped config + default listings. Deploy it, then run this again.`);
     return;
   }
   const program = new anchor.Program(idl, new anchor.AnchorProvider(conn, new anchor.Wallet(payer), { commitment: "confirmed" }));
+
+  // A lease can only use a mint the on-chain Config allows, and the Config must exist first.
+  // Whoever runs init_config first owns the allowlist (docs/contracts/program-interface.md §2),
+  // so this belongs in the same scripted sequence as the deploy, not as a manual step afterwards.
+  const [config] = PublicKey.findProgramAddressSync([Buffer.from("config")], program.programId);
+  if (await program.account.config.fetchNullable(config)) {
+    console.log(`config already initialized: ${config.toBase58()}`);
+  } else {
+    await program.methods.initConfig().accountsPartial({ admin: payer.publicKey, config }).rpc();
+    console.log(`initialized config; ${payer.publicKey.toBase58()} is the admin`);
+  }
+  // Idempotent: allows the test-USDC mint, and is a no-op if it is already on the list.
+  await program.methods.setMintAllowed(true).accountsPartial({ admin: payer.publicKey, config, mint }).rpc();
+  console.log(`allowed mint ${mint.toBase58()}`);
+
   let created = 0;
   for (const l of DEFAULT_LISTINGS) {
     const id = new anchor.BN(l.id);
@@ -101,7 +117,7 @@ async function main() {
     console.log(`${wallet.toBase58()}  ${WALLET_USDC / USDC} test USDC`);
   }
 
-  await seedListings(conn, payer);
+  await setupProgram(conn, payer, mintKp.publicKey);
 }
 
 main().catch((e) => {
