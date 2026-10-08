@@ -19,12 +19,8 @@ pub mod relstate {
         crate::instructions::config::handle_init_config(ctx)
     }
 
-    pub fn set_mint_allowed(
-        ctx: Context<UpdateConfig>,
-        mint: Pubkey,
-        allowed: bool,
-    ) -> Result<()> {
-        crate::instructions::config::handle_set_mint_allowed(ctx, mint, allowed)
+    pub fn set_mint_allowed(ctx: Context<SetMintAllowed>, allowed: bool) -> Result<()> {
+        crate::instructions::config::handle_set_mint_allowed(ctx, allowed)
     }
 
     pub fn set_admin(ctx: Context<UpdateConfig>, new_admin: Pubkey) -> Result<()> {

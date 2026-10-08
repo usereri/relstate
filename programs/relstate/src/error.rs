@@ -46,4 +46,10 @@ pub enum ErrorCode {
     InvalidMintData,
     #[msg("Paying rent on a confidential mint needs a matching Token-2022 confidential transfer directly before pay_rent")]
     MissingConfidentialTransfer,
+    #[msg("A confidential-transfer mint must carry an auditor ElGamal pubkey to be allowed")]
+    ConfidentialMintNeedsAuditor,
+    #[msg("The mint carries an extension that is not allowed for leases")]
+    DisallowedMintExtension,
+    #[msg("The new admin must not be the default (all-zero) pubkey")]
+    InvalidNewAdmin,
 }

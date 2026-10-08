@@ -30,6 +30,10 @@ anchor-spl = { version = "1.1.2", default-features = false, features = [
 # pay_rent reads the instructions sysvar to find the confidential transfer carrying the rent;
 # anchor-lang's solana_program shim only re-exports a slice of this crate.
 solana-instructions-sysvar = "3.0.1"
+# set_mint_allowed reads a confidential mint's auditor ElGamal key, whose OptionalNonZero wrapper
+# lives here; the token-2022 interface does not re-export it. Version matches the one anchor-spl
+# already pulls in, so this adds no new crate to the tree.
+spl-pod = "0.7.4"
 [dev-dependencies]
 litesvm = "0.10.0"
 litesvm-token = "0.10.0"
