@@ -304,3 +304,58 @@ export async function auditTransaction(
   }
   return found;
 }
+
+export type RentPaymentCheck = {
+  ok: boolean;
+  /** The decrypted amount that actually settled, when a paired transfer was found. */
+  settledAmount: bigint | undefined;
+  expectedAmount: bigint;
+  reason: string | undefined;
+  transfer: AuditedTransfer | undefined;
+};
+
+/**
+ * Closes the residual gap `docs/privacy.md` records: `pay_rent` cannot see a
+ * hidden amount, so it credits `lease.rent_amount` whatever was actually sent.
+ * This is the after-the-fact check the auditor key exists for — decrypt the
+ * paired transfer and compare.
+ *
+ * The pairing follows the program's own rule: the confidential `Transfer` must
+ * be the instruction **directly before** `pay_rent`
+ * (docs/contracts/program-interface.md §3), so exactly one transfer settles
+ * exactly one recorded payment.
+ */
+export async function verifyRentPayment(
+  rpc: Rpc<GetTransactionApi>,
+  signature: Signature,
+  options: { relstateProgram: Address; expectedAmount: bigint; auditorSecret: ElGamalSecretKey },
+): Promise<RentPaymentCheck> {
+  const result = await rpc
+    .getTransaction(signature, { encoding: "base64", commitment: "confirmed", maxSupportedTransactionVersion: 0 })
+    .send();
+  if (result === null) throw new Error(`transaction ${signature} not found`);
+
+  const inspected = inspectTransaction(result.transaction[0], { maxBytes: 1232, maxInstructions: 64 });
+  const payRentIndex = inspected.instructions.findIndex((ix) => ix.programAddress === options.relstateProgram);
+  const miss = (reason: string): RentPaymentCheck => ({
+    ok: false,
+    settledAmount: undefined,
+    expectedAmount: options.expectedAmount,
+    reason,
+    transfer: undefined,
+  });
+  if (payRentIndex < 0) return miss(`no ${options.relstateProgram} instruction in ${signature}`);
+  if (payRentIndex === 0) return miss("the relstate instruction is first, so no transfer can precede it");
+
+  const transfers = await auditTransaction(rpc, signature, options.auditorSecret);
+  const paired = transfers.find((t) => t.instructionIndex === payRentIndex - 1);
+  if (paired === undefined) return miss(`instruction ${payRentIndex - 1} is not a confidential transfer`);
+
+  return {
+    ok: paired.amount === options.expectedAmount,
+    settledAmount: paired.amount,
+    expectedAmount: options.expectedAmount,
+    reason: paired.amount === options.expectedAmount ? undefined : `settled ${paired.amount}, expected ${options.expectedAmount}`,
+    transfer: paired,
+  };
+}

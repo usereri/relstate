@@ -43,7 +43,13 @@ import {
   getSignatureFromTransaction,
   partiallySignTransaction,
 } from "@solana/kit";
-import { associatedTokenAddress, ensureConfidentialAccount, type ConfidentialRpc, type RunPlan } from "./confidential.ts";
+import {
+  associatedTokenAddress,
+  depositAndApply,
+  ensureConfidentialAccount,
+  type ConfidentialRpc,
+  type RunPlan,
+} from "./confidential.ts";
 import { env } from "./env.ts";
 import type { ConfidentialKeyPair } from "./keys.ts";
 import { ZK_ELGAMAL_PROOF_PROGRAM } from "./contracts.ts";
@@ -115,6 +121,20 @@ export type TreasuryDeps = {
   maxRentLamports?: bigint;
   log?: (...args: unknown[]) => void;
 };
+
+/**
+ * How much of a wrapped amount may go confidential, given how much must stay
+ * public for `fund_deposit`. Separate and pure because getting it wrong leaves a
+ * tenant unable to accept a lease, with an "insufficient funds" error several
+ * steps away from the cause.
+ */
+export function confidentialMoveAmount(total: bigint, publicHoldback: bigint): bigint {
+  if (publicHoldback < 0n) throw new Error("publicHoldback cannot be negative");
+  if (publicHoldback > total) {
+    throw new Error(`publicHoldback ${publicHoldback} exceeds the wrapped amount ${total}; the deposit could never be funded`);
+  }
+  return total - publicHoldback;
+}
 
 export function createTreasury(deps: TreasuryDeps) {
   const log = deps.log ?? (() => {});
@@ -284,6 +304,62 @@ export function createTreasury(deps: TreasuryDeps) {
   }
 
   /**
+   * Wrap, then move the balance into the confidential side **except** for
+   * `publicHoldback`.
+   *
+   * The holdback is not an optimisation. Only rent is confidential: the deposit
+   * vault is a PDA-owned token account and a PDA cannot hold ElGamal keys, so
+   * `fund_deposit` moves a **public** amount with `transfer_checked`
+   * (docs/contracts/program-interface.md §5). A tenant whose whole balance went
+   * confidential cannot accept a lease — the transfer into the vault fails with
+   * insufficient funds. So the lease deposit stays public from the start rather
+   * than being withdrawn back later, which would cost an extra proof plan.
+   *
+   * Needs the owner's key, because `Deposit` and `ApplyPendingBalance` are
+   * owner-signed and `ApplyPendingBalance` re-encrypts the new balance locally.
+   * In the app the wallet signs these over sponsored transactions; this path
+   * covers tests and the scripted devnet run.
+   */
+  async function wrapAndMakeConfidential({
+    owner,
+    amount,
+    publicHoldback = 0n,
+    keys,
+    ref = "wrap",
+  }: {
+    owner: TransactionSigner;
+    amount: bigint;
+    /** Keep this much public, e.g. `lease.deposit_amount`. */
+    publicHoldback?: bigint;
+    keys: ConfidentialKeyPair;
+    ref?: string;
+  }): Promise<{ token: Address; confidentialAmount: bigint; publicRemaining: bigint; invariantAfter: InvariantReport }> {
+    const confidentialAmount = confidentialMoveAmount(amount, publicHoldback);
+    const wrapped = await wrap({ wallet: owner.address, amount, ref });
+    await ensureAccount(owner, keys);
+    if (confidentialAmount > 0n) {
+      await depositAndApply({
+        run: deps.run,
+        rpc: deps.rpc as ConfidentialRpc,
+        payer: deps.treasury,
+        owner,
+        token: wrapped.token,
+        mint: deps.mint,
+        amount: confidentialAmount,
+        decimals: deps.decimals,
+        keys,
+      });
+    }
+    log(`treasury: wrapped ${amount}, ${confidentialAmount} confidential, ${publicHoldback} held back public for fund_deposit`);
+    return {
+      token: wrapped.token,
+      confidentialAmount,
+      publicRemaining: publicHoldback,
+      invariantAfter: wrapped.invariantAfter,
+    };
+  }
+
+  /**
    * Co-signs a wallet-built confidential-account setup transaction, paying both
    * the fee and the account rent from the treasury key.
    *
@@ -355,6 +431,7 @@ export function createTreasury(deps: TreasuryDeps) {
     creditReserve,
     releaseReserve,
     wrap,
+    wrapAndMakeConfidential,
     unwrap,
     ensureAccount,
     sponsorConfidentialAccountSetup,

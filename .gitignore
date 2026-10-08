@@ -15,3 +15,4 @@ txtx.yml
 *.log
 *.tsbuildinfo
 .env
+.keys

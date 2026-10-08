@@ -1,6 +1,7 @@
 // Contracts 2, 3, 4 and 6: shared types between backend, program and app. Change only by agreement.
 
-export const RELSTATE_PROGRAM = "5J52oGfo7BjC529vizEaM96QtxVFD4Kbv22Tw8aXa1Ar";
+/** Regenerated in Phase 1 (the old `5J52oGfo7Bj…` had no keypair). See docs/contracts/program-interface.md. */
+export const RELSTATE_PROGRAM = "G4iMjveQKXztnGoxigAeWPrb5evT9yt6qaLkgQEp2dXm";
 export const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 export const ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 export const ZK_ELGAMAL_PROOF_PROGRAM = "ZkE1Gama1Proof11111111111111111111111111111";
