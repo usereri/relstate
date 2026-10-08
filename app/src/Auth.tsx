@@ -21,8 +21,17 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
   const [role, setRole] = useState<Role>("tenant");
   const [step, setStep] = useState<"role" | "details" | "wallet">(mode === "signup" ? "role" : "wallet");
   const [details, setDetails] = useState({ name: "", email: "", city: "" });
-  // a wallet that signed in but has no name on this device yet (new browser, cleared storage): ask once, then continue
+  // wallet first, profile second: the wallet is the account, a name is optional and asked only after it connects
   const [pending, setPending] = useState<string | null>(null);
+  const connected = (address: string) => {
+    const prior = loadAccount(address);
+    if (mode === "signup" || !prior) {
+      setPending(address);
+      setStep("details");
+      return;
+    }
+    onDone(role);
+  };
   const finish = (address: string) => {
     const prior = loadAccount(address);
     const a: Account = {
@@ -32,11 +41,6 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
       role,
       createdAt: prior?.createdAt ?? Date.now(),
     };
-    if (!a.name) {
-      setPending(address);
-      setStep("details");
-      return;
-    }
     saveAccount(address, a);
     onDone(role);
   };
@@ -46,7 +50,7 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
     document.title = mode === "signup" ? "Create account · Relstate" : "Sign in · Relstate";
   }, [role, mode]);
 
-  const steps = ["role", "details", "wallet"] as const;
+  const steps = ["role", "wallet", "details"] as const;
 
   return (
     <div className="grid min-h-dvh lg:grid-cols-[1fr_minmax(0,560px)]">
@@ -90,24 +94,31 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
                       onClick={() => setRole(r)}
                       className={cn(
                         "flex items-start gap-4 rounded-2xl border bg-card p-4 text-left transition-all",
-                        on ? "border-primary ring-2 ring-primary/20" : "hover:border-input hover:bg-muted/40",
+                        on ? "border-primary ring-2 ring-primary/20" : "hover:border-input hover:bg-muted/40"
                       )}
                     >
-                      <span className={cn("grid size-11 shrink-0 place-items-center rounded-xl", on ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")}>
+                      <span
+                        className={cn(
+                          "grid size-11 shrink-0 place-items-center rounded-xl",
+                          on ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+                        )}
+                      >
                         <C.icon className="size-5" />
                       </span>
                       <span className="flex-1">
                         <span className="block font-semibold">{C.title}</span>
                         <span className="block text-sm text-muted-foreground">{C.text}</span>
                       </span>
-                      <span className={cn("mt-1 grid size-5 place-items-center rounded-full border", on && "border-primary bg-primary text-primary-foreground")}>
+                      <span
+                        className={cn("mt-1 grid size-5 place-items-center rounded-full border", on && "border-primary bg-primary text-primary-foreground")}
+                      >
                         {on && <Check className="size-3" />}
                       </span>
                     </button>
                   );
                 })}
               </div>
-              <Button size="lg" onClick={() => setStep("details")}>
+              <Button size="lg" onClick={() => setStep("wallet")}>
                 Continue <ArrowRight />
               </Button>
             </div>
@@ -120,34 +131,56 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
               onSubmit={(e) => {
                 e.preventDefault();
                 if (pending) finish(pending);
-                else setStep("wallet");
               }}
             >
               <Heading
-                title={pending ? "Finish your profile" : "About you"}
-                text={
-                  pending
-                    ? "Wallet connected. We don't have your name on this device yet. Add it once and you're in."
-                    : "Shown to the people you rent with. Stored on this device only, never on-chain."
-                }
+                title="Wallet connected"
+                text="Add a name if you'd like landlords and tenants to see one. Everything here is optional, kept on this device only and never written on-chain."
               />
-              <Field id="name" label="Full name">
-                <Input id="name" required autoComplete="name" placeholder="Maria Kowalska" value={details.name} onChange={(e) => setDetails({ ...details, name: e.target.value })} />
+              <Field id="name" label="Display name" hint="A first name or nickname is enough.">
+                <Input
+                  id="name"
+                  autoComplete="name"
+                  placeholder="Maria Kowalska"
+                  value={details.name}
+                  onChange={(e) => setDetails({ ...details, name: e.target.value })}
+                />
               </Field>
               <Field id="email" label="Email" hint="For lease reminders. Optional.">
-                <Input id="email" type="email" autoComplete="email" placeholder="maria@example.com" value={details.email} onChange={(e) => setDetails({ ...details, email: e.target.value })} />
+                <Input
+                  id="email"
+                  type="email"
+                  autoComplete="email"
+                  placeholder="maria@example.com"
+                  value={details.email}
+                  onChange={(e) => setDetails({ ...details, email: e.target.value })}
+                />
               </Field>
               <Field id="city" label={role === "tenant" ? "City you're moving to" : "City of your properties"}>
-                <Input id="city" autoComplete="address-level2" placeholder="Kraków" value={details.city} onChange={(e) => setDetails({ ...details, city: e.target.value })} />
+                <Input
+                  id="city"
+                  autoComplete="address-level2"
+                  placeholder="Kraków"
+                  value={details.city}
+                  onChange={(e) => setDetails({ ...details, city: e.target.value })}
+                />
               </Field>
               <div className="flex gap-3">
-                {!pending && (
-                  <Button type="button" variant="outline" size="lg" onClick={() => setStep("role")} aria-label="Back">
-                    <ArrowLeft />
-                  </Button>
-                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="lg"
+                  onClick={() => {
+                    if (!pending) return;
+                    // remember the choice so sign-in doesn't ask again
+                    if (!loadAccount(pending)) saveAccount(pending, { name: "", email: "", city: "", role, createdAt: Date.now() });
+                    onDone(role);
+                  }}
+                >
+                  Skip for now
+                </Button>
                 <Button type="submit" size="lg" className="flex-1">
-                  Continue <ArrowRight />
+                  Save and continue <ArrowRight />
                 </Button>
               </div>
             </form>
@@ -167,7 +200,7 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
                         onClick={() => setRole(r)}
                         className={cn(
                           "h-10 rounded-lg text-sm font-medium capitalize transition-all",
-                          role === r ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                          role === r ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
                         )}
                       >
                         {r}
@@ -176,20 +209,21 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
                   </div>
                 </>
               ) : (
-                <Heading title="Connect your wallet" text="Your wallet is your login. It signs leases and owns your record, so no password to forget." />
+                <Heading
+                  title="Connect your wallet"
+                  text="Your wallet is your account. No email or password needed: it signs your leases and owns your rental record."
+                />
               )}
 
               {/* keyed by role: each role keeps its own wallet, exactly like the app */}
               <WalletProvider key={role} wallets={[]} autoConnect={false} localStorageKey={`relstate.wallet.${role}`}>
                 <LocalWalletProvider role={role}>
-                  <WalletChoices
-                    onConnected={finish}
-                  />
+                  <WalletChoices onConnected={connected} />
                 </LocalWalletProvider>
               </WalletProvider>
 
               {mode === "signup" && (
-                <button className="flex items-center gap-1.5 self-start text-sm text-muted-foreground hover:text-foreground" onClick={() => setStep("details")}>
+                <button className="flex items-center gap-1.5 self-start text-sm text-muted-foreground hover:text-foreground" onClick={() => setStep("role")}>
                   <ArrowLeft className="size-4" /> Back
                 </button>
               )}
@@ -207,49 +241,13 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
 
 function WalletChoices({ onConnected }: { onConnected: (address: string) => void }) {
   const local = useLocalWallet();
-  const { wallets, select, connect, disconnect, connected, publicKey, signMessage, wallet } = useWallet();
+  const { wallets, select } = useWallet();
   const installed = wallets.filter((w) => w.readyState === WalletReadyState.Installed);
-  // the wallet the user clicked; nothing happens on its own (no autoConnect), so a stale session never logs anyone in
   const [picked, setPicked] = useState<string | null>(null);
   const [phase, setPhase] = useState<"idle" | "connecting" | "signing" | "done">("idle");
   const [error, setError] = useState<string | null>(null);
   const [address, setAddress] = useState<string | null>(null);
   const busy = phase === "connecting" || phase === "signing";
-
-  // step 1: once the clicked adapter is selected, connect it (Phantom shows its popup unless the site is already trusted)
-  useEffect(() => {
-    if (!picked || wallet?.adapter.name !== picked || connected || phase !== "connecting") return;
-    connect().catch((e) => {
-      setPicked(null);
-      setPhase("idle");
-      setError(e?.name === "WalletNotReadyError" ? "That wallet isn't ready. Unlock it and try again." : "Connection was cancelled.");
-    });
-  }, [picked, wallet, connected, connect, phase]);
-
-  // step 2: prove ownership with a signed message. This always asks the user, even on a trusted site.
-  useEffect(() => {
-    if (!picked || !connected || !publicKey || phase !== "connecting") return;
-    const addr = publicKey.toBase58();
-    if (!signMessage) {
-      setAddress(addr);
-      setPhase("done");
-      return;
-    }
-    setPhase("signing");
-    const text = `Sign in to Relstate\n\nWallet: ${addr}\nIssued: ${new Date().toISOString()}\nNonce: ${crypto.randomUUID()}\n\nThis request costs nothing and does not send a transaction.`;
-    signMessage(new TextEncoder().encode(text)).then(
-      () => {
-        setAddress(addr);
-        setPhase("done");
-      },
-      () => {
-        setPicked(null);
-        setPhase("idle");
-        setError("Signature declined. Signing proves this wallet is yours; it costs nothing.");
-        disconnect().catch(() => {});
-      },
-    );
-  }, [picked, connected, publicKey, signMessage, disconnect, phase]);
 
   useEffect(() => {
     if (phase !== "done" || !address) return;
@@ -258,11 +256,48 @@ function WalletChoices({ onConnected }: { onConnected: (address: string) => void
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, address]);
 
-  const pick = (name: string) => {
+  /**
+   * Everything runs straight from the click, on the adapter itself. Going through select() and an
+   * effect lost the click (no popup) whenever the adapter was already selected or the provider lagged.
+   * Connecting alone is silent on a site Phantom already trusts, so a signed message always asks the user.
+   */
+  const pick = async (w: (typeof wallets)[number]) => {
+    const adapter = w.adapter;
     setError(null);
-    setPicked(name);
+    setPicked(adapter.name);
     setPhase("connecting");
-    if (wallet?.adapter.name !== name) select(name as Parameters<typeof select>[0]);
+    select(adapter.name); // the provider follows the adapter's own connect event
+    try {
+      if (!adapter.connected) await adapter.connect();
+    } catch (e) {
+      setPhase("idle");
+      setError(
+        (e as Error)?.name === "WalletNotReadyError"
+          ? "That wallet isn't ready. Unlock it and try again."
+          : "Connection was cancelled. Pick a wallet to try again."
+      );
+      return;
+    }
+    const addr = adapter.publicKey?.toBase58();
+    if (!addr) {
+      setPhase("idle");
+      setError("The wallet didn't share an address. Unlock it and try again.");
+      return;
+    }
+    if ("signMessage" in adapter && typeof adapter.signMessage === "function") {
+      setPhase("signing");
+      const text = `Sign in to Relstate\n\nWallet: ${addr}\nIssued: ${new Date().toISOString()}\nNonce: ${crypto.randomUUID()}\n\nThis request costs nothing and does not send a transaction.`;
+      try {
+        await adapter.signMessage(new TextEncoder().encode(text));
+      } catch {
+        setPhase("idle");
+        setError("Signature declined. Signing proves this wallet is yours and costs nothing.");
+        adapter.disconnect().catch(() => {});
+        return;
+      }
+    }
+    setAddress(addr);
+    setPhase("done");
   };
 
   if (phase === "done")
@@ -299,8 +334,19 @@ function WalletChoices({ onConnected }: { onConnected: (address: string) => void
         </p>
       )}
       {installed.map((w) => (
-        <Row key={w.adapter.name} icon={<img src={w.adapter.icon} alt="" className="size-7 rounded-md" />} name={w.adapter.name} note={busy && picked === w.adapter.name ? (phase === "signing" ? "Approve the sign-in request in your wallet" : "Waiting for your wallet…") : "Detected in this browser"}
-          onClick={() => pick(w.adapter.name)} />
+        <Row
+          key={w.adapter.name}
+          icon={<img src={w.adapter.icon} alt="" className="size-7 rounded-md" />}
+          name={w.adapter.name}
+          note={
+            busy && picked === w.adapter.name
+              ? phase === "signing"
+                ? "Approve the sign-in request in your wallet"
+                : "Waiting for your wallet…"
+              : "Detected in this browser"
+          }
+          onClick={() => pick(w)}
+        />
       ))}
       {chain.LOCAL_WALLETS_AVAILABLE && (
         <Row
