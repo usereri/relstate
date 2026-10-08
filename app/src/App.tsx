@@ -188,7 +188,8 @@ function Shell({
       setError("Connect your wallet first.");
       return false;
     }
-    if (balances && balances.sol < 0.01) {
+    // Sponsored mode is the whole point of the backend: the wallet is expected to hold 0 SOL.
+    if (!chain.SPONSORED && balances && balances.sol < 0.01) {
       setError(`This wallet has ${balances.sol.toFixed(3)} SOL on this network, not enough to pay fees. Fund it first (see the box at the top).`);
       return false;
     }
@@ -228,7 +229,7 @@ function Shell({
     jump: (secs) => run("Moving the clock…", () => chain.fastForward(secs)),
   };
 
-  const needsFunds = !!address && !!balances && (balances.usdc === null || balances.sol < 0.01);
+  const needsFunds = !!address && !!balances && !chain.SPONSORED && (balances.usdc === null || balances.sol < 0.01);
   const fundCommand = `${IS_LOCAL ? "" : `RPC=${RPC} `}make demo-setup WALLETS=${address}`;
   const connectFirst = (
     <Waiting title="Connect your wallet" text={`This window acts as a ${role}. Connect the wallet you want to use with the button at the top right.`} />

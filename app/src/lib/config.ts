@@ -1,7 +1,8 @@
 // Network + lease timing. Point the app at devnet with VITE_RPC in app/.env.local, for example
 //   VITE_RPC=https://api.devnet.solana.com
 export const RPC: string =
-  import.meta.env.VITE_RPC ?? `http://${location.hostname}:8899`;
+  import.meta.env.VITE_RPC ??
+  `http://${globalThis.location?.hostname ?? "localhost"}:8899`;
 
 // Local Surfpool can jump the clock, so a local run can show a realistic 30-day rent period.
 // On devnet the clock is real, so periods are compressed (say so out loud).
@@ -12,5 +13,12 @@ export const GRACE_SECS = IS_LOCAL ? 3 * 86_400 : 20;
 export const TERM_PERIODS = 3;
 export const CLAIM_WINDOW_SECS = 10;
 export const USDC = 1_000_000;
-export const MINT = "CpzHPiiCaJ6LUTcSXgcptmjr8fyto3GAxH48b1FJbYDQ";
+export const MINT = "DLr6atdFNPUoAsQ2zpBdsJNmjV9E1wHMKUh9kmB4k8Dq";
+
+/**
+ * The Token-2022 confidential mint rent is settled in (`scripts/make-rusdc.ts` creates it and the
+ * backend reports it). Empty until that mint exists, which is why `confidential.ts` only asks for
+ * it when a private operation is actually requested.
+ */
+export const RUSDC_MINT: string = import.meta.env.VITE_RUSDC_MINT ?? "";
 export const MAX_TEXT = { title: 60, city: 40, blurb: 120, photo: 120 };

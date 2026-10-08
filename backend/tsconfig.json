@@ -1,0 +1,26 @@
+{
+    "compilerOptions": {
+        "types": [
+            "node"
+        ],
+        "lib": [
+            "es2023"
+        ],
+        "module": "nodenext",
+        "target": "es2022",
+        "moduleResolution": "nodenext",
+        "strict": true,
+        "noUncheckedIndexedAccess": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "noEmit": true,
+        "allowImportingTsExtensions": true,
+        "rewriteRelativeImportExtensions": true,
+        "erasableSyntaxOnly": true,
+        "verbatimModuleSyntax": true
+    },
+    "include": [
+        "src",
+        "test"
+    ]
+}

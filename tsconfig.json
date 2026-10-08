@@ -2,16 +2,27 @@
     "compilerOptions": {
         "types": [
             "mocha",
-            "chai"
+            "chai",
+            "node"
         ],
         "typeRoots": [
             "./node_modules/@types"
         ],
         "lib": [
-            "es2015"
+            "es2022"
         ],
-        "module": "commonjs",
-        "target": "es6",
-        "esModuleInterop": true
-    }
+        "module": "nodenext",
+        "target": "es2022",
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "noEmit": true,
+        "allowImportingTsExtensions": true,
+        "rewriteRelativeImportExtensions": true,
+        "erasableSyntaxOnly": true,
+        "verbatimModuleSyntax": true
+    },
+    "include": [
+        "tests",
+        "scripts"
+    ]
 }

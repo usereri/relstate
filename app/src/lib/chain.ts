@@ -1,15 +1,18 @@
 import * as anchor from "@anchor-lang/core";
 import { AnchorProvider, BN, Program } from "@anchor-lang/core";
-import { getAccount, getAssociatedTokenAddressSync } from "@solana/spl-token";
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, getAccount, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import idl from "@target/idl/relstate.json";
 import type { Relstate } from "@target/types/relstate";
-import { sha256 } from "@noble/hashes/sha2";
 import { GRACE_SECS, IS_LOCAL, MINT, PERIOD_SECS, RPC, TERM_PERIODS } from "./config";
+import { retryingFetch } from "./rpc";
+import { API, SPONSORED, postSponsored, sponsorFeePayer } from "./sponsor";
+import { asWalletProvider, localKeypair, localWallet, readOnlyWallet } from "./wallet";
+import type { AdapterWallet, Role, WalletProvider } from "./wallet";
 
-const { Connection, Keypair, PublicKey, SYSVAR_CLOCK_PUBKEY } = anchor.web3;
+const { Connection, PublicKey, SYSVAR_CLOCK_PUBKEY } = anchor.web3;
 type PubKey = anchor.web3.PublicKey;
 
-export type Role = "landlord" | "tenant";
+export type { Role, WalletProvider };
 export type Status = "proposed" | "active" | "closed" | "defaulted";
 
 export interface ListingView {
@@ -97,54 +100,71 @@ export const isWallet = (s: string) => {
   }
 };
 
-export const connection = new Connection(RPC, "confirmed");
+export const connection = new Connection(RPC, { commitment: "confirmed", fetch: retryingFetch });
 const mint = new PublicKey(MINT);
 
-interface WalletLike {
-  publicKey: PubKey;
-  signTransaction: <T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(tx: T) => Promise<T>;
-  signAllTransactions: <T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(txs: T[]) => Promise<T[]>;
-}
+/** Re-exported so call sites keep reaching the wallet contract through `chain`. */
+export { localKeypair, localWallet };
+export const LOCAL_WALLETS_AVAILABLE = IS_LOCAL;
+
+/** True when the backend pays every fee, so the connected wallet needs no SOL at all. */
+export { API, SPONSORED };
 
 /**
- * Built-in test wallets for a LOCAL network only: one fixed key per role, derived from a public
- * seed, so two browser tabs can be two different people without a wallet extension (an extension
- * keeps one connected account per site). scripts/setup-demo.ts derives the same keys to fund them.
+ * The confidential-balance island, loaded on demand.
+ *
+ * It is a whole second Solana stack (`@solana/kit` + the `@solana/zk-sdk` wasm), so it is a
+ * dynamic import rather than part of the main bundle: nobody who never pays rent privately
+ * downloads the proof machinery. Every caller reaches it through here.
  */
-export const LOCAL_WALLETS_AVAILABLE = IS_LOCAL;
-export const localKeypair = (role: Role) => Keypair.fromSeed(sha256(new TextEncoder().encode(`relstate-local-${role}`)));
-
-export function localWallet(role: Role): WalletLike {
-  const kp = localKeypair(role);
-  const sign = <T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(tx: T): T => {
-    if ("version" in tx) tx.sign([kp]);
-    else tx.partialSign(kp);
-    return tx;
-  };
-  return { publicKey: kp.publicKey, signTransaction: async (tx) => sign(tx), signAllTransactions: async (txs) => txs.map(sign) };
-}
+export const confidential = () => import("./confidential");
 
 export interface Me {
   key: PubKey;
-  ata: PubKey;
   program: Program<Relstate>;
+  wallet: WalletProvider;
 }
 
-const tokenAccount = (wallet: PubKey) => getAssociatedTokenAddressSync(mint, wallet);
+/**
+ * Which token program owns the lease mint.
+ *
+ * The program moved from `anchor_spl::token::Token`, which had one known address the Anchor
+ * client could infer, to `Interface<TokenInterface>`, which accepts both token programs and so
+ * cannot be inferred (docs/contracts/program-interface.md §1). Every instruction that moves
+ * tokens now has to name it, and the associated-token address depends on it too, so both come
+ * from the mint account itself rather than a hard-coded guess.
+ *
+ * Only a successful read is cached. A failed one — an RPC blip, a 429 that outlived its retries,
+ * or a mint that does not exist yet — must not pin the session to a guess: on a Token-2022 mint
+ * that would derive wrong ATAs until the page reloaded. So a failure clears the cache and is
+ * raised to the caller, which fails the flow with a message naming the mint instead of sending a
+ * transaction built against the wrong token program.
+ */
+let resolving: Promise<PubKey> | undefined;
+export const tokenProgram = (): Promise<PubKey> =>
+  (resolving ??= connection
+    .getAccountInfo(mint)
+    .then((info) => {
+      if (!info) throw new Error(`The lease mint ${MINT} does not exist on ${RPC}.`);
+      return info.owner.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+    })
+    .catch((e) => {
+      resolving = undefined;
+      throw e;
+    }));
 
-export function makeMe(wallet: WalletLike): Me {
+const ataWith = (wallet: PubKey, program: PubKey) => getAssociatedTokenAddressSync(mint, wallet, false, program);
+
+/** The lease mint's associated token account for a wallet, on whichever token program owns it. */
+export const tokenAccountFor = async (wallet: PubKey) => ataWith(wallet, await tokenProgram());
+
+export function makeMe(w: WalletProvider | AdapterWallet): Me {
+  const wallet = asWalletProvider(w);
   const provider = new AnchorProvider(connection, wallet as never, { commitment: "confirmed" });
-  return { key: wallet.publicKey, ata: tokenAccount(wallet.publicKey), program: new Program<Relstate>(idl as Relstate, provider) };
+  return { key: wallet.publicKey, program: new Program<Relstate>(idl as Relstate, provider), wallet };
 }
 
-const reader = new Program<Relstate>(
-  idl as Relstate,
-  new AnchorProvider(
-    connection,
-    { publicKey: PublicKey.default, signTransaction: async (t: unknown) => t, signAllTransactions: async (t: unknown) => t } as never,
-    { commitment: "confirmed" },
-  ),
-);
+const reader = new Program<Relstate>(idl as Relstate, new AnchorProvider(connection, readOnlyWallet() as never, { commitment: "confirmed" }));
 const programId = reader.programId;
 
 const u64 = (n: BN) => n.toArrayLike(Buffer, "le", 8);
@@ -247,10 +267,12 @@ export async function loadBalances(wallet: string): Promise<{ sol: number; usdc:
   const key = new PublicKey(wallet);
   const [lamports, usdc] = await Promise.all([
     connection.getBalance(key),
-    getAccount(connection, tokenAccount(key)).then(
-      (a) => Number(a.amount),
-      () => null,
-    ),
+    tokenProgram()
+      .then(async (program) => getAccount(connection, ataWith(key, program), undefined, program))
+      .then(
+        (a) => Number(a.amount),
+        () => null,
+      ),
   ]);
   return { sol: lamports / anchor.web3.LAMPORTS_PER_SOL, usdc };
 }
@@ -265,26 +287,59 @@ export interface NewListing {
   photo: string;
 }
 
-async function send(call: { simulate: () => Promise<unknown>; rpc: () => Promise<string> }) {
-  await call.simulate();
-  return call.rpc();
+/**
+ * Contract 2: hand a transaction to the backend, which pays the fee and submits it, so the
+ * user never needs SOL.
+ *
+ * The fee payer's address is part of what the user signs, so it is filled in here and only its
+ * signature slot is left empty — that is what "fee payer empty" means on the wire.
+ */
+export async function sendSponsored(me: Me, tx: anchor.web3.Transaction): Promise<string> {
+  const [feePayer, latest] = await Promise.all([sponsorFeePayer(), connection.getLatestBlockhash("confirmed")]);
+  tx.feePayer = new PublicKey(feePayer);
+  tx.recentBlockhash = latest.blockhash;
+  tx.lastValidBlockHeight = latest.lastValidBlockHeight;
+  const signed = await me.wallet.signTransaction(tx);
+  return postSponsored(signed.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64"));
+}
+
+type Call = {
+  simulate: () => Promise<unknown>;
+  rpc: () => Promise<string>;
+  transaction: () => Promise<anchor.web3.Transaction>;
+};
+
+/**
+ * Every flow goes through here. With a backend configured (VITE_API) the transaction is
+ * sponsored; without one the connected wallet pays its own fee, which is what keeps the local
+ * test-wallet flow working unchanged.
+ *
+ * Simulation moves to the backend in sponsored mode — the hardening spec puts it there, and a
+ * wallet with 0 SOL cannot be the fee payer of a client-side simulation.
+ */
+async function send(me: Me, call: Call) {
+  if (!SPONSORED) {
+    await call.simulate();
+    return call.rpc();
+  }
+  return sendSponsored(me, await call.transaction());
 }
 
 export function createListing(me: Me, id: string, f: NewListing) {
-  return send(me.program.methods
+  return send(me, me.program.methods
     .createListing(new BN(id), new BN(f.rent), new BN(f.deposit), Array.from(f.region, (c) => c.charCodeAt(0)), f.title, f.city, f.blurb, f.photo)
     .accountsPartial({ landlord: me.key, listing: listingPda(me.key, id) }));
 }
 
 export function closeListing(me: Me, l: ListingView) {
-  return send(me.program.methods
+  return send(me, me.program.methods
     .closeListing()
     .accountsPartial({ landlord: me.key, listing: new PublicKey(l.address) }));
 }
 
 export function applyTo(me: Me, l: ListingView) {
   const listing = new PublicKey(l.address);
-  return send(me.program.methods
+  return send(me, me.program.methods
     .apply()
     .accountsPartial({ tenant: me.key, listing, application: applicationPda(listing, me.key) }));
 }
@@ -296,13 +351,14 @@ const closeApplicationCall = (me: Me, a: ApplicationView) =>
 
 // Either the applicant (withdraw) or the landlord (dismiss).
 export function closeApplication(me: Me, a: ApplicationView) {
-  return send(closeApplicationCall(me, a));
+  return send(me, closeApplicationCall(me, a));
 }
 
 // When the tenant had applied, the application is closed in the same transaction.
 export async function proposeLease(me: Me, id: string, l: ListingView, tenant: string, hash: number[], application?: ApplicationView) {
   const tenantKey = new PublicKey(tenant);
   const lease = leasePda(me.key, id);
+  const tokenProgramId = await tokenProgram();
   const call = me.program.methods
     .proposeLease(
       new BN(id),
@@ -322,14 +378,16 @@ export async function proposeLease(me: Me, id: string, l: ListingView, tenant: s
       lease,
       vault: vaultPda(lease),
       landlordProfile: profilePda(me.key),
+      tokenProgram: tokenProgramId,
     });
-  return send(application ? call.postInstructions([await closeApplicationCall(me, application).instruction()]) : call);
+  return send(me, application ? call.postInstructions([await closeApplicationCall(me, application).instruction()]) : call);
 }
 
 // Accepting the lease also closes the tenant's open applications to this landlord (same transaction),
 // so nothing stale is left to withdraw.
 export async function fundDeposit(me: Me, l: LeaseView, hash: number[], applications: ApplicationView[] = []) {
   const lease = new PublicKey(l.address);
+  const tokenProgramId = await tokenProgram();
   const call = me.program.methods
     .fundDeposit(hash)
     .accountsPartial({
@@ -337,73 +395,91 @@ export async function fundDeposit(me: Me, l: LeaseView, hash: number[], applicat
       lease,
       mint,
       vault: vaultPda(lease),
-      tenantAta: me.ata,
+      tenantAta: await tokenAccountFor(me.key),
       tenantProfile: profilePda(me.key),
+      tokenProgram: tokenProgramId,
     });
   const closes = await Promise.all(applications.map((a) => closeApplicationCall(me, a).instruction()));
-  return send(closes.length ? call.postInstructions(closes) : call);
+  return send(me, closes.length ? call.postInstructions(closes) : call);
 }
 
-export function payRent(me: Me, l: LeaseView) {
-  return send(me.program.methods
+/**
+ * The public rent path: `pay_rent` moves `rent_amount` itself. On a confidential mint the program
+ * moves nothing and instead expects a confidential transfer directly before this instruction --
+ * that transaction is built by `confidential.ts` and composed by the caller, not here.
+ */
+export async function payRent(me: Me, l: LeaseView) {
+  const [tokenProgramId, tenantAta, landlordAta] = await Promise.all([
+    tokenProgram(),
+    tokenAccountFor(me.key),
+    tokenAccountFor(new PublicKey(l.landlord)),
+  ]);
+  return send(me, me.program.methods
     .payRent()
     .accountsPartial({
       tenant: me.key,
       lease: new PublicKey(l.address),
       mint,
-      tenantAta: me.ata,
-      landlordAta: tokenAccount(new PublicKey(l.landlord)),
+      tenantAta,
+      landlordAta,
       tenantProfile: profilePda(me.key),
+      tokenProgram: tokenProgramId,
     }));
 }
 
-export function releaseDeposit(me: Me, l: LeaseView, deduction: number) {
+export async function releaseDeposit(me: Me, l: LeaseView, deduction: number) {
   const lease = new PublicKey(l.address);
   const tenant = new PublicKey(l.tenant);
-  return send(me.program.methods
+  const [tokenProgramId, tenantAta, landlordAta] = await Promise.all([tokenProgram(), tokenAccountFor(tenant), tokenAccountFor(me.key)]);
+  return send(me, me.program.methods
     .releaseDeposit(new BN(deduction))
     .accountsPartial({
       landlord: me.key,
       lease,
       mint,
       vault: vaultPda(lease),
-      tenantAta: tokenAccount(tenant),
-      landlordAta: me.ata,
+      tenantAta,
+      landlordAta,
       tenantProfile: profilePda(tenant),
       landlordProfile: profilePda(me.key),
+      tokenProgram: tokenProgramId,
     }));
 }
 
-export function markDefault(me: Me, l: LeaseView) {
+export async function markDefault(me: Me, l: LeaseView) {
   const lease = new PublicKey(l.address);
   const tenant = new PublicKey(l.tenant);
-  return send(me.program.methods
+  const [tokenProgramId, tenantAta, landlordAta] = await Promise.all([tokenProgram(), tokenAccountFor(tenant), tokenAccountFor(me.key)]);
+  return send(me, me.program.methods
     .markDefault()
     .accountsPartial({
       landlord: me.key,
       lease,
       mint,
       vault: vaultPda(lease),
-      tenantAta: tokenAccount(tenant),
-      landlordAta: me.ata,
+      tenantAta,
+      landlordAta,
       tenantProfile: profilePda(tenant),
+      tokenProgram: tokenProgramId,
     }));
 }
 
-export function claimDeposit(me: Me, l: LeaseView) {
+export async function claimDeposit(me: Me, l: LeaseView) {
   const lease = new PublicKey(l.address);
   const landlord = new PublicKey(l.landlord);
-  return send(me.program.methods
+  const [tokenProgramId, tenantAta, landlordAta] = await Promise.all([tokenProgram(), tokenAccountFor(me.key), tokenAccountFor(landlord)]);
+  return send(me, me.program.methods
     .claimDeposit()
     .accountsPartial({
       tenant: me.key,
       lease,
       mint,
       vault: vaultPda(lease),
-      tenantAta: me.ata,
-      landlordAta: tokenAccount(landlord),
+      tenantAta,
+      landlordAta,
       tenantProfile: profilePda(me.key),
       landlordProfile: profilePda(landlord),
+      tokenProgram: tokenProgramId,
     }));
 }
 
@@ -442,6 +518,8 @@ export function errorMessage(e: unknown): string {
     if (/AccountNotFound/.test(why)) return "This wallet has no SOL on this network, so it cannot pay fees. Fund it first (see the box at the top).";
     return `The network rejected the transaction: ${why}${sim.logs?.length ? `. Last log: ${sim.logs[sim.logs.length - 1]}` : ""}`;
   }
+  if (SPONSORED && /fetch|network|load failed/i.test(err?.message ?? ""))
+    return `Could not reach the sponsoring backend at ${API}. Is it running?`;
   if (err?.name?.startsWith("Wallet"))
     return `${err.message || "The wallet did not sign"} (${err.name}). Check that the wallet is unlocked, set to the same network as this app (${RPC}), and that its active account is the one connected here.`;
   return err?.message ?? "Something went wrong";

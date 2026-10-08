@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{Mint, Token, TokenAccount};
+use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
 use super::payout::pay_out_vault;
 
@@ -16,25 +16,25 @@ pub struct ReleaseDeposit<'info> {
         bump = lease.bump
     )]
     pub lease: Account<'info, Lease>,
-    pub mint: Box<Account<'info, Mint>>,
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
     #[account(
         mut, 
         seeds = [VAULT_SEED, lease.key().as_ref()],
         bump
     )]
-    pub vault: Box<Account<'info, TokenAccount>>,
+    pub vault: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(
         mut,
         token::mint = mint,
         token::authority = lease.tenant
     )]
-    pub tenant_ata: Box<Account<'info, TokenAccount>>,
+    pub tenant_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(
         mut,
         token::mint = mint,
         token::authority = landlord
     )]
-    pub landlord_ata: Box<Account<'info, TokenAccount>>,
+    pub landlord_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(
         mut,
         seeds = [PROFILE_SEED, lease.tenant.as_ref()],
@@ -47,7 +47,7 @@ pub struct ReleaseDeposit<'info> {
         bump
     )]
     pub landlord_profile:Account<'info, Profile>,
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handle_release_deposit(ctx: Context<ReleaseDeposit>, deduction: u64) -> Result<()> {

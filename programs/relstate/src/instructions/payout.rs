@@ -1,17 +1,19 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{transfer_checked, Mint, Token, TokenAccount, TransferChecked};
+use anchor_spl::token_interface::{
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
+};
 
 use crate::{constants::*, state::*};
 
 /// Empties the deposit vault, signed by the lease PDA: `to_tenant` to the tenant,
 /// `to_landlord` to the landlord. Callers must make the two add up to the deposit.
 pub fn pay_out_vault<'info>(
-    token_program: &Program<'info, Token>,
+    token_program: &Interface<'info, TokenInterface>,
     lease: &Account<'info, Lease>,
-    mint: &Account<'info, Mint>,
-    vault: &Account<'info, TokenAccount>,
-    tenant_ata: &Account<'info, TokenAccount>,
-    landlord_ata: &Account<'info, TokenAccount>,
+    mint: &InterfaceAccount<'info, Mint>,
+    vault: &InterfaceAccount<'info, TokenAccount>,
+    tenant_ata: &InterfaceAccount<'info, TokenAccount>,
+    landlord_ata: &InterfaceAccount<'info, TokenAccount>,
     to_tenant: u64,
     to_landlord: u64,
 ) -> Result<()> {

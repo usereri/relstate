@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{Mint, Token, TokenAccount};
+use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
 use crate::{constants::*, error::ErrorCode, state::*};
 
@@ -14,8 +14,10 @@ pub struct ProposeLease<'info> {
     /// account. It may not exist yet (first-time tenant), so it is read by hand in the handler.
     #[account(seeds = [PROFILE_SEED, tenant.key().as_ref()], bump)]
     pub tenant_profile: UncheckedAccount<'info>,
-    #[account(address = ALLOWED_MINT @ ErrorCode::MintNotAllowed)]
-    pub mint: Account<'info, Mint>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, Config>,
+    #[account(constraint = config.allows(&mint.key()) @ ErrorCode::MintNotAllowed)]
+    pub mint: InterfaceAccount<'info, Mint>,
     #[account(
         init, 
         payer = landlord,
@@ -32,7 +34,7 @@ pub struct ProposeLease<'info> {
         token::mint = mint,
         token::authority = lease
     )]
-    pub vault: Account<'info, TokenAccount>,
+    pub vault: InterfaceAccount<'info, TokenAccount>,
     #[account(
         init_if_needed,
         payer = landlord,
@@ -41,7 +43,7 @@ pub struct ProposeLease<'info> {
         bump
     )]
     pub landlord_profile: Account<'info, Profile>,
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
 
