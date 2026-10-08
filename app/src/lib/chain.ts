@@ -110,6 +110,15 @@ export const LOCAL_WALLETS_AVAILABLE = IS_LOCAL;
 /** True when the backend pays every fee, so the connected wallet needs no SOL at all. */
 export { API, SPONSORED };
 
+/**
+ * The confidential-balance island, loaded on demand.
+ *
+ * It is a whole second Solana stack (`@solana/kit` + the `@solana/zk-sdk` wasm), so it is a
+ * dynamic import rather than part of the main bundle: nobody who never pays rent privately
+ * downloads the proof machinery. Every caller reaches it through here.
+ */
+export const confidential = () => import("./confidential");
+
 export interface Me {
   key: PubKey;
   ata: PubKey;

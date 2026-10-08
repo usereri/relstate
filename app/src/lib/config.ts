@@ -13,4 +13,11 @@ export const TERM_PERIODS = 3;
 export const CLAIM_WINDOW_SECS = 10;
 export const USDC = 1_000_000;
 export const MINT = "CpzHPiiCaJ6LUTcSXgcptmjr8fyto3GAxH48b1FJbYDQ";
+
+/**
+ * The Token-2022 confidential mint rent is settled in (`scripts/make-rusdc.ts` creates it and the
+ * backend reports it). Empty until that mint exists, which is why `confidential.ts` only asks for
+ * it when a private operation is actually requested.
+ */
+export const RUSDC_MINT: string = import.meta.env.VITE_RUSDC_MINT ?? "";
 export const MAX_TEXT = { title: 60, city: 40, blurb: 120, photo: 120 };
