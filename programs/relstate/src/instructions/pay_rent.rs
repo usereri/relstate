@@ -137,12 +137,19 @@ fn is_confidential_mint(mint: &AccountInfo) -> Result<bool> {
 }
 
 /// Requires a Token-2022 confidential `Transfer` from `source` to `destination` on `mint` as the
-/// instruction directly before this one.
+/// instruction directly before this one, and requires this one to be top-level.
 ///
 /// Directly before, rather than anywhere in the transaction, for two reasons: the transaction is
 /// atomic, so a transfer that fails takes this instruction's bookkeeping with it; and pinning the
 /// position pairs exactly one transfer with one recorded payment, so a tenant cannot settle two
 /// overdue periods with a single transfer.
+///
+/// The pairing only holds while `pay_rent` is a top-level instruction. The runtime writes the
+/// instructions sysvar's current index once per *top-level* instruction and does not update it on
+/// a CPI push, so two CPI calls into `pay_rent` from one wrapper instruction would read the same
+/// index and validate against the same transfer, crediting two payments for one. Requiring the
+/// instruction at `index` to belong to this program rejects that: under CPI it is the caller's.
+/// So `pay_rent` is not CPI-callable on the confidential path, by design.
 ///
 /// The amount is encrypted and is not checked. That gap is covered off-chain by the auditor key
 /// (docs/privacy.md).
@@ -153,6 +160,14 @@ fn require_confidential_transfer(
     destination: &Pubkey,
 ) -> Result<()> {
     let index = load_current_index_checked(instructions)?;
+    let current = load_instruction_at_checked(index as usize, instructions)
+        .map_err(|_| error!(ErrorCode::MissingConfidentialTransfer))?;
+    require_keys_eq!(
+        current.program_id,
+        crate::ID,
+        ErrorCode::MissingConfidentialTransfer
+    );
+
     require!(index > 0, ErrorCode::MissingConfidentialTransfer);
     let transfer = load_instruction_at_checked(index as usize - 1, instructions)
         .map_err(|_| error!(ErrorCode::MissingConfidentialTransfer))?;
@@ -187,10 +202,14 @@ fn is_confidential_transfer_to(
 mod tests {
     use super::*;
     use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
+    use anchor_lang::solana_program::sysvar::instructions::{
+        construct_instructions_data, BorrowedAccountMeta, BorrowedInstruction,
+    };
     use anchor_spl::token_2022::spl_token_2022::{
         extension::confidential_transfer::instruction::ConfidentialTransferInstruction,
         instruction::TokenInstruction,
     };
+    use solana_instructions_sysvar::store_current_index_checked;
 
     /// The two bytes the matcher looks for are the ones Token-2022 actually writes.
     #[test]
@@ -312,5 +331,117 @@ mod tests {
         let mut ix = transfer_ix(source, mint, destination);
         ix.accounts.truncate(2);
         assert!(!is_confidential_transfer_to(&ix, &source, &mint, &destination));
+    }
+
+    // ---- require_confidential_transfer, against a real instructions sysvar ----
+
+    /// Builds the instructions sysvar the way the runtime does, so the whole introspection path
+    /// can be driven on the host. `current` is the *top-level* index the runtime would store.
+    fn sysvar_data(ixs: &[Instruction], current: u16) -> Vec<u8> {
+        let borrowed: Vec<BorrowedInstruction> = ixs
+            .iter()
+            .map(|ix| BorrowedInstruction {
+                program_id: &ix.program_id,
+                accounts: ix
+                    .accounts
+                    .iter()
+                    .map(|a| BorrowedAccountMeta {
+                        pubkey: &a.pubkey,
+                        is_signer: a.is_signer,
+                        is_writable: a.is_writable,
+                    })
+                    .collect(),
+                data: &ix.data,
+            })
+            .collect();
+        let mut data = construct_instructions_data(&borrowed);
+        store_current_index_checked(&mut data, current).unwrap();
+        data
+    }
+
+    fn relstate_ix() -> Instruction {
+        Instruction {
+            program_id: crate::ID,
+            accounts: vec![],
+            data: vec![],
+        }
+    }
+
+    fn check(
+        ixs: &[Instruction],
+        current: u16,
+        source: &Pubkey,
+        mint: &Pubkey,
+        destination: &Pubkey,
+    ) -> Result<()> {
+        let mut data = sysvar_data(ixs, current);
+        let mut lamports = 0u64;
+        let key = INSTRUCTIONS_SYSVAR_ID;
+        let owner = Pubkey::default();
+        let info = AccountInfo::new(
+            &key, false, false, &mut lamports, &mut data, &owner, false,
+        );
+        require_confidential_transfer(&info, source, mint, destination)
+    }
+
+    #[test]
+    fn accepts_a_transfer_directly_before_a_top_level_pay_rent() {
+        let (source, mint, destination) = keys();
+        let ixs = [transfer_ix(source, mint, destination), relstate_ix()];
+        assert!(check(&ixs, 1, &source, &mint, &destination).is_ok());
+    }
+
+    /// The whole point of finding 1: the runtime stores the current index once per top-level
+    /// instruction and does not bump it on a CPI push, so a wrapper program invoking pay_rent
+    /// twice would have both calls read the same index and match the same transfer. Requiring
+    /// the instruction at that index to be this program's rejects the entire class.
+    #[test]
+    fn rejects_pay_rent_reached_by_cpi_from_a_wrapper() {
+        let (source, mint, destination) = keys();
+        let wrapper = Instruction {
+            program_id: Pubkey::new_unique(),
+            accounts: vec![],
+            data: vec![],
+        };
+        let ixs = [transfer_ix(source, mint, destination), wrapper];
+        // index 1 is the wrapper, not relstate: under CPI this is what pay_rent would see
+        assert!(check(&ixs, 1, &source, &mint, &destination).is_err());
+    }
+
+    #[test]
+    fn rejects_pay_rent_as_the_first_instruction() {
+        let (source, mint, destination) = keys();
+        let ixs = [relstate_ix(), transfer_ix(source, mint, destination)];
+        // nothing precedes it, and a transfer *after* it does not count
+        assert!(check(&ixs, 0, &source, &mint, &destination).is_err());
+    }
+
+    /// The transfer must be adjacent: anything in between breaks the one-transfer-one-payment
+    /// pairing. This is the case the standard Token-2022 `transfer()` builder produces, since it
+    /// appends its three proof-verify instructions after the transfer.
+    #[test]
+    fn rejects_a_transfer_separated_from_pay_rent() {
+        let (source, mint, destination) = keys();
+        let filler = Instruction {
+            program_id: Pubkey::new_unique(),
+            accounts: vec![],
+            data: vec![],
+        };
+        let ixs = [
+            transfer_ix(source, mint, destination),
+            filler,
+            relstate_ix(),
+        ];
+        assert!(check(&ixs, 2, &source, &mint, &destination).is_err());
+    }
+
+    #[test]
+    fn rejects_a_mismatched_transfer_before_a_top_level_pay_rent() {
+        let (source, mint, destination) = keys();
+        let ixs = [
+            transfer_ix(source, mint, Pubkey::new_unique()),
+            relstate_ix(),
+        ];
+        assert!(check(&ixs, 1, &source, &mint, &destination).is_err());
     }
 }
