@@ -16,6 +16,7 @@ import {
   createTransactionMessage,
   createTransactionPlanExecutor,
   createTransactionPlanner,
+  getBase64EncodedWireTransaction,
   getSignatureFromTransaction,
   isSolanaError,
   pipe,
@@ -23,6 +24,7 @@ import {
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
   signTransactionMessageWithSigners,
+  type Blockhash,
   type InstructionPlan,
   type RpcTransport,
   type Signature,
@@ -159,6 +161,79 @@ export function getSolanaClient(): SolanaClient {
   return (shared ??= createSolanaClient());
 }
 
+export type ConfirmOptions = {
+  commitment: "confirmed" | "finalized";
+  pollMs: number;
+  timeoutMs: number;
+  /** Re-send every this many polls: a transaction sent once can still be dropped. */
+  resendEveryPolls: number;
+};
+
+export const defaultConfirmOptions: ConfirmOptions = {
+  commitment: "confirmed",
+  pollMs: 700,
+  timeoutMs: 90_000,
+  resendEveryPolls: 6,
+};
+
+/**
+ * Sends a transaction and confirms it by polling `getSignatureStatuses`.
+ *
+ * Deliberately not kit's `sendAndConfirmTransactionFactory`, which confirms over
+ * a websocket subscription. `wss://api.devnet.solana.com` drops connections
+ * under exactly the load a confidential-transfer proof plan generates, and a
+ * dropped socket fails the whole plan several transactions in — which is how
+ * this was found. Polling goes through the retrying HTTP transport, so it
+ * inherits the 429 backoff that the rest of this module provides, and a
+ * dropped response is just another retry.
+ */
+export async function sendAndConfirmByPolling(
+  client: SolanaClient,
+  transaction: Parameters<typeof getBase64EncodedWireTransaction>[0] & Parameters<typeof getSignatureFromTransaction>[0],
+  options: Partial<ConfirmOptions> & {
+    skipPreflight?: boolean;
+    /** The transaction's blockhash, so expiry can be detected instead of waiting out the timeout. */
+    blockhash?: Blockhash;
+  } = {},
+): Promise<Signature> {
+  const o = { ...defaultConfirmOptions, ...options };
+  const wire = getBase64EncodedWireTransaction(transaction);
+  const signature = getSignatureFromTransaction(transaction);
+  const send = () =>
+    client.rpc
+      .sendTransaction(wire, {
+        encoding: "base64",
+        skipPreflight: options.skipPreflight ?? false,
+        preflightCommitment: o.commitment,
+        // We do our own re-sending below, in step with the polling.
+        maxRetries: 0n,
+      })
+      .send();
+
+  await send();
+  const deadline = Date.now() + o.timeoutMs;
+  for (let poll = 1; Date.now() < deadline; poll++) {
+    await new Promise((resolve) => setTimeout(resolve, o.pollMs));
+    const { value } = await client.rpc.getSignatureStatuses([signature]).send();
+    const status = value[0];
+    if (status != null) {
+      if (status.err != null) {
+        throw new Error(`transaction ${signature} failed: ${JSON.stringify(status.err)}`);
+      }
+      if (status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized") return signature;
+    } else if (poll % o.resendEveryPolls === 0) {
+      // Not seen yet: either still propagating or dropped. Re-sending is cheap
+      // and idempotent; the blockhash check stops us trying past expiry.
+      if (options.blockhash !== undefined) {
+        const { value: stillValid } = await client.rpc.isBlockhashValid(options.blockhash, { commitment: o.commitment }).send();
+        if (!stillValid) throw new Error(`transaction ${signature} expired before it was confirmed`);
+      }
+      await send();
+    }
+  }
+  throw new Error(`transaction ${signature} was not confirmed within ${o.timeoutMs}ms`);
+}
+
 /**
  * Runs an instruction plan the way `spikes/ct` proved out on devnet: version 0
  * messages, a fresh blockhash per transaction, and deliberately **no**
@@ -166,21 +241,24 @@ export function getSolanaClient(): SolanaClient {
  * proof inline and sit within a few bytes of the size limit, so an injected
  * SetComputeUnitLimit instruction pushes them over it.
  */
-export function createPlanRunner(client: SolanaClient = getSolanaClient(), log: (...args: unknown[]) => void = () => {}) {
+export function createPlanRunner(
+  client: SolanaClient = getSolanaClient(),
+  log: (...args: unknown[]) => void = () => {},
+  confirm: Partial<ConfirmOptions> = {},
+) {
+  const signatures: Signature[] = [];
   const executor = createTransactionPlanExecutor({
     executeTransactionMessage: async (_ctx, message) => {
       const { value: blockhash } = await client.rpc.getLatestBlockhash().send();
       const transaction = await signTransactionMessageWithSigners(setTransactionMessageLifetimeUsingBlockhash(blockhash, message));
       assertIsSendableTransaction(transaction);
       assertIsTransactionWithBlockhashLifetime(transaction);
-      await client.sendAndConfirm(transaction, { commitment: "confirmed", skipPreflight: false });
-      const signature = getSignatureFromTransaction(transaction);
+      const signature = await sendAndConfirmByPolling(client, transaction, { ...confirm, blockhash: blockhash.blockhash });
       log("   tx", signature);
       signatures.push(signature);
       return { signature, transaction };
     },
   });
-  const signatures: Signature[] = [];
 
   return async function run(payer: TransactionSigner, plan: InstructionPlan, label: string): Promise<Signature[]> {
     log(`-> ${label}`);

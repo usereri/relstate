@@ -4,7 +4,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { AuthError, assertAdmin, createSessionToken, sessionFromAuthorizationHeader } from "./auth.ts";
-import type { HealthResponse, SponsorRequest, TreasuryInvariantView } from "./contracts.ts";
+import type { HealthResponse, SponsorInfoResponse, SponsorRequest, TreasuryInvariantView } from "./contracts.ts";
 import { env, redactedRpcUrl } from "./env.ts";
 import { LimitError } from "./limits.ts";
 import { ServiceUnavailable, createServices, type Services } from "./services.ts";
@@ -102,10 +102,32 @@ export function createApp(services: Services = createServices()) {
       if (typeof wallet !== "string" || wallet.trim() === "") {
         throw new RejectedTransaction("wallet is required", "malformed-body");
       }
+      // Defence in depth: the sponsor also refuses such a session, but this
+      // route is open to anyone in mock mode and the fee payer address is
+      // public, so do not hand one out in the first place.
+      const sponsor = await services.sponsor();
+      if (wallet.trim() === sponsor.feePayer) {
+        throw new RejectedTransaction("refusing to issue a session for the fee payer's own address", "wallet-is-sponsor");
+      }
       const { token, expiresAt } = createSessionToken(wallet);
       return c.json({ token, wallet, expiresAt });
     });
   }
+
+  /**
+   * The app needs the fee payer address before the user signs, because the fee
+   * payer is part of the signed message and a 0-SOL wallet cannot discover it
+   * any other way. Public and unauthenticated: it is a public key.
+   */
+  app.get("/api/sponsor", async (c) => {
+    const sponsor = await services.sponsor();
+    const body: SponsorInfoResponse = {
+      feePayer: sponsor.feePayer,
+      ephemeral: !sponsor.broadcast,
+      broadcast: sponsor.broadcast,
+    };
+    return c.json(body);
+  });
 
   app.post("/api/sponsor", async (c) => {
     const session = sessionFromAuthorizationHeader(c.req.header("authorization"));

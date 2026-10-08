@@ -7,6 +7,25 @@ export const ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJ
 export const ZK_ELGAMAL_PROOF_PROGRAM = "ZkE1Gama1Proof11111111111111111111111111111";
 export const SYSTEM_PROGRAM = "11111111111111111111111111111111";
 export const COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111";
+/** SPL Memo v2. Lane A's confidential transfer plan tags its transactions with one. */
+export const MEMO_PROGRAM = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
+
+/**
+ * Contract 2: GET /api/sponsor — public, no session.
+ *
+ * The app needs the fee payer address *before* the user signs, because it is
+ * part of the signed message. Used as the fallback when `VITE_FEE_PAYER` is
+ * unset.
+ */
+export interface SponsorInfoResponse {
+  feePayer: string;
+  /**
+   * True when the backend is running on a throwaway key (mock mode, no
+   * secrets): it can co-sign but cannot pay, and will not broadcast.
+   */
+  ephemeral: boolean;
+  broadcast: boolean;
+}
 
 /** Contract 2: POST /api/sponsor */
 export interface SponsorRequest {
@@ -25,16 +44,20 @@ export interface SponsorResponse {
 }
 /**
  * The backend co-signs only if every instruction targets one of these program ids.
+ *
  * ComputeBudget is included so clients can set a priority fee; the backend caps
- * the requested price and unit limit separately.
+ * the requested price and unit limit separately. Memo is included for Lane A's
+ * transfer plan — it holds no state, and a Memo instruction that tried to name
+ * the fee payer as a verified signer is rejected by the fee-payer rule anyway.
  */
 export const SPONSOR_ALLOWLIST = [
   RELSTATE_PROGRAM,
   TOKEN_2022_PROGRAM,
   ASSOCIATED_TOKEN_PROGRAM,
   ZK_ELGAMAL_PROOF_PROGRAM,
-  SYSTEM_PROGRAM, // account creation only
+  SYSTEM_PROGRAM, // proof context + account creation only
   COMPUTE_BUDGET_PROGRAM,
+  MEMO_PROGRAM,
 ] as const;
 
 /**

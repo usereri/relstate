@@ -155,7 +155,15 @@ export type ComputeBudget = {
   unitPriceMicroLamports: bigint | undefined;
 };
 
-/** Reads the ComputeBudget instructions. Their layout is a 1-byte tag plus a little-endian value. */
+/**
+ * Reads the ComputeBudget instructions. Their layout is a 1-byte tag plus a
+ * little-endian value.
+ *
+ * A truncated SetComputeUnitLimit or SetComputeUnitPrice is rejected rather than
+ * ignored. Silently skipping one would make `worstCaseFeeLamports` underestimate
+ * the fee we are agreeing to pay, which is exactly the number the caps are
+ * applied to; the runtime would reject the instruction anyway.
+ */
 export function readComputeBudget(tx: InspectedTransaction): ComputeBudget {
   let unitLimit: bigint | undefined;
   let unitPriceMicroLamports: bigint | undefined;
@@ -163,8 +171,13 @@ export function readComputeBudget(tx: InspectedTransaction): ComputeBudget {
     if (ix.programAddress !== COMPUTE_BUDGET_PROGRAM) continue;
     const view = new DataView(ix.data.buffer, ix.data.byteOffset, ix.data.byteLength);
     const tag = ix.data[0];
-    if (tag === 2 && ix.data.length >= 5) unitLimit = BigInt(view.getUint32(1, true));
-    else if (tag === 3 && ix.data.length >= 9) unitPriceMicroLamports = view.getBigUint64(1, true);
+    if (tag === 2) {
+      if (ix.data.length < 5) reject("malformed-compute-budget", `instruction ${ix.index}: SetComputeUnitLimit needs 5 bytes`);
+      unitLimit = BigInt(view.getUint32(1, true));
+    } else if (tag === 3) {
+      if (ix.data.length < 9) reject("malformed-compute-budget", `instruction ${ix.index}: SetComputeUnitPrice needs 9 bytes`);
+      unitPriceMicroLamports = view.getBigUint64(1, true);
+    }
   }
   return { unitLimit, unitPriceMicroLamports };
 }

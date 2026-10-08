@@ -104,9 +104,18 @@ export function createSponsorService(deps: SponsorDeps) {
     await assertPresentSignaturesValid(tx);
     const worstCaseFee = assertComputeBudgetWithinPolicy(tx, deps.policy);
 
-    // The session wallet must actually be party to the transaction, otherwise
-    // one wallet's session could be used to spend another wallet's budget.
-    const signsItself = tx.accounts.some((a) => a.isSigner && a.address === wallet);
+    // The session wallet must be a signer of the transaction, so the spend is
+    // attributable and one wallet's session cannot spend another's budget.
+    //
+    // The fee payer is excluded explicitly. It is always a signer at index 0, so
+    // without this a session issued for the sponsor's own address — which
+    // /health and GET /api/sponsor publish — would satisfy the check, and a
+    // transaction no user ever signed would be sponsored. That is the only way
+    // the wallet check could be satisfied without a user signature.
+    if (wallet === deps.feePayer.address) {
+      throw new RejectedTransaction("a session for the fee payer's own address cannot sponsor transactions", "wallet-is-sponsor");
+    }
+    const signsItself = tx.accounts.some((a) => a.isSigner && a.address === wallet && a.address !== deps.feePayer.address);
     if (!signsItself) {
       throw new RejectedTransaction(`the session wallet ${wallet} is not a signer of this transaction`, "wallet-mismatch");
     }
@@ -183,7 +192,7 @@ export function createSponsorService(deps: SponsorDeps) {
     }
   }
 
-  return { sponsor, policy: deps.policy, feePayer: deps.feePayer.address, readComputeBudget };
+  return { sponsor, policy: deps.policy, feePayer: deps.feePayer.address, broadcast: deps.broadcast, readComputeBudget };
 }
 
 export type SponsorService = ReturnType<typeof createSponsorService>;

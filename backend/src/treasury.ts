@@ -139,8 +139,18 @@ export function confidentialMoveAmount(total: bigint, publicHoldback: bigint): b
 export function createTreasury(deps: TreasuryDeps) {
   const log = deps.log ?? (() => {});
   const maxRentLamports = deps.maxRentLamports ?? env.sponsor.maxRentLamports;
-  /** Mock-mode stand-in for the real USDC reserve. */
+  /**
+   * Mock-mode stand-in for the real USDC reserve.
+   *
+   * Seeded from the mint's on-chain supply on first read, because the supply
+   * outlives this process and the ledger does not. Without that, restarting
+   * against a mint that already has rUSDC in circulation reports an invariant
+   * violation that says nothing about this run. Seeded this way the invariant
+   * starts at exactly zero headroom, so every new wrap still has to be backed
+   * by a fresh credit — which is the property worth enforcing.
+   */
   let mockReserve = 0n;
+  let mockReserveSeeded = false;
   const ledger: Array<{ at: number; kind: "credit" | "debit" | "wrap" | "unwrap"; amount: bigint; ref: string }> = [];
 
   async function supply(): Promise<bigint> {
@@ -148,7 +158,14 @@ export function createTreasury(deps: TreasuryDeps) {
   }
 
   async function reserve(): Promise<bigint> {
-    if (deps.mode === "mock") return mockReserve;
+    if (deps.mode === "mock") {
+      if (!mockReserveSeeded) {
+        // `+=`, so a credit made before the first read is not lost.
+        mockReserve += await supply();
+        mockReserveSeeded = true;
+      }
+      return mockReserve;
+    }
     if (deps.reserveTokenAccount === undefined) {
       throw new Error("USDC_RESERVE_TOKEN_ACCOUNT is required when BACKEND_MODE=live");
     }
@@ -266,6 +283,14 @@ export function createTreasury(deps: TreasuryDeps) {
     const token = await associatedTokenAddress(owner.address, deps.mint);
     const existing = await fetchMaybeToken(deps.rpc, token);
     if (!existing.exists) throw new Error(`${owner.address} has no rUSDC account`);
+
+    // Check the reserve can cover the release *before* burning. The burn is
+    // irreversible, so discovering afterwards that the reserve is short would
+    // leave supply and reserve permanently inconsistent.
+    const available = await reserve();
+    if (amount > available) {
+      throw new Error(`unwrap ${amount} exceeds the reserve ${available}; refusing to burn against a reserve that cannot pay out`);
+    }
 
     const signatures = await deps.run(
       deps.treasury,
