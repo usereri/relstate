@@ -207,15 +207,29 @@ function sponsoredSubmit(wallet: WalletProvider, l: Libs): Submit {
   };
 }
 
-/** Polls for confirmation, so the island needs no websocket transport of its own. */
+/**
+ * Polls for confirmation over HTTP.
+ *
+ * Deliberately not kit's `sendAndConfirmTransactionFactory`, which confirms over a websocket:
+ * `api.devnet.solana.com` drops that socket partway through a multi-transaction proof plan and
+ * takes the rest of the plan with it. Polling goes through the same 429-retrying transport as
+ * every other read, so it degrades by waiting rather than by dying.
+ *
+ * Expiry is only checked every few polls: the whole point of this path is to be gentle with a
+ * rate-limited endpoint, and a blockhash outliving its slot by a couple of seconds costs nothing.
+ */
+const EXPIRY_CHECK_EVERY = 8;
+
 async function confirm(rpc: Rpc<SolanaRpcApi>, signature: string, lastValidBlockHeight: bigint) {
-  for (;;) {
+  for (let poll = 0; ; poll++) {
     const { value } = await rpc.getSignatureStatuses([signature as Parameters<typeof rpc.getSignatureStatuses>[0][0]]).send();
     const status = value[0];
     if (status?.err) throw new Error(`Transaction ${signature} failed: ${JSON.stringify(status.err)}`);
     if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") return;
-    const height = await rpc.getBlockHeight({ commitment: "confirmed" }).send();
-    if (height > lastValidBlockHeight) throw new Error(`Transaction ${signature} expired before it was confirmed.`);
+    if (poll % EXPIRY_CHECK_EVERY === EXPIRY_CHECK_EVERY - 1) {
+      const height = await rpc.getBlockHeight({ commitment: "confirmed" }).send();
+      if (height > lastValidBlockHeight) throw new Error(`Transaction ${signature} expired before it was confirmed.`);
+    }
     await new Promise((r) => setTimeout(r, 500));
   }
 }
