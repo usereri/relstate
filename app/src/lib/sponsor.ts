@@ -56,5 +56,9 @@ export async function postSponsored(txBase64: string): Promise<string> {
     body: JSON.stringify({ txBase64 }),
   });
   if (!res.ok) return fail(res, "sponsor");
-  return (await res.json()).signature as string;
+  // The backend simulates before co-signing and reports simulation failures as { error },
+  // so a 200 without a signature is still a failure.
+  const body = (await res.json()) as { signature?: string; error?: string };
+  if (!body.signature) throw new Error(body.error ?? "sponsor returned no signature");
+  return body.signature;
 }
