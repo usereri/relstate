@@ -38,4 +38,18 @@ pub enum ErrorCode {
     TextTooLong,
     #[msg("Only the applicant or the landlord can close an application")]
     NotYourApplication,
+    #[msg("Only the config admin can change the program settings")]
+    NotAdmin,
+    #[msg("The allowed-mint list is full")]
+    MintListFull,
+    #[msg("The mint account could not be read")]
+    InvalidMintData,
+    #[msg("Paying rent on a confidential mint needs a matching Token-2022 confidential transfer directly before pay_rent")]
+    MissingConfidentialTransfer,
+    #[msg("A confidential-transfer mint must carry an auditor ElGamal pubkey to be allowed")]
+    ConfidentialMintNeedsAuditor,
+    #[msg("The mint carries an extension that is not allowed for leases")]
+    DisallowedMintExtension,
+    #[msg("The new admin must not be the default (all-zero) pubkey")]
+    InvalidNewAdmin,
 }

@@ -2233,10 +2233,12 @@ dependencies = [
  "anchor-spl",
  "litesvm",
  "litesvm-token",
+ "solana-instructions-sysvar",
  "solana-keypair",
  "solana-message",
  "solana-signer",
  "solana-transaction",
+ "spl-pod",
 ]
 
 [[package]]

@@ -5,13 +5,13 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-relstate = "5J52oGfo7BjC529vizEaM96QtxVFD4Kbv22Tw8aXa1Ar"
+relstate = "G4iMjveQKXztnGoxigAeWPrb5evT9yt6qaLkgQEp2dXm"
 
 [provider]
 cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
-test = "npx mocha -t 1000000 \"tests/**/*.ts\""
+test = "cargo test -p relstate --features demo && npx mocha -t 1000000 \"tests/**/*.ts\""
 
 [hooks]

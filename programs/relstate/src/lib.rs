@@ -9,11 +9,23 @@ pub use constants::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("5J52oGfo7BjC529vizEaM96QtxVFD4Kbv22Tw8aXa1Ar");
+declare_id!("G4iMjveQKXztnGoxigAeWPrb5evT9yt6qaLkgQEp2dXm");
 
 #[program]
 pub mod relstate {
     use super::*;
+
+    pub fn init_config(ctx: Context<InitConfig>) -> Result<()> {
+        crate::instructions::config::handle_init_config(ctx)
+    }
+
+    pub fn set_mint_allowed(ctx: Context<SetMintAllowed>, allowed: bool) -> Result<()> {
+        crate::instructions::config::handle_set_mint_allowed(ctx, allowed)
+    }
+
+    pub fn set_admin(ctx: Context<UpdateConfig>, new_admin: Pubkey) -> Result<()> {
+        crate::instructions::config::handle_set_admin(ctx, new_admin)
+    }
 
     pub fn create_listing(
         ctx: Context<CreateListing>,

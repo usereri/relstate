@@ -16,6 +16,9 @@ pub const APPLICATION_SEED: &[u8] = b"application";
 pub const PROFILE_SEED: &[u8] = b"profile";
 
 #[constant]
+pub const CONFIG_SEED: &[u8] = b"config";
+
+#[constant]
 pub const GOOD_STANDING_DISCOUNT_PCT: u8 = 50;
 
 // listing text limits, in bytes (the app mirrors them as MAX_TEXT in lib/config.ts)
@@ -29,8 +32,10 @@ pub const MAX_PHOTO: usize = 120;
 #[constant]
 pub const RENT_HEADROOM_PCT: u16 = 150;
 
-// For demo only devnet's USDC can back a lease, so a worthless token can't pay a Profile
-pub const ALLOWED_MINT: Pubkey = pubkey!("CpzHPiiCaJ6LUTcSXgcptmjr8fyto3GAxH48b1FJbYDQ");
+// Only a mint the admin has allowed (see Config) can back a lease, so a worthless token cannot
+// pay for a Profile. The list lives on chain because the demo needs both the classic test-USDC
+// mint and a Token-2022 rUSDC mint, and the latter is created per deployment.
+pub const MAX_ALLOWED_MINTS: usize = 8;
 
 // demo allows 1 sec leases, on mainnet minimum 28 days
 pub const MIN_PERIOD_SECS: i64 = if cfg!(feature = "demo") {

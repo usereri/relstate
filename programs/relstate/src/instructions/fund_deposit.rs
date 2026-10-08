@@ -1,5 +1,7 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{transfer_checked, Mint, Token, TokenAccount, TransferChecked};
+use anchor_spl::token_interface::{
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
+};
 
 use crate::{constants::*, error::ErrorCode, state::*};
 
@@ -15,19 +17,19 @@ pub struct FundDeposit<'info> {
         bump = lease.bump
     )]
     pub lease: Account<'info, Lease>,
-    pub mint: Account<'info, Mint>,
+    pub mint: InterfaceAccount<'info, Mint>,
     #[account(
         mut, 
         seeds = [VAULT_SEED, lease.key().as_ref()], 
         bump
     )]
-    pub vault: Account<'info, TokenAccount>,
+    pub vault: InterfaceAccount<'info, TokenAccount>,
     #[account(
         mut,
         token::mint = mint,
         token::authority = tenant
     )]
-    pub tenant_ata: Account<'info, TokenAccount>,
+    pub tenant_ata: InterfaceAccount<'info, TokenAccount>,
     #[account(
         init_if_needed,
         payer = tenant,
@@ -36,7 +38,7 @@ pub struct FundDeposit<'info> {
         bump
     )]
     pub tenant_profile: Account<'info, Profile>,
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
 
