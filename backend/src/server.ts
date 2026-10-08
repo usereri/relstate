@@ -143,13 +143,13 @@ export function createApp(services: Services = createServices()) {
 
   /** First-use confidential account: the wallet signed it, the treasury pays fee and rent. */
   app.post("/api/treasury/confidential-account", async (c) => {
-    sessionFromAuthorizationHeader(c.req.header("authorization"));
+    const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
     const { txBase64 } = await readJson<{ txBase64?: string }>(c);
     if (typeof txBase64 !== "string" || txBase64 === "") {
       throw new RejectedTransaction("txBase64 is required", "malformed-body");
     }
     const treasury = await services.treasury();
-    return c.json(await treasury.sponsorConfidentialAccountSetup({ txBase64 }));
+    return c.json(await treasury.sponsorConfidentialAccountSetup({ txBase64, wallet: session.wallet }));
   });
 
   app.get("/api/treasury/invariant", async (c) => {

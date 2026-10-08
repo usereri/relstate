@@ -58,9 +58,12 @@ import {
   RejectedTransaction,
   assertOnlySponsorSignatureMissing,
   assertPresentSignaturesValid,
+  assertComputeBudgetWithinPolicy,
   assertProgramsAllowed,
   inspectTransaction,
+  type InspectedTransaction,
 } from "./txinspect.ts";
+import { createRateLimiter, LimitError, type RateLimiter } from "./limits.ts";
 
 export type TreasuryRpc = Rpc<
   GetAccountInfoApi & GetBalanceApi & GetMinimumBalanceForRentExemptionApi & GetTokenAccountBalanceApi & SimulateTransactionApi & SendTransactionApi
@@ -108,6 +111,51 @@ export const CONFIDENTIAL_SETUP_ALLOWLIST = [
   COMPUTE_BUDGET_PROGRAM,
 ] as const;
 
+const TOKEN_2022_REALLOCATE = 29;
+const TOKEN_2022_CONFIDENTIAL_TRANSFER = 27;
+const CT_CONFIGURE_ACCOUNT = 2;
+const ATA_CREATE = 0;
+const ATA_CREATE_IDEMPOTENT = 1;
+
+/**
+ * Instruction-shape filter for the treasury-cosigned setup transaction.
+ *
+ * The treasury key is the rUSDC mint authority, so allowlisting the Token-2022
+ * program is not enough: MintTo, CloseAccount and FreezeAccount are all
+ * Token-2022 instructions. Only the exact instructions an account setup needs
+ * pass, and the treasury may appear only as a rent payer, never as an
+ * authority.
+ */
+export function assertConfidentialSetupShape(tx: InspectedTransaction, treasury: string): void {
+  const deny = (index: number, why: string): never => {
+    throw new RejectedTransaction(`instruction ${index}: ${why}`, "instruction-not-allowed");
+  };
+  for (const ix of tx.instructions) {
+    const treasuryAt = ix.accounts.findIndex((a) => a.address === treasury);
+    if (ix.programAddress === TOKEN_2022_PROGRAM_ADDRESS) {
+      const tag = ix.data[0];
+      const isReallocate = tag === TOKEN_2022_REALLOCATE;
+      const isConfigure = tag === TOKEN_2022_CONFIDENTIAL_TRANSFER && ix.data[1] === CT_CONFIGURE_ACCOUNT;
+      if (!isReallocate && !isConfigure) deny(ix.index, `Token-2022 instruction tag ${tag} is not permitted`);
+      // Reallocate: [account, payer, system, owner, ...]. The payer slot is the only place the treasury may be.
+      if (treasuryAt !== -1 && !(isReallocate && ix.accounts.filter((a) => a.address === treasury).length === 1 && treasuryAt === 1)) {
+        deny(ix.index, "the treasury may only fund Reallocate rent, not appear elsewhere in Token-2022 instructions");
+      }
+    } else if (ix.programAddress === ASSOCIATED_TOKEN_PROGRAM_ADDRESS) {
+      const tag = ix.data.length === 0 ? ATA_CREATE : ix.data[0];
+      if (tag !== ATA_CREATE && tag !== ATA_CREATE_IDEMPOTENT) deny(ix.index, `associated-token instruction tag ${tag} is not permitted`);
+      // [funder, ata, wallet, mint, system, token program]: funder only.
+      if (ix.accounts.filter((a) => a.address === treasury).some((_, i) => i > 0) || (treasuryAt !== -1 && treasuryAt !== 0)) {
+        deny(ix.index, "the treasury may only be the funder of an associated token account");
+      }
+    } else if (ix.programAddress === ZK_ELGAMAL_PROOF_PROGRAM) {
+      // Proof verification and context-state accounts: no token authority is conferred.
+    } else if (ix.programAddress !== COMPUTE_BUDGET_PROGRAM) {
+      deny(ix.index, "program not permitted");
+    }
+  }
+}
+
 export type TreasuryDeps = {
   rpc: TreasuryRpc;
   run: RunPlan;
@@ -119,6 +167,8 @@ export type TreasuryDeps = {
   /** Treasury-owned devnet USDC account backing the peg. Required in live mode. */
   reserveTokenAccount?: Address;
   maxRentLamports?: bigint;
+  /** Per-wallet and global caps for the setup route. Defaults are deliberately tight. */
+  setupLimiter?: RateLimiter;
   log?: (...args: unknown[]) => void;
 };
 
@@ -139,6 +189,14 @@ export function confidentialMoveAmount(total: bigint, publicHoldback: bigint): b
 export function createTreasury(deps: TreasuryDeps) {
   const log = deps.log ?? (() => {});
   const maxRentLamports = deps.maxRentLamports ?? env.sponsor.maxRentLamports;
+  const setupLimiter =
+    deps.setupLimiter ??
+    createRateLimiter({
+      maxPerWalletPerHour: 3,
+      maxGlobalPerHour: 60,
+      maxLamportsPerWalletPerDay: 3n * (maxRentLamports + env.sponsor.maxFeeLamports),
+      maxLamportsGlobalPerDay: 20n * (maxRentLamports + env.sponsor.maxFeeLamports),
+    });
   /**
    * Mock-mode stand-in for the real USDC reserve.
    *
@@ -400,7 +458,7 @@ export function createTreasury(deps: TreasuryDeps) {
    * simulated lamport-delta cap that bounds what the treasury can actually be
    * debited regardless of instruction shape.
    */
-  async function sponsorConfidentialAccountSetup({ txBase64 }: { txBase64: string }): Promise<{
+  async function sponsorConfidentialAccountSetup({ txBase64, wallet }: { txBase64: string; wallet: string }): Promise<{
     signature: Signature;
     broadcast: boolean;
     rentLamports: string;
@@ -410,7 +468,37 @@ export function createTreasury(deps: TreasuryDeps) {
     assertProgramsAllowed(tx, CONFIDENTIAL_SETUP_ALLOWLIST);
     assertOnlySponsorSignatureMissing(tx, deps.treasury.address);
     await assertPresentSignaturesValid(tx);
+    assertConfidentialSetupShape(tx, deps.treasury.address);
+    const worstCaseFee = assertComputeBudgetWithinPolicy(tx, {
+      allowlist: CONFIDENTIAL_SETUP_ALLOWLIST,
+      maxComputeUnits: env.sponsor.maxComputeUnits,
+      maxCuPriceMicroLamports: env.sponsor.maxCuPriceMicroLamports,
+      maxFeeLamports: env.sponsor.maxFeeLamports,
+    });
+    if (wallet === deps.treasury.address || !tx.accounts.some((a) => a.isSigner && a.address === wallet && a.address !== deps.treasury.address)) {
+      throw new RejectedTransaction(`the session wallet ${wallet} is not a signer of this transaction`, "wallet-mismatch");
+    }
+    let reservation;
+    try {
+      reservation = setupLimiter.reserve(wallet, maxRentLamports + worstCaseFee);
+    } catch (e) {
+      if (e instanceof LimitError) throw new RejectedTransaction(e.message, "rate-limited");
+      throw e;
+    }
+    try {
+      return await cosignAndSend(tx, txBase64, worstCaseFee, reservation);
+    } catch (e) {
+      reservation.cancel();
+      throw e;
+    }
+  }
 
+  async function cosignAndSend(
+    tx: InspectedTransaction,
+    txBase64: string,
+    worstCaseFee: bigint,
+    reservation: { commit(n: bigint): void },
+  ): Promise<{ signature: Signature; broadcast: boolean; rentLamports: string; transactionBase64?: string }> {
     const balanceBefore = (await deps.rpc.getBalance(deps.treasury.address, { commitment: "confirmed" }).send()).value;
     const simulation = await deps.rpc
       .simulateTransaction(txBase64 as Parameters<TreasuryRpc["simulateTransaction"]>[0], {
@@ -439,6 +527,7 @@ export function createTreasury(deps: TreasuryDeps) {
     assertIsFullySignedTransaction(signed);
     const signature = getSignatureFromTransaction(signed);
     const wire = getBase64EncodedWireTransaction(signed);
+    reservation.commit(spent + worstCaseFee);
 
     if (deps.mode === "mock") {
       log(`treasury: co-signed setup ${signature} (not broadcast: mock mode)`);
