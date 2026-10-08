@@ -1,6 +1,7 @@
 // Phase 1, step 9: the backend skeleton. Hono, one health route, the hardened
 // sponsor endpoint, and the treasury operations. No providers yet — workstream C
 // adds the webhook routes on top of this.
+import { isAddress } from "@solana/kit";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { AuthError, assertAdmin, createSessionToken, sessionFromAuthorizationHeader } from "./auth.ts";
@@ -176,6 +177,11 @@ export function createApp(services: Services = createServices()) {
     if (typeof body.wallet !== "string" || body.wallet === "") {
       throw new RejectedTransaction("wallet is required", "malformed-body");
     }
+    // Validate here rather than letting an invalid base58 string surface as a
+    // PDA-derivation failure several calls deep.
+    if (!isAddress(body.wallet)) {
+      throw new RejectedTransaction(`wallet is not a valid address: ${body.wallet}`, "malformed-body");
+    }
     const amount = parseAmount(body.amount);
     const treasury = await services.treasury();
     if (body.creditReserve === true) {
@@ -184,7 +190,7 @@ export function createApp(services: Services = createServices()) {
       }
       treasury.creditReserve(amount, "wrap-convenience");
     }
-    const result = await treasury.wrap({ wallet: body.wallet as Parameters<typeof treasury.wrap>[0]["wallet"], amount });
+    const result = await treasury.wrap({ wallet: body.wallet, amount });
     return c.json({ token: result.token, signatures: result.signatures, invariant: asInvariantView(result.invariantAfter) });
   });
 

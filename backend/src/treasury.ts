@@ -150,7 +150,12 @@ export function createTreasury(deps: TreasuryDeps) {
    * by a fresh credit — which is the property worth enforcing.
    */
   let mockReserve = 0n;
-  let mockReserveSeeded = false;
+  /**
+   * The seeding promise, not a boolean: two concurrent `reserve()` calls would
+   * both pass a flag that is only set after the `await`, and both add the
+   * supply. `invariant()` is reachable from a route, so that race is real.
+   */
+  let mockReserveSeeding: Promise<void> | undefined;
   const ledger: Array<{ at: number; kind: "credit" | "debit" | "wrap" | "unwrap"; amount: bigint; ref: string }> = [];
 
   async function supply(): Promise<bigint> {
@@ -159,11 +164,11 @@ export function createTreasury(deps: TreasuryDeps) {
 
   async function reserve(): Promise<bigint> {
     if (deps.mode === "mock") {
-      if (!mockReserveSeeded) {
-        // `+=`, so a credit made before the first read is not lost.
-        mockReserve += await supply();
-        mockReserveSeeded = true;
-      }
+      // `+=`, so a credit made before the first read is not lost.
+      mockReserveSeeding ??= supply().then((onchain) => {
+        mockReserve += onchain;
+      });
+      await mockReserveSeeding;
       return mockReserve;
     }
     if (deps.reserveTokenAccount === undefined) {
