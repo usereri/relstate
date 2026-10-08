@@ -27,6 +27,9 @@ anchor-spl = { version = "1.1.2", default-features = false, features = [
     "token",
     "token_2022",
 ] }
+# pay_rent reads the instructions sysvar to find the confidential transfer carrying the rent;
+# anchor-lang's solana_program shim only re-exports a slice of this crate.
+solana-instructions-sysvar = "3.0.1"
 [dev-dependencies]
 litesvm = "0.10.0"
 litesvm-token = "0.10.0"

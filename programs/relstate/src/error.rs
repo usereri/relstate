@@ -42,4 +42,8 @@ pub enum ErrorCode {
     NotAdmin,
     #[msg("The allowed-mint list is full")]
     MintListFull,
+    #[msg("The mint account could not be read")]
+    InvalidMintData,
+    #[msg("Paying rent on a confidential mint needs a matching Token-2022 confidential transfer directly before pay_rent")]
+    MissingConfidentialTransfer,
 }

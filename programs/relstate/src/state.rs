@@ -121,6 +121,8 @@ pub struct RentPaid {
     pub lease: Pubkey,
     pub period: u16,
     pub on_time: bool,
+    // the amount moved in a Token-2022 confidential transfer, so it is not public
+    pub confidential: bool,
 }
 
 #[event]
