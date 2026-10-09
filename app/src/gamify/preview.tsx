@@ -6,6 +6,7 @@
  * Nothing here is wired to the network, and nothing here ships in the app bundle — the only entries
  * in `vite.config.ts` are `index.html` and `confidential-check.html`.
  */
+import "@/polyfill"; // ProfileCard reaches chain.ts, which needs the Buffer global. Must be first.
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { FlaskConical } from "lucide-react";
@@ -70,8 +71,11 @@ const CHECKLISTS: [string, ReturnType<typeof checklist>][] = [
   ["KYC landed (workstream D)", checklist({ signedIn: true, balance: 1_200_000_000, applied: true, rentPaid: false, identity: "done" })],
 ];
 
+/** `?role=landlord` so a screenshot of either ladder can be taken without a click. */
+const initialRole = (): Role => (new URLSearchParams(location.search).get("role") === "landlord" ? "landlord" : "tenant");
+
 function Preview() {
-  const [role, setRole] = useState<Role>("tenant");
+  const [role, setRole] = useState<Role>(initialRole);
   const [toast, setToast] = useState(0);
   useEffect(() => {
     document.documentElement.dataset.role = role;
@@ -104,7 +108,8 @@ function Preview() {
         </div>
       </header>
 
-      <main className="mx-auto flex max-w-[1600px] flex-col gap-10 px-6 py-8">
+      {/* the level-up toast is fixed to the top right: keep the first row of cards clear of it */}
+      <main className="mx-auto flex max-w-[1600px] flex-col gap-10 px-6 pb-8 pt-36">
         <section className="flex flex-col gap-4">
           <h1 className="font-display text-2xl font-semibold">Levels · {role}</h1>
           <div className="grid items-start gap-6 lg:grid-cols-2 2xl:grid-cols-4">
