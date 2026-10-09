@@ -3,10 +3,10 @@
 | Question | Answer |
 |---|---|
 | Who holds on-ramped USDC? | Treasury reserve: a backend-owned devnet-USDC token account |
-| Who wraps to rUSDC? | Backend, using the treasury mint authority, only after a confirmed MoneyGram cash-in (see `moneygram.md`: webhook support is unconfirmed, so this may be balance polling) |
+| Who wraps to rUSDC? | Backend, using the treasury mint authority, only after a confirmed MoneyGram cash-in (demo: Stripe test-mode webhook, see `stripe.md`) |
 | What triggers wrap? | `onramp.completed` event (Contract 4) -> `treasury.wrap(wallet, amount)` |
 | Deposit funding | Backend mints rUSDC to tenant and sponsors `deposit` + `apply pending` for **everything except the lease deposit** — see "Keep the deposit public" below |
-| Payout | Landlord withdraws confidential -> public rUSDC (sponsored) -> `treasury.unwrap(wallet, amount)` burns it and releases USDC to the wallet that signs MoneyGram's cash-out transfer (devnet USDC, sandbox) |
+| Payout | Landlord withdraws confidential -> public rUSDC (sponsored) -> `treasury.unwrap(wallet, amount)` burns it and releases USDC to a mocked payout screen (no real money moves) |
 | Invariant | `rUSDC supply <= reserve USDC balance`, checked after every wrap/unwrap |
 | Keys | treasury mint authority + freeze authority, auditor ElGamal secret, fee payer, attestation issuer: four separate keys, all in backend secrets, never in the app |
 

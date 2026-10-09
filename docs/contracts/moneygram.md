@@ -1,3 +1,5 @@
+> **PARKED 2026-10-09.** MoneyGram's Solana ramp is cash-counter only (card/bank on-ramp is announced, undated) and our sandbox key returns 401. Demo fiat-in is Stripe test mode: see `stripe.md`. Notes below kept for a post-demo cash-out integration.
+
 # MoneyGram Ramps (workstream E) — spike findings, 2026-10-09
 
 Sources: MoneyGram developer pages, the Solana Foundation template `community/moneygram-onramp`, and a live call with our sandbox keys.
