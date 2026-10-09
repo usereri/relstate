@@ -1,5 +1,6 @@
 // Contract 5: every tunable in one place, with mock defaults so the backend boots with no secrets.
 import { resolve } from "node:path";
+import { parsePln, parseRate, parseUsdc } from "./providers/money.ts";
 
 /** Repo root, independent of cwd, so scripts and the server resolve the same .env. */
 export const REPO_ROOT = resolve(import.meta.dirname, "../..");
@@ -101,6 +102,36 @@ export const env = {
   usdcReserveMint: str("USDC_RESERVE_MINT"),
   usdcReserveTokenAccount: str("USDC_RESERVE_TOKEN_ACCOUNT"),
 
+  /** Where the hosted checkout sends the user back to. The app is a hash router, so the return path lives inside the fragment. */
+  appUrl: str("APP_URL", "http://localhost:5173"),
+
+  /**
+   * Fiat in (workstream E, docs/contracts/stripe.md). `mock` is the no-secrets
+   * default: the checkout URL points at a local page served by this backend and
+   * the "payment" confirms instantly, through the same webhook path as Stripe.
+   */
+  onramp: {
+    provider: (str("ONRAMP_PROVIDER", "mock") === "stripe" ? "stripe" : "mock") as "mock" | "stripe",
+    /** Illustrative fixed demo rate; say so on stage. */
+    plnPerUsdc: str("DEMO_PLN_PER_USDC", "4.30"),
+    minPln: str("ONRAMP_MIN_PLN", "10"),
+    maxPln: str("ONRAMP_MAX_PLN", "5000"),
+    /** Base units of rUSDC one wallet may be credited in a rolling day. */
+    maxUsdcPerWalletPerDay: str("ONRAMP_MAX_USDC_PER_WALLET_PER_DAY", "2000"),
+    stripeSecretKey: str("STRIPE_SECRET_KEY"),
+    stripeWebhookSecret: str("STRIPE_WEBHOOK_SECRET"),
+    /** Comma-separated Stripe payment methods. BLIK needs a PLN-capable account; `card` always works in test mode. */
+    stripePaymentMethods: str("STRIPE_PAYMENT_METHODS", "card"),
+    stripeApiBase: str("STRIPE_API_BASE", "https://api.stripe.com"),
+    /** Stripe's own replay window for webhook timestamps. */
+    webhookToleranceSeconds: num("STRIPE_WEBHOOK_TOLERANCE_SECONDS", 300),
+  },
+
+  offramp: {
+    provider: (str("OFFRAMP_PROVIDER", "mock") === "mock" ? "mock" : "mock") as "mock",
+    maxUsdcPerWalletPerDay: str("OFFRAMP_MAX_USDC_PER_WALLET_PER_DAY", "2000"),
+  },
+
   sponsor: {
     maxTxBytes: num("SPONSOR_MAX_TX_BYTES", 1232),
     maxInstructions: num("SPONSOR_MAX_INSTRUCTIONS", 16),
@@ -145,6 +176,24 @@ export function assertEnvConsistent(e: Env = env): void {
   }
   if (e.feePayerKeypair !== "" && e.feePayerKeypair === e.treasuryKeypair) {
     problems.push("FEE_PAYER_KEYPAIR and TREASURY_KEYPAIR must be different keys");
+  }
+  // The on-ramp is the one path that mints rUSDC without a user signature, so a
+  // half-configured Stripe is worse than no Stripe: a checkout the webhook can
+  // never verify would take (test) money and credit nobody.
+  if (e.onramp.provider === "stripe") {
+    if (e.onramp.stripeSecretKey === "") problems.push("STRIPE_SECRET_KEY is required when ONRAMP_PROVIDER=stripe");
+    if (e.onramp.stripeWebhookSecret === "") problems.push("STRIPE_WEBHOOK_SECRET is required when ONRAMP_PROVIDER=stripe");
+  }
+  try {
+    parseRate(e.onramp.plnPerUsdc);
+    parsePln(e.onramp.minPln, "ONRAMP_MIN_PLN");
+    parsePln(e.onramp.maxPln, "ONRAMP_MAX_PLN");
+    parseUsdc(e.onramp.maxUsdcPerWalletPerDay, "ONRAMP_MAX_USDC_PER_WALLET_PER_DAY");
+    parseUsdc(e.offramp.maxUsdcPerWalletPerDay, "OFFRAMP_MAX_USDC_PER_WALLET_PER_DAY");
+    if (parseRate(e.onramp.plnPerUsdc) <= 0n) problems.push("DEMO_PLN_PER_USDC must be greater than zero");
+    if (parsePln(e.onramp.minPln) > parsePln(e.onramp.maxPln)) problems.push("ONRAMP_MIN_PLN is above ONRAMP_MAX_PLN");
+  } catch (error) {
+    problems.push(error instanceof Error ? error.message : String(error));
   }
   if (problems.length > 0) throw new Error(`invalid configuration:\n  - ${problems.join("\n  - ")}`);
 }

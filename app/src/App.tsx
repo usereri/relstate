@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { LocalWalletProvider, WalletButton, useLocalWallet, useMe } from "@/components/WalletButton";
 import { Handlers, LeaseTab, LogEntry, Waiting } from "@/screens";
+import { Payout, TopUp } from "@/screens/TopUp";
 import { Listings, MyProfile } from "@/views";
 
 const ROLE_KEY = "relstate.role";
@@ -110,18 +111,35 @@ export default function App() {
   );
 }
 
-type Tab = "apartments" | "listings" | "lease" | "profile";
+type Tab = "apartments" | "listings" | "lease" | "wallet" | "profile";
 const TABS: Record<Role, [Tab, string][]> = {
   tenant: [
     ["apartments", "Apartments"],
     ["lease", "My lease"],
+    ["wallet", "Add funds"],
     ["profile", "My profile"],
   ],
   landlord: [
     ["listings", "My listings"],
     ["lease", "Leases"],
+    ["wallet", "Payouts"],
     ["profile", "My profile"],
   ],
+};
+
+/**
+ * The fiat checkout sends the user back to `#/app?tab=wallet&…`, which is the
+ * only reason a tab can be chosen from the URL.
+ */
+const tabFromHash = (role: Role): Tab => {
+  try {
+    const hash = location.hash;
+    const asked = new URLSearchParams(hash.slice(hash.indexOf("?") + 1)).get("tab");
+    const known = TABS[role].find(([t]) => t === asked);
+    return known?.[0] ?? TABS[role][0][0];
+  } catch {
+    return TABS[role][0][0];
+  }
 };
 
 function Workspace({ role, switchRole, signOut }: { role: Role; switchRole: () => void; signOut: () => void }) {
@@ -162,7 +180,7 @@ function Shell({
 }) {
   const me = useMe();
   const address = me?.key.toBase58() ?? null;
-  const [tab, setTab] = useState<Tab>(TABS[role][0][0]);
+  const [tab, setTab] = useState<Tab>(() => tabFromHash(role));
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
@@ -343,6 +361,8 @@ function Shell({
           ) : (
             connectFirst
           ))}
+        {tab === "wallet" &&
+          (role === "tenant" ? <TopUp wallet={address} onCredited={bump} /> : <Payout wallet={address} balanceBase={balances?.usdc} />)}
         {tab === "profile" && (address ? <MyProfile role={role} me={address} /> : connectFirst)}
       </div>
     </div>
@@ -354,17 +374,20 @@ const GREETING: Record<Tab, string> = {
   apartments: "Find your next home",
   listings: "Your properties",
   lease: "Leases",
+  wallet: "Money in and out",
   profile: "Your rental record",
 };
 const SUBTITLE: Record<Role, Partial<Record<Tab, string>>> = {
   tenant: {
     apartments: "Every landlord's record is verified on-chain. Apply in one click.",
     lease: "Accept proposals, pay rent and get your deposit back.",
+    wallet: "Pay in złoty. Rent settles in rUSDC, and the amount stays private.",
     profile: "Written only by the protocol. Take it to any city.",
   },
   landlord: {
     listings: "Publish apartments and review applicants with a verified history.",
     lease: "Propose leases, track rent and release deposits.",
+    wallet: "Cash rent out to your bank. Simulated for the demo.",
     profile: "Tenants see this before they apply. Keep it clean.",
   },
 };
