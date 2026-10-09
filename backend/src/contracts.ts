@@ -90,8 +90,13 @@ export interface AttestationView {
 export interface ProviderEvent {
   kind: "kyc.approved" | "kyc.rejected" | "onramp.completed" | "offramp.completed";
   wallet: string;
-  /** vendor reference, never personal data */
+  /**
+   * Vendor reference, never personal data. It is also the idempotency key: the
+   * on-ramp credits one `ref` exactly once, so it must be the vendor's own event
+   * id and not something regenerated per delivery.
+   */
   ref: string;
+  /** **Base units** (6 decimals), like everything else in the money path: 1 USDC = 1000000. */
   amountUsdc?: number;
 }
 export interface Provider {
@@ -150,4 +155,9 @@ export interface HealthResponse {
   ephemeralKeys: string[];
   rusdcMint: string | null;
   auditorConfigured: boolean;
+  /** Workstream E. `mock` means the checkout is a local page and no card is involved. */
+  onrampProvider: "mock" | "stripe";
+  offrampProvider: "mock";
+  /** Illustrative fixed demo rate, PLN per USDC. */
+  plnPerUsdc: string;
 }

@@ -8,6 +8,9 @@ import { AuthError, assertAdmin, createSessionToken, sessionFromAuthorizationHea
 import type { HealthResponse, SponsorInfoResponse, SponsorRequest, TreasuryInvariantView } from "./contracts.ts";
 import { env, redactedRpcUrl } from "./env.ts";
 import { LimitError } from "./limits.ts";
+import { formatPln, formatUsdc, parsePln, parseUsdc } from "./providers/money.ts";
+import { OnrampError, WebhookError, formatRate, mockCheckoutPage } from "./providers/onramp.ts";
+import { StripeApiError } from "./providers/stripe.ts";
 import { ServiceUnavailable, createServices, type Services } from "./services.ts";
 import { InvariantViolation, reportForLog, type InvariantReport } from "./treasury.ts";
 import { RejectedTransaction } from "./txinspect.ts";
@@ -15,10 +18,18 @@ import { RejectedTransaction } from "./txinspect.ts";
 const asInvariantView = (report: InvariantReport): TreasuryInvariantView => reportForLog(report);
 
 /** Maps a thrown error to a status and a message safe to return to a caller. */
-function problem(error: unknown): { status: 400 | 401 | 409 | 429 | 500 | 503; body: Record<string, unknown> } {
+function problem(error: unknown): { status: 400 | 401 | 403 | 404 | 409 | 429 | 500 | 502 | 503; body: Record<string, unknown> } {
   if (error instanceof RejectedTransaction) return { status: 400, body: { error: error.message, code: error.code } };
   if (error instanceof AuthError) return { status: 401, body: { error: error.message, code: "unauthorized" } };
   if (error instanceof LimitError) return { status: 429, body: { error: error.message, code: "rate-limited", scope: error.scope } };
+  // A rejected webhook is the caller's problem, not ours: 400 so a genuine
+  // provider retry of a *valid* event is still possible, and nothing about the
+  // signing secret leaks into the message.
+  if (error instanceof WebhookError) return { status: 400, body: { error: error.message, code: error.code } };
+  if (error instanceof OnrampError) return { status: error.status, body: { error: error.message, code: error.code } };
+  if (error instanceof StripeApiError) {
+    return { status: 502, body: { error: `the payment provider rejected the request: ${error.message}`, code: error.stripeCode ?? "provider-error" } };
+  }
   if (error instanceof InvariantViolation) {
     return {
       status: 409,
@@ -59,6 +70,26 @@ function parseAmount(value: unknown, field = "amount"): bigint {
   return amount;
 }
 
+/**
+ * The URL the mock checkout page may send the browser back to.
+ *
+ * Compared by **origin**, not by prefix: `http://localhost:5173.evil.test/`
+ * starts with `http://localhost:5173` and is a different site, so a prefix check
+ * turns this page into an open redirector. Anything that is not the app's own
+ * origin falls back to the configured one.
+ */
+export function safeReturnBase(requested: string | undefined, appUrl = env.appUrl): string {
+  const fallback = `${appUrl.replace(/\/$/, "")}/#/app?tab=wallet&topup=`;
+  if (requested === undefined || requested === "") return fallback;
+  try {
+    return new URL(requested).origin === new URL(appUrl).origin ? requested : fallback;
+  } catch {
+    // Not an absolute URL at all: a relative "back" would resolve against this
+    // backend's origin, not the app's, so it is no use either.
+    return fallback;
+  }
+}
+
 export function createApp(services: Services = createServices()) {
   const app = new Hono();
   app.use("*", cors({ origin: env.corsOrigin, allowHeaders: ["content-type", "authorization"], allowMethods: ["GET", "POST", "OPTIONS"] }));
@@ -87,6 +118,9 @@ export function createApp(services: Services = createServices()) {
       ephemeralKeys: keys.ephemeral,
       rusdcMint: env.rusdcMint === "" ? null : env.rusdcMint,
       auditorConfigured: env.rusdcAuditorIkm !== "",
+      onrampProvider: env.onramp.provider,
+      offrampProvider: env.offramp.provider,
+      plnPerUsdc: formatRate(services.onramp().rateScaled),
     };
     return c.json(body);
   });
@@ -192,6 +226,131 @@ export function createApp(services: Services = createServices()) {
     }
     const result = await treasury.wrap({ wallet: body.wallet, amount });
     return c.json({ token: result.token, signatures: result.signatures, invariant: asInvariantView(result.invariantAfter) });
+  });
+
+  // --- Fiat in and out (workstream E, docs/contracts/stripe.md) ---------------
+  //
+  // The security property worth stating once: of everything below, only
+  // `POST /api/webhooks/stripe` credits anything, and it believes only what the
+  // provider signed. The checkout route can price a top-up and nothing more; the
+  // browser's return from the hosted page is a redirect the user controls, so it
+  // is treated as a hint to re-read the balance.
+
+  /** What the top-up screen needs to render itself, without hardcoding the demo rate. */
+  app.get("/api/onramp/config", (c) => {
+    const onramp = services.onramp();
+    return c.json({
+      provider: onramp.provider,
+      simulated: onramp.provider === "mock",
+      plnPerUsdc: formatRate(onramp.rateScaled),
+      minPln: formatPln(parsePln(env.onramp.minPln, "ONRAMP_MIN_PLN")),
+      maxPln: formatPln(parsePln(env.onramp.maxPln, "ONRAMP_MAX_PLN")),
+      maxUsdcPerWalletPerDay: formatUsdc(onramp.cap),
+    });
+  });
+
+  app.post("/api/onramp/checkout", async (c) => {
+    const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
+    const body = await readJson<{ amountPln?: string | number; depositHoldbackUsdc?: string | number }>(c);
+    if (body.amountPln === undefined) throw new RejectedTransaction("amountPln is required", "malformed-body");
+    let amountPln: bigint;
+    let holdback: bigint;
+    try {
+      amountPln = parsePln(body.amountPln);
+      holdback = body.depositHoldbackUsdc === undefined ? 0n : parseUsdc(body.depositHoldbackUsdc, "depositHoldbackUsdc");
+    } catch (error) {
+      throw new RejectedTransaction(error instanceof Error ? error.message : String(error), "malformed-body");
+    }
+    // The wallet is the session's, never the body's: it is what the per-wallet
+    // cap is keyed on and what the provider metadata will name as the recipient.
+    const result = await services.onramp().checkout({ wallet: session.wallet, amountPln, holdbackUsdc: holdback });
+    return c.json(result);
+  });
+
+  /**
+   * Polled by the app after the hosted page sends the user back, because the
+   * redirect proves nothing: the webhook may land before or after it.
+   */
+  app.get("/api/onramp/status", (c) => {
+    const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
+    const id = c.req.query("intent") ?? "";
+    if (id === "") throw new RejectedTransaction("intent is required", "malformed-body");
+    const onramp = services.onramp();
+    const intent = onramp.intent(id);
+    // Do not confirm whether an intent exists for someone else's wallet.
+    if (intent === undefined || intent.wallet !== session.wallet) {
+      return c.json({ error: `no top-up ${id} for this wallet`, code: "intent-unknown" }, 404);
+    }
+    const credit = onramp.creditForIntent(id);
+    return c.json({
+      intent: id,
+      wallet: intent.wallet,
+      amountPln: formatPln(intent.plnMinor),
+      amountUsdc: formatUsdc(intent.amountUsdc),
+      plnPerUsdc: formatRate(intent.rateScaled),
+      state: credit === undefined ? "pending" : credit.status,
+      credit: credit ?? null,
+      remainingToday: formatUsdc(onramp.remainingToday(session.wallet)),
+    });
+  });
+
+  /**
+   * The one trusted trigger. Deliberately unauthenticated and deliberately not
+   * reading the parsed body: the signature covers the exact bytes received, so
+   * re-serialising the JSON would break verification.
+   *
+   * In mock mode the same route takes the mock page's `{ intent }` confirmation,
+   * so the demo and the real flow differ only in which provider verifies the
+   * payload — not in what happens afterwards.
+   */
+  app.post("/api/webhooks/stripe", async (c) => {
+    const raw = await c.req.text();
+    const headers = { "stripe-signature": c.req.header("stripe-signature") ?? "" };
+    const { credit, replay } = await services.onramp().handleWebhook(headers, raw);
+    // 200 even for a rejected credit: the provider has done its part and
+    // retrying would not change the outcome. The record says what happened.
+    return c.json({ received: true, replay, credit }, 200);
+  });
+
+  if (env.onramp.provider === "mock") {
+    /** The no-secrets stand-in for Stripe's hosted page. Mock mode only. */
+    app.get("/mock/onramp", (c) => {
+      const id = c.req.query("intent") ?? "";
+      const intent = services.onramp().intent(id);
+      if (intent === undefined) return c.text(`Unknown top-up intent ${id}. Start again from the app.`, 404);
+      return c.html(mockCheckoutPage(intent, safeReturnBase(c.req.query("back"))));
+    });
+  }
+
+  /** Fiat out: a mocked payout. Labelled `simulated` in the response and in the UI. */
+  app.post("/api/offramp/payout", async (c) => {
+    const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
+    const body = await readJson<{ amountUsdc?: string | number; method?: string; destination?: string }>(c);
+    if (body.amountUsdc === undefined) throw new RejectedTransaction("amountUsdc is required", "malformed-body");
+    let amountUsdc: bigint;
+    try {
+      amountUsdc = parseUsdc(body.amountUsdc);
+    } catch (error) {
+      throw new RejectedTransaction(error instanceof Error ? error.message : String(error), "malformed-body");
+    }
+    const receipt = await services.offramp().payout({
+      wallet: session.wallet,
+      amountUsdc,
+      method: typeof body.method === "string" && body.method !== "" ? body.method.slice(0, 32) : undefined,
+      destination: typeof body.destination === "string" ? body.destination : null,
+    });
+    return c.json(receipt);
+  });
+
+  app.get("/api/offramp/history", (c) => {
+    const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
+    const offramp = services.offramp();
+    return c.json({
+      simulated: true,
+      plnPerUsdc: formatRate(offramp.rateScaled),
+      remainingToday: formatUsdc(offramp.remainingToday(session.wallet)),
+      receipts: offramp.history(session.wallet),
+    });
   });
 
   app.notFound((c) => c.json({ error: "not found", code: "not-found" }, 404));

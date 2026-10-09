@@ -6,6 +6,9 @@ import { SPONSOR_ALLOWLIST } from "./contracts.ts";
 import { env } from "./env.ts";
 import { getKey } from "./keys.ts";
 import { createRateLimiter } from "./limits.ts";
+import { offramp as createOfframpService, onramp as createOnrampService } from "./providers/index.ts";
+import type { Offramp } from "./providers/offramp.ts";
+import type { Onramp } from "./providers/onramp.ts";
 import { createPlanRunner, getSolanaClient, type SolanaClient } from "./rpc.ts";
 import { createSponsorService, defaultSponsorPolicy, type SponsorService } from "./sponsor.ts";
 import { createTreasury, type Treasury, type TreasuryRpc } from "./treasury.ts";
@@ -16,6 +19,9 @@ export type Services = {
   client(): SolanaClient;
   sponsor(): Promise<SponsorService>;
   treasury(): Promise<Treasury>;
+  /** Workstream E. Both are synchronous: neither needs a key or the network to exist. */
+  onramp(): Onramp;
+  offramp(): Offramp;
   /** For /health: which keys are throwaways generated for this process. */
   keyReport(): Promise<{ feePayer: string; attestationIssuer: string; treasury: string; ephemeral: string[] }>;
 };
@@ -25,6 +31,8 @@ export function createServices(log: (...args: unknown[]) => void = console.log):
   let client: SolanaClient | undefined;
   let sponsor: Promise<SponsorService> | undefined;
   let treasury: Promise<Treasury> | undefined;
+  let onramp: Onramp | undefined;
+  let offramp: Offramp | undefined;
 
   const getClient = () => (client ??= getSolanaClient());
 
@@ -67,6 +75,19 @@ export function createServices(log: (...args: unknown[]) => void = console.log):
           log,
         });
       })());
+    },
+
+    /**
+     * The on-ramp takes the treasury as a thunk rather than a value: a checkout
+     * must work in a fresh clone where `RUSDC_MINT` is unset, and only the
+     * webhook — which mints — actually needs the treasury to exist.
+     */
+    onramp() {
+      return (onramp ??= createOnrampService({ treasury: () => this.treasury(), log }));
+    },
+
+    offramp() {
+      return (offramp ??= createOfframpService({ treasury: () => this.treasury(), log }));
     },
 
     async keyReport() {
