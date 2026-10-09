@@ -1,7 +1,6 @@
 import { ArrowRight, CalendarDays } from "lucide-react";
 import { btn } from "@/components/ui";
 import { appHref, EVENTS } from "@/lib/links";
-import { cn } from "@/lib/utils";
 
 export function Cta() {
   return (
@@ -14,10 +13,10 @@ export function Cta() {
             <p className="text-primary-foreground/80">Browse what is available, or start from the reason you are moving.</p>
           </div>
           <div className="flex flex-wrap gap-3">
-            <a href={appHref()} className={cn(btn({ size: "lg" }), "bg-card text-foreground hover:bg-card/90")}>
+            <a href={appHref()} className={btn({ variant: "onPrimary", size: "lg" })}>
               Find a home <ArrowRight />
             </a>
-            <a href={EVENTS} className={cn(btn({ size: "lg" }), "border border-primary-foreground/30 bg-transparent text-primary-foreground hover:bg-primary-foreground/10")}>
+            <a href={EVENTS} className={btn({ variant: "onPrimaryOutline", size: "lg" })}>
               <CalendarDays /> What&rsquo;s on in Kraków
             </a>
           </div>

@@ -5,16 +5,25 @@ import { cn } from "@/lib/utils";
  * The app's `buttonVariants` (app/src/components/ui/button.tsx) as a plain class helper. The site
  * only ever renders links, never form buttons, so there is no component wrapper.
  */
+/**
+ * Every variant has to be declared here rather than patched at the call site: `cn` is a plain
+ * join, so passing `bg-card` alongside the default variant's `bg-primary` leaves both classes on
+ * the element and lets stylesheet order decide the winner.
+ */
 export function btn(
-  { variant = "default", size = "default" }: { variant?: "default" | "outline" | "ghost" | "onPanel"; size?: "default" | "sm" | "lg" } = {},
+  {
+    variant = "default",
+    size = "default",
+  }: { variant?: "default" | "outline" | "ghost" | "onPrimary" | "onPrimaryOutline"; size?: "default" | "sm" | "lg" } = {},
 ) {
   return cn(
     "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl text-[15px] font-medium transition-all active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0",
     variant === "default" && "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90",
     variant === "outline" && "border border-input bg-card text-foreground hover:bg-secondary/50",
     variant === "ghost" && "text-muted-foreground hover:bg-secondary/60 hover:text-foreground",
-    // on the contrast band the themed primary can collide with the panel, so this one is fixed
-    variant === "onPanel" && "border border-panel-foreground/25 text-panel-foreground hover:bg-panel-foreground/10",
+    // the two that sit on the primary-coloured CTA band, where `bg-primary` would be invisible
+    variant === "onPrimary" && "bg-card text-foreground shadow-sm hover:bg-card/90",
+    variant === "onPrimaryOutline" && "border border-primary-foreground/35 text-primary-foreground hover:bg-primary-foreground/10",
     size === "default" && "h-12 px-5",
     size === "sm" && "h-9 rounded-lg px-3 text-sm",
     size === "lg" && "h-14 px-6 text-base",

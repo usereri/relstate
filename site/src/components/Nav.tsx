@@ -3,7 +3,6 @@ import { Logo } from "@/components/Brand";
 import { ThemeToggle } from "@/components/Theme";
 import { btn } from "@/components/ui";
 import { appHref, EVENTS, HOME } from "@/lib/links";
-import { cn } from "@/lib/utils";
 
 /** Section anchors live on the home page, so they are addressed through it from either page. */
 export const NAV = [
@@ -28,7 +27,7 @@ export function Nav() {
         </nav>
         <div className="ml-auto flex items-center gap-1.5">
           <ThemeToggle />
-          <a href={appHref()} className={cn(btn({ size: "sm" }), "h-9")}>
+          <a href={appHref()} className={btn({ size: "sm" })}>
             Find a home <ArrowRight />
           </a>
         </div>
