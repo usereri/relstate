@@ -72,10 +72,10 @@ describe("tokenProgram", () => {
 });
 
 describe("tokenAccountFor", () => {
-  // Locked-in literals: what getAssociatedTokenAddressSync(MINT, wallet) returned before the
+  // Locked-in literals: what getAssociatedTokenAddressSync(MINT, wallet) returned for the current MINT (config.ts) before the
   // token-program change. A wrong ATA silently breaks the local demo flow.
-  const LANDLORD_ATA = "3tGRbBEkBD64ihcfeP7u4G4WDfGcgcgviwSEdb9hv1GL";
-  const TENANT_ATA = "2RNz6yazJAzwTJo2HFa39s2buH5nbsWmiGBfYAF6i6Av";
+  const LANDLORD_ATA = "8rEpxbk94jdbhmesi8s1CrPtsYkAEGzWdG5PCmPtFU3j";
+  const TENANT_ATA = "4wbV4ucvkXG5DXD5ZkbWg9eVdWwgQ8PQuj4zgYQA9YgB";
 
   it("on the classic path returns the literal pre-change ATAs", async () => {
     const { chain } = await load(TOKEN_PROGRAM_ID);
