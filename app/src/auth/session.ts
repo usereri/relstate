@@ -87,6 +87,10 @@ async function requestSession(wallet: string): Promise<BackendSession> {
   }
   const body = (await res.json()) as { token?: string; wallet?: string; expiresAt?: number };
   if (!body.token || typeof body.expiresAt !== "number") throw new Error(`${API}/api/auth/mock did not return a session token.`);
+  // Never stamp the wallet we asked for onto a token minted for another one: the caps the backend
+  // enforces are per wallet, so a mismatch is a backend bug worth surfacing, not papering over.
+  if (typeof body.wallet === "string" && body.wallet !== wallet)
+    throw new Error(`The backend issued a session for ${body.wallet} instead of ${wallet}.`);
   return { token: body.token, wallet, expiresAt: body.expiresAt };
 }
 
@@ -105,15 +109,19 @@ export function obtainSession(wallet: string): Promise<BackendSession> {
   }
   const pending = inFlight.get(wallet);
   if (pending) return pending;
-  const fresh = requestSession(wallet)
+  // `clearSession` drops the in-flight entry, which is how a sign-out that lands mid-request wins:
+  // the request still resolves for whoever asked, but it is not written to the cache or to storage,
+  // so signing out during sign-in cannot resurrect the account that was just abandoned.
+  const fresh: Promise<BackendSession> = requestSession(wallet)
     .then((s) => {
+      if (inFlight.get(wallet) !== fresh) return s;
+      inFlight.delete(wallet);
       cache.set(wallet, s);
       storeSession(s);
-      inFlight.delete(wallet);
       return s;
     })
     .catch((e) => {
-      inFlight.delete(wallet);
+      if (inFlight.get(wallet) === fresh) inFlight.delete(wallet);
       throw e;
     });
   inFlight.set(wallet, fresh);
