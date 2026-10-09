@@ -13,7 +13,10 @@ export const GRACE_SECS = IS_LOCAL ? 3 * 86_400 : 20;
 export const TERM_PERIODS = 3;
 export const CLAIM_WINDOW_SECS = 10;
 export const USDC = 1_000_000;
-export const MINT = "DLr6atdFNPUoAsQ2zpBdsJNmjV9E1wHMKUh9kmB4k8Dq";
+// The test-USDC mint `make demo-setup` creates: derived from the payer wallet
+// (~/.config/solana/id.json) with seed "relstate-test-usdc", so it is the same in every worktree.
+// Someone with a different payer sets VITE_MINT to the address demo-setup prints.
+export const MINT: string = import.meta.env.VITE_MINT ?? "Gco8ivBzZTq9U4iBLEApWxy8bcHbtenNP6crmYQcPCXH";
 
 /**
  * The Token-2022 confidential mint rent is settled in (`scripts/make-rusdc.ts` creates it and the

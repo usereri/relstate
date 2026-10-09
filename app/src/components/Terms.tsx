@@ -8,10 +8,10 @@ export function Listing({ l, children }: { l: ListingView; children?: React.Reac
       <div
         className="relative h-48 bg-cover bg-center"
         style={{
-          backgroundImage: `${l.photo ? `url("${photoUrl(l.photo)}"), ` : ""}linear-gradient(135deg, var(--accent) 0%, var(--primary) 55%, #1d1410 100%)`,
+          backgroundImage: `${l.photo ? `url("${photoUrl(l.photo)}"), ` : ""}linear-gradient(135deg, var(--accent) 0%, var(--primary) 55%, var(--ink) 100%)`,
         }}
       >
-        <div className="absolute inset-0 bg-gradient-to-t from-[#2e2016]/70 via-transparent to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
         <div className="absolute bottom-3 left-4 right-4 text-white">
           <p className="text-xs opacity-85">{[l.city, l.region].filter(Boolean).join(" · ")}</p>
           <h2 className="text-xl font-semibold leading-tight">{l.title}</h2>

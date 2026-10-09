@@ -113,12 +113,12 @@ npm install
 # the payer that funds accounts and owns the default listings
 solana-keygen new              # skip if ~/.config/solana/id.json already exists
 
-# the test-USDC mint the app uses. The program no longer bakes in a mint address (see
-# "Allowed mints" below), so only the app needs to be told about it:
-solana-keygen new --no-bip39-passphrase -o tests/test-usdc-mint.json
-solana-keygen pubkey tests/test-usdc-mint.json
-#   -> put that address in MINT (app/src/lib/config.ts)
 ```
+
+The test-USDC mint needs no keypair file: `make demo-setup` derives its address from the payer
+wallet (`createWithSeed`, seed `relstate-test-usdc`) and prints it. If your payer is not the one
+`MINT` in `app/src/lib/config.ts` was derived from, set `VITE_MINT=<printed address>` in
+`app/.env.local`.
 
 `make test-demo` does not need that mint: the test suite creates and allows its own.
 
