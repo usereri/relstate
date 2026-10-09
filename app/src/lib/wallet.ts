@@ -9,6 +9,7 @@ import { sha256 } from "@noble/hashes/sha2";
 
 const { Keypair, PublicKey } = anchor.web3;
 type PubKey = anchor.web3.PublicKey;
+type Kp = anchor.web3.Keypair;
 
 export type Role = "landlord" | "tenant";
 export type AnyTransaction = anchor.web3.Transaction | anchor.web3.VersionedTransaction;
@@ -89,26 +90,70 @@ export const asWalletProvider = (w: WalletProvider | AdapterWallet): WalletProvi
   "kind" in w ? w : adapterWallet(w);
 
 /**
- * Built-in test wallets for a LOCAL network only: one fixed key per role, derived from a public
- * seed, so two browser tabs can be two different people without a wallet extension (an extension
- * keeps one connected account per site). scripts/setup-demo.ts derives the same keys to fund them.
+ * A wallet whose ed25519 key this page holds itself: the built-in test wallets (`local`) and the
+ * mock embedded wallet (`embedded`, app/src/auth/mock.ts). The signing and the derivation guard
+ * are shared on purpose, so one keypair yields the same confidential-balance keys whichever kind
+ * it is presented as — the embedded path is not a second, divergent derivation.
  */
-export const localKeypair = (role: Role) => Keypair.fromSeed(sha256(new TextEncoder().encode(`relstate-local-${role}`)));
-
-export function localWallet(role: Role): WalletProvider {
-  const kp = localKeypair(role);
+function keypairWallet(kind: "local" | "embedded", kp: Kp): WalletProvider {
   const sign = <T extends AnyTransaction>(tx: T): T => {
     if ("version" in tx) tx.sign([kp]);
     else tx.partialSign(kp);
     return tx;
   };
   return {
-    kind: "local",
+    kind,
     publicKey: kp.publicKey,
     signTransaction: async (tx) => sign(tx),
     signAllTransactions: async (txs) => txs.map(sign),
     // secretKey is seed || publicKey; ed25519 signs from the 32-byte seed.
     ...keyDerivation(async (message) => ed25519.sign(message, kp.secretKey.slice(0, 32))),
+  };
+}
+
+/**
+ * Built-in test wallets for a LOCAL network only: one fixed key per role, derived from a public
+ * seed, so two browser tabs can be two different people without a wallet extension (an extension
+ * keeps one connected account per site). scripts/setup-demo.ts derives the same keys to fund them.
+ */
+export const localKeypair = (role: Role) => Keypair.fromSeed(sha256(new TextEncoder().encode(`relstate-local-${role}`)));
+
+export const localWallet = (role: Role): WalletProvider => keypairWallet("local", localKeypair(role));
+
+/**
+ * The mock embedded wallet: an email-derived keypair this page holds, so the email sign-up flow
+ * works with no provider account and no secrets. `app/src/auth/mock.ts` owns the derivation and
+ * the "demo wallet" labelling; this is only the signer.
+ */
+export const embeddedKeypairWallet = (kp: Kp): WalletProvider => keypairWallet("embedded", kp);
+
+/**
+ * What a hosted embedded wallet (Privy, Turnkey, …) hands back: it holds the key, and we only ever
+ * get signing calls. `signMessage` is required here, unlike on {@link AdapterWallet} — a wallet
+ * created by this app for this app has no reason to withhold it, and without it the account could
+ * never pay rent privately.
+ */
+export interface EmbeddedSigner {
+  publicKey: PubKey;
+  signTransaction: <T extends AnyTransaction>(tx: T) => Promise<T>;
+  /** Optional: a provider that only signs one at a time is driven serially below. */
+  signAllTransactions?: <T extends AnyTransaction>(txs: T[]) => Promise<T[]>;
+  signMessage: (message: Uint8Array) => Promise<Uint8Array>;
+}
+
+/** A hosted embedded wallet as a `WalletProvider`, with the same derivation guard as every other. */
+export function embeddedWallet(s: EmbeddedSigner): WalletProvider {
+  const serially = async <T extends AnyTransaction>(txs: T[]): Promise<T[]> => {
+    const signed: T[] = [];
+    for (const tx of txs) signed.push(await s.signTransaction(tx));
+    return signed;
+  };
+  return {
+    kind: "embedded",
+    publicKey: s.publicKey,
+    signTransaction: s.signTransaction,
+    signAllTransactions: s.signAllTransactions ?? serially,
+    ...keyDerivation(s.signMessage),
   };
 }
 
