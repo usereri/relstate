@@ -3,6 +3,7 @@ import { UserRound, ArrowLeftRight, Building2, ChevronDown, Copy, Home, KeyRound
 import { AuthPage } from "@/Auth";
 import { Landing } from "@/Landing";
 import { Logo, go, useRoute } from "@/components/Brand";
+import { Gamify } from "@/gamify";
 import { initials, loadAccount } from "@/lib/account";
 import { WalletProvider, useWallet } from "@solana/wallet-adapter-react";
 import * as chain from "@/lib/chain";
@@ -322,6 +323,9 @@ function Shell({
             </button>
           </Card>
         )}
+
+        {/* workstream G: the level-up toast (any tab) and the tenant's onboarding checklist */}
+        <Gamify role={role} address={address} balance={balances?.usdc ?? null} showChecklist={tab === "apartments"} />
 
         {tab === "apartments" && <Listings mode="browse" me={address} listings={listings} h={h} />}
         {tab === "listings" && (

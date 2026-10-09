@@ -1,6 +1,7 @@
 import { ShieldCheck } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { ReputationPanel } from "@/gamify";
 import { DISCOUNT_PCT, RENT_HEADROOM_PCT, ProfileView, Role, goodStanding, maxDiscountRent, typicalRent } from "@/lib/chain";
 import { short, usdc } from "@/lib/utils";
 
@@ -50,6 +51,8 @@ export function ProfileCard({ role, address, profile, countries }: Props) {
           )}
         </div>
       </div>
+
+      <ReputationPanel role={role} profile={p} countries={countries} />
 
       <dl className="grid grid-cols-2 gap-px bg-border">
         {role === "tenant" && (
