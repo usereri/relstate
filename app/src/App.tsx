@@ -5,6 +5,7 @@ import { Landing } from "@/Landing";
 import { Logo, go, useRoute } from "@/components/Brand";
 import { Gamify } from "@/gamify";
 import { initials, loadAccount } from "@/lib/account";
+import { EmbeddedWalletProvider, useEmbeddedWallet } from "@/auth/embedded";
 import { WalletProvider, useWallet } from "@solana/wallet-adapter-react";
 import * as chain from "@/lib/chain";
 import { Role } from "@/lib/chain";
@@ -92,19 +93,21 @@ export default function App() {
   return (
     <WalletProvider key={role} wallets={[]} autoConnect localStorageKey={`relstate.wallet.${role}`}>
       <LocalWalletProvider role={role}>
-        <Workspace
-          role={role}
-          switchRole={() => {
-            const next: Role = role === "tenant" ? "landlord" : "tenant";
-            storeRole(next);
-            setRole(next);
-          }}
-          signOut={() => {
-            storeRole(null);
-            setRole(null);
-            go("home");
-          }}
-        />
+        <EmbeddedWalletProvider role={role}>
+          <Workspace
+            role={role}
+            switchRole={() => {
+              const next: Role = role === "tenant" ? "landlord" : "tenant";
+              storeRole(next);
+              setRole(next);
+            }}
+            signOut={() => {
+              storeRole(null);
+              setRole(null);
+              go("home");
+            }}
+          />
+        </EmbeddedWalletProvider>
       </LocalWalletProvider>
     </WalletProvider>
   );
@@ -373,10 +376,12 @@ function AccountMenu({ role, name, switchRole, signOut }: { role: Role; name?: s
   const [open, setOpen] = useState(false);
   const { disconnect } = useWallet();
   const local = useLocalWallet();
+  const embedded = useEmbeddedWallet();
   // signing out drops the wallet session too, otherwise the next sign-in would skip the wallet entirely
   const leave = async () => {
     setOpen(false);
     local.set(false);
+    embedded?.signOut();
     await disconnect().catch(() => {});
     try {
       localStorage.removeItem(`relstate.wallet.${role}`);

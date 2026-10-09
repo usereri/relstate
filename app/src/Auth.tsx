@@ -5,6 +5,7 @@ import { WalletProvider, useWallet } from "@solana/wallet-adapter-react";
 import * as chain from "@/lib/chain";
 import { Role } from "@/lib/chain";
 import { Account, loadAccount, saveAccount } from "@/lib/account";
+import { EMBEDDED_ENABLED, EmailSignIn, EmbeddedWalletProvider } from "@/auth/embedded";
 import { Logo } from "@/components/Brand";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -190,7 +191,10 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
             <div key="wallet" className="rise flex flex-col gap-6">
               {mode === "signin" ? (
                 <>
-                  <Heading title="Welcome back" text="Sign in with the wallet that holds your rental record." />
+                  <Heading
+                    title="Welcome back"
+                    text={EMBEDDED_ENABLED ? "Sign in with your email, or with the wallet that holds your rental record." : "Sign in with the wallet that holds your rental record."}
+                  />
                   <div className="grid grid-cols-2 gap-1 rounded-xl bg-muted p-1" role="tablist" aria-label="Sign in as">
                     {(["tenant", "landlord"] as Role[]).map((r) => (
                       <button
@@ -210,15 +214,21 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
                 </>
               ) : (
                 <Heading
-                  title="Connect your wallet"
-                  text="Your wallet is your account. No email or password needed: it signs your leases and owns your rental record."
+                  title={EMBEDDED_ENABLED ? "Create your wallet" : "Connect your wallet"}
+                  text={
+                    EMBEDDED_ENABLED
+                      ? "An email is enough: we create the wallet that signs your leases and owns your rental record. Already have one? Connect it instead."
+                      : "Your wallet is your account. No email or password needed: it signs your leases and owns your rental record."
+                  }
                 />
               )}
 
               {/* keyed by role: each role keeps its own wallet, exactly like the app */}
               <WalletProvider key={role} wallets={[]} autoConnect={false} localStorageKey={`relstate.wallet.${role}`}>
                 <LocalWalletProvider role={role}>
-                  <WalletChoices onConnected={connected} />
+                  <EmbeddedWalletProvider role={role}>
+                    <WalletChoices onConnected={connected} />
+                  </EmbeddedWalletProvider>
                 </LocalWalletProvider>
               </WalletProvider>
 
@@ -328,6 +338,13 @@ function WalletChoices({ onConnected }: { onConnected: (address: string) => void
 
   return (
     <div className="flex flex-col gap-2.5">
+      {/* the email account comes first: it is the path that needs no extension and no SOL */}
+      <EmailSignIn onSignedIn={onConnected} />
+      {EMBEDDED_ENABLED && (
+        <div className="flex items-center gap-3 py-1 text-xs uppercase tracking-wider text-muted-foreground">
+          <span className="h-px flex-1 bg-border" /> or connect a wallet <span className="h-px flex-1 bg-border" />
+        </div>
+      )}
       {error && (
         <p role="alert" className="rounded-xl border border-destructive/30 bg-danger-soft px-4 py-3 text-sm text-destructive">
           {error}
