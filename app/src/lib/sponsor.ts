@@ -22,6 +22,22 @@ const fail = async (res: Response, what: string): Promise<never> => {
   throw new Error(body.error ?? `${what} failed (${res.status})`);
 };
 
+/**
+ * How `postSponsored` gets a bearer token for the connected wallet.
+ *
+ * `POST /api/sponsor` is session-authenticated — it spends our SOL, so the backend attributes every
+ * call to one wallet and caps it. Obtaining the token is identity work, so it lives in
+ * `app/src/auth/session.ts` and is injected here: this module stays free of both Solana stacks and
+ * of the auth layer, and the confidential island posts through the same path.
+ *
+ * Null means "no session layer registered", which is the correct state for an unsponsored local run.
+ */
+export type SessionTokenSource = () => Promise<string>;
+let sessionToken: SessionTokenSource | null = null;
+export function setSessionTokenSource(source: SessionTokenSource | null): void {
+  sessionToken = source;
+}
+
 let discovering: Promise<string> | null = null;
 
 /**
@@ -50,9 +66,12 @@ export function sponsorFeePayer(): Promise<string> {
 /** Posts a user-signed, fee-payer-unsigned transaction. Returns the submitted signature. */
 export async function postSponsored(txBase64: string): Promise<string> {
   if (!API) throw new Error("No backend configured (VITE_API), so there is nobody to pay the fee.");
+  if (!sessionToken)
+    throw new Error("No session layer is registered, so this transaction cannot be authenticated to the sponsor. This is a bug: report it.");
+  const token = await sessionToken();
   const res = await fetch(`${API}/api/sponsor`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
     body: JSON.stringify({ txBase64 }),
   });
   if (!res.ok) return fail(res, "sponsor");
