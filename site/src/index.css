@@ -1,0 +1,239 @@
+@import "tailwindcss";
+
+/*
+  The public site borrows the app's brand wholesale (app/src/index.css): cool porcelain ground,
+  deep ink, indigo primary, jade for tenants, brass reserved for verified on-chain records.
+  Two differences, both deliberate:
+    - the site has a dark theme (the app does not yet), so every token is redefined below;
+    - there is no [data-role] switch, because a public visitor has not picked a side yet.
+*/
+:root {
+  --ink: #0b1714;
+  --background: #f4f6f3;
+  --foreground: #0f1c19;
+  --card: #ffffff;
+  --card-foreground: #0f1c19;
+  --primary: #2b3a8f;
+  --primary-foreground: #f6f7ff;
+  --secondary: #e8ebf5;
+  --secondary-foreground: #1f2a66;
+  --muted: #eceee9;
+  --muted-foreground: #5b6762;
+  --accent: #3d4fc4;
+  --accent-foreground: #ffffff;
+  --border: #dfe3dd;
+  --input: #d5dad3;
+  --ring: #5567d6;
+  --brass: #b88a2e;
+  --brass-soft: #f6eedb;
+  --jade: #0f5d4a;
+  --jade-soft: #e2efe9;
+  --destructive: #b4372a;
+  --danger-soft: #fbe9e6;
+  --success: #17724f;
+  --success-soft: #e3f3ea;
+  --warning: #8a5a0c;
+  --warning-soft: #fbf0d9;
+  --radius: 0.75rem;
+  /* the contrast band ("how it works"): ink under a light theme, a raised slate under a dark one,
+     so the band stays visible either way instead of melting into the page background */
+  --panel: #0b1714;
+  --panel-foreground: #ffffff;
+  color-scheme: light;
+}
+
+/*
+  Dark theme. Same hues, rebalanced for an ink ground: the indigo and jade are lightened until
+  they pass AA on #0b1714, and brass stays graphic-only (--warning carries brass-coloured text).
+  Duplicated across the two selectors because CSS has no way to share a declaration block.
+*/
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --background: #0b1714;
+    --foreground: #eaf0ed;
+    --card: #11201c;
+    --card-foreground: #eaf0ed;
+    --primary: #8fa0f0;
+    --primary-foreground: #0a1130;
+    --secondary: #1b2a3a;
+    --secondary-foreground: #cdd7f6;
+    --muted: #152421;
+    --muted-foreground: #93a79f;
+    --accent: #9aa8f5;
+    --accent-foreground: #0a1130;
+    --border: #22342e;
+    --input: #2a3c36;
+    --ring: #8fa0f0;
+    --brass: #d9ab4e;
+    --brass-soft: #2a2214;
+    --jade: #5ec9a3;
+    --jade-soft: #11291f;
+    --destructive: #f0836f;
+    --danger-soft: #2b1512;
+    --success: #5ec9a3;
+    --success-soft: #11291f;
+    --warning: #e0b65f;
+    --warning-soft: #2a2214;
+    --panel: #162621;
+    --panel-foreground: #eaf0ed;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --background: #0b1714;
+  --foreground: #eaf0ed;
+  --card: #11201c;
+  --card-foreground: #eaf0ed;
+  --primary: #8fa0f0;
+  --primary-foreground: #0a1130;
+  --secondary: #1b2a3a;
+  --secondary-foreground: #cdd7f6;
+  --muted: #152421;
+  --muted-foreground: #93a79f;
+  --accent: #9aa8f5;
+  --accent-foreground: #0a1130;
+  --border: #22342e;
+  --input: #2a3c36;
+  --ring: #8fa0f0;
+  --brass: #d9ab4e;
+  --brass-soft: #2a2214;
+  --jade: #5ec9a3;
+  --jade-soft: #11291f;
+  --destructive: #f0836f;
+  --danger-soft: #2b1512;
+  --success: #5ec9a3;
+  --success-soft: #11291f;
+  --warning: #e0b65f;
+  --warning-soft: #2a2214;
+  --panel: #162621;
+  --panel-foreground: #eaf0ed;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-panel: var(--panel);
+  --color-panel-foreground: var(--panel-foreground);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-brass: var(--brass);
+  --color-brass-soft: var(--brass-soft);
+  --color-jade: var(--jade);
+  --color-jade-soft: var(--jade-soft);
+  --color-destructive: var(--destructive);
+  --color-danger-soft: var(--danger-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --font-serif: "Bricolage Grotesque", "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Bricolage Grotesque", "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --shadow-card: 0 1px 2px rgba(11, 23, 20, 0.04), 0 12px 32px -18px rgba(11, 23, 20, 0.22);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-tap-highlight-color: transparent;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    min-height: 100dvh;
+    font-feature-settings: "ss01", "cv11";
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply font-display;
+    letter-spacing: -0.025em;
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  button,
+  [role="button"],
+  input,
+  label,
+  summary {
+    touch-action: manipulation;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+  }
+}
+
+/* soft grid paper, the app's texture */
+.grid-paper {
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--foreground) 4.5%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--foreground) 4.5%, transparent) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+.eyebrow {
+  @apply font-mono text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground;
+}
+
+/* the blurred bar that stands in for an encrypted amount */
+.ciphered {
+  background-image: repeating-linear-gradient(
+    115deg,
+    color-mix(in srgb, var(--primary) 55%, transparent) 0 6px,
+    color-mix(in srgb, var(--primary) 22%, transparent) 6px 12px
+  );
+  filter: blur(0.6px);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0.001;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.rise {
+  animation: rise 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rise {
+    animation: none;
+  }
+}
