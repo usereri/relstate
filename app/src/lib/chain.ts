@@ -13,7 +13,10 @@ const { Connection, PublicKey, SYSVAR_CLOCK_PUBKEY } = anchor.web3;
 type PubKey = anchor.web3.PublicKey;
 
 export type { Role, WalletProvider };
-export type Status = "proposed" | "active" | "closed" | "defaulted";
+export type Status = "proposed" | "active" | "disputed" | "closed" | "defaulted";
+
+/** DISPUTE_WINDOW_SECS in the demo build of the program (constants.rs); the release build is 14 days. */
+export const DISPUTE_WINDOW_SECS = 30;
 
 export interface ListingView {
   address: string;
@@ -44,6 +47,10 @@ export interface LeaseView {
   region: string;
   discountPct: number;
   status: Status;
+  /** the deduction a landlord asked for while the lease is disputed, else 0 */
+  proposedDeduction: number;
+  /** unix seconds the dispute opened; 0 when not disputed */
+  disputedAt: number;
 }
 
 export interface ProfileView {
@@ -56,6 +63,10 @@ export interface ProfileView {
   depositTotal: number;
   deductedTotal: number;
   rentPaidTotal: number;
+  /** share of the latest deposit returned, in basis points (10000 = all of it) */
+  lastDepositReturnBps?: number;
+  /** leases that reached a deposit outcome */
+  depositEvents?: number;
 }
 
 export interface ApplicationView {
@@ -213,6 +224,8 @@ const leaseView = (address: PubKey, l: Acc<"lease">): LeaseView => ({
   region: code(l.region),
   discountPct: l.discountPct,
   status: Object.keys(l.status)[0] as Status,
+  proposedDeduction: l.proposedDeduction.toNumber(),
+  disputedAt: l.disputedAt.toNumber(),
 });
 
 const profileView = (p: Acc<"profile"> | null): ProfileView | null =>
@@ -226,6 +239,8 @@ const profileView = (p: Acc<"profile"> | null): ProfileView | null =>
     depositTotal: p.depositTotal.toNumber(),
     deductedTotal: p.deductedTotal.toNumber(),
     rentPaidTotal: p.rentPaidTotal.toNumber(),
+    lastDepositReturnBps: p.lastDepositReturnBps,
+    depositEvents: p.depositEvents,
   };
 
 const applicationView = (address: PubKey, a: Acc<"application">): ApplicationView => ({
@@ -460,6 +475,7 @@ export async function markDefault(me: Me, l: LeaseView) {
       tenantAta,
       landlordAta,
       tenantProfile: profilePda(tenant),
+      landlordProfile: profilePda(me.key),
       tokenProgram: tokenProgramId,
     }));
 }
@@ -479,6 +495,51 @@ export async function claimDeposit(me: Me, l: LeaseView) {
       landlordAta,
       tenantProfile: profilePda(me.key),
       landlordProfile: profilePda(landlord),
+      tokenProgram: tokenProgramId,
+    }));
+}
+
+/** The tenant agrees to the deduction the landlord proposed: the deposit is split and the lease closes. */
+export async function acceptDeduction(me: Me, l: LeaseView) {
+  const lease = new PublicKey(l.address);
+  const landlord = new PublicKey(l.landlord);
+  const [tokenProgramId, tenantAta, landlordAta] = await Promise.all([tokenProgram(), tokenAccountFor(me.key), tokenAccountFor(landlord)]);
+  return send(me, me.program.methods
+    .acceptDeduction()
+    .accountsPartial({
+      tenant: me.key,
+      lease,
+      mint,
+      vault: vaultPda(lease),
+      tenantAta,
+      landlordAta,
+      tenantProfile: profilePda(me.key),
+      landlordProfile: profilePda(landlord),
+      tokenProgram: tokenProgramId,
+    }));
+}
+
+/** The tenant rejects the proposed deduction: the deposit then returns in full through claim_deposit. */
+export function abandonDispute(me: Me, l: LeaseView) {
+  return send(me, me.program.methods.abandonDispute().accountsPartial({ tenant: me.key, lease: new PublicKey(l.address) }));
+}
+
+/** The landlord closes a dispute the tenant left unanswered past the window. */
+export async function finalizeDeduction(me: Me, l: LeaseView) {
+  const lease = new PublicKey(l.address);
+  const tenant = new PublicKey(l.tenant);
+  const [tokenProgramId, tenantAta, landlordAta] = await Promise.all([tokenProgram(), tokenAccountFor(tenant), tokenAccountFor(me.key)]);
+  return send(me, me.program.methods
+    .finalizeDeduction()
+    .accountsPartial({
+      landlord: me.key,
+      lease,
+      mint,
+      vault: vaultPda(lease),
+      tenantAta,
+      landlordAta,
+      tenantProfile: profilePda(tenant),
+      landlordProfile: profilePda(me.key),
       tokenProgram: tokenProgramId,
     }));
 }

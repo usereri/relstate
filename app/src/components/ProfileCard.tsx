@@ -107,6 +107,17 @@ export function ProfileCard({ role, address, profile, countries, verified }: Pro
             {deducted === null ? "No closed deposits yet" : `${deducted}% of deposits kept by the landlord`}
           </dt>
         </div>
+        {role === "landlord" && p && (p.depositEvents ?? 0) > 0 && p.depositTotal > 0 && (
+          <div className="col-span-2 bg-card px-5 py-3">
+            <dd className="font-serif text-2xl font-semibold">
+              Returns {Math.round(((p.depositTotal - p.deductedTotal) / p.depositTotal) * 100)}%{" "}
+              <span className="text-base font-normal text-muted-foreground">
+                of deposits over {p.depositEvents} {p.depositEvents === 1 ? "lease" : "leases"}
+              </span>
+            </dd>
+            <dt className="text-xs text-muted-foreground">Public: deposit amounts and deductions are on chain.</dt>
+          </div>
+        )}
         {countries && countries.length > 0 && (
           <div className="col-span-2 bg-card px-5 py-3">
             <dd className="flex flex-wrap gap-1.5">
