@@ -31,10 +31,6 @@ export function stripeConfigFromEnv(): StripeConfig {
     webhookSecret: env.onramp.stripeWebhookSecret,
     apiBase: env.onramp.stripeApiBase,
     toleranceSeconds: env.onramp.webhookToleranceSeconds,
-    paymentMethods: env.onramp.stripePaymentMethods
-      .split(",")
-      .map((m) => m.trim().toLowerCase())
-      .filter((m) => m !== ""),
     plnPerUsdc: parseRate(env.onramp.plnPerUsdc),
   };
 }

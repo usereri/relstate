@@ -9,7 +9,7 @@
     "dev": "node --env-file-if-exists=../.env --env-file-if-exists=.env src/index.ts",
     "start": "node --env-file-if-exists=../.env --env-file-if-exists=.env src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --test-reporter=spec 'test/*.test.ts'",
+    "test": "ONRAMP_PROVIDER=mock node --test --test-reporter=spec 'test/*.test.ts'",
     "test:devnet": "node --env-file-if-exists=../.env --env-file-if-exists=.env --test --test-reporter=spec --test-timeout=600000 'test/*.devnet.ts'"
   },
   "dependencies": {

@@ -358,7 +358,6 @@ describe("POST /api/webhooks/stripe in stripe mode", () => {
       webhookSecret: SECRET,
       apiBase: "https://stripe.invalid",
       toleranceSeconds: 300,
-      paymentMethods: ["card"],
       plnPerUsdc: parseRate("4.30"),
     },
   });
@@ -547,7 +546,6 @@ function stripeConfigWithSecrets(): Partial<OnrampConfig> {
       webhookSecret: "whsec_do_not_leak",
       apiBase: "https://stripe.invalid",
       toleranceSeconds: 300,
-      paymentMethods: ["card"],
       plnPerUsdc: parseRate("4.30"),
     },
   };

@@ -220,7 +220,6 @@ describe("createStripeOnramp", () => {
     webhookSecret: SECRET,
     apiBase: "https://stripe.invalid",
     toleranceSeconds: 300,
-    paymentMethods: ["card"],
     plnPerUsdc: parseRate("4.30"),
   };
   const metadata: CheckoutMetadata = { wallet: WALLET, plnPerUsdc: "4.30", holdback: "0", intent: "intent-1" };
@@ -251,23 +250,8 @@ describe("createStripeOnramp", () => {
     assert.equal(call!.form.get("line_items[0][price_data][unit_amount]"), "40000");
     assert.equal(call!.form.get("metadata[wallet]"), WALLET);
     assert.equal(call!.form.get("metadata[intent]"), "intent-1");
-    assert.equal(call!.form.get("payment_method_types[0]"), "card");
+    assert.equal(call!.form.get("payment_method_types[0]"), null, "Stripe rejects payment_method_types; methods come from the Dashboard");
     assert.equal(call!.form.get("mode"), "payment");
-  });
-
-  it("falls back to card when an extra payment method is rejected", async () => {
-    const { fn, calls } = fakeFetch((_u, init) => {
-      const form = new URLSearchParams(String(init.body));
-      if (form.get("payment_method_types[1]") === "blik") {
-        return { status: 400, body: { error: { message: "The payment method type provided: blik is invalid", code: "parameter_invalid_empty" } } };
-      }
-      return { body: { id: "cs_2", url: "https://checkout.stripe.invalid/c/2" } };
-    });
-    const provider = createStripeOnramp({ ...config, paymentMethods: ["card", "blik"] }, { fetch: fn });
-    const { url } = await provider.start(WALLET, startOpts);
-    assert.equal(url, "https://checkout.stripe.invalid/c/2");
-    assert.equal(calls.length, 2);
-    assert.equal(calls[1]!.form.get("payment_method_types[1]"), null);
   });
 
   it("surfaces a Stripe failure without echoing the secret key", async () => {

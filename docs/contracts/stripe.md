@@ -63,9 +63,9 @@ Two things that page gets right, because both were bugs first:
 - the intent id and return URL are embedded with `jsonForScript`, which escapes `<` so a value containing `</script>` cannot close the block;
 - `back` is validated by **origin** (`safeReturnBase`), not by prefix — `http://localhost:5173.evil.test/` starts with the app URL and is a different site.
 
-## BLIK
+## Payment methods
 
-`STRIPE_PAYMENT_METHODS` defaults to `card`, which always works in test mode. BLIK is a PLN-only method that has to be enabled on the Stripe account, and a session naming a method the account lacks fails outright — so it is opt-in: set `STRIPE_PAYMENT_METHODS=card,blik`. If Stripe then rejects the session over that method, the backend retries with `card` alone and logs the reason once, so a demo does not die on an account capability.
+The backend does not name payment methods: Stripe now rejects `payment_method_types` on Checkout Sessions and offers whatever is enabled under Dashboard > Settings > Payment methods. Verified 2026-10-10 on our test account: a PLN session offers card, BLIK, Link and Klarna. Test BLIK uses the code 777123 in test mode.
 
 ## Honest framing for the stage
 

@@ -121,7 +121,6 @@ export const env = {
     stripeSecretKey: str("STRIPE_SECRET_KEY"),
     stripeWebhookSecret: str("STRIPE_WEBHOOK_SECRET"),
     /** Comma-separated Stripe payment methods. BLIK needs a PLN-capable account; `card` always works in test mode. */
-    stripePaymentMethods: str("STRIPE_PAYMENT_METHODS", "card"),
     stripeApiBase: str("STRIPE_API_BASE", "https://api.stripe.com"),
     /** Stripe's own replay window for webhook timestamps. */
     webhookToleranceSeconds: num("STRIPE_WEBHOOK_TOLERANCE_SECONDS", 300),

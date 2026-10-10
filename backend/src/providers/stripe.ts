@@ -60,7 +60,6 @@ export type StripeConfig = {
   apiBase: string;
   /** Checked against the event's timestamp; Stripe's own default is 300s. */
   toleranceSeconds: number;
-  paymentMethods: string[];
   /** Fixed-point PLN per USDC, used only for an event whose metadata lost the rate. */
   plnPerUsdc: bigint;
 };
@@ -235,7 +234,9 @@ export function createStripeOnramp(config: StripeConfig, deps: { fetch?: Fetch; 
       const successUrl = String(opts.successUrl ?? "");
       const cancelUrl = String(opts.cancelUrl ?? "");
 
-      const form = (methods: string[]): Record<string, string | number | undefined> => ({
+      // Payment methods are not named here: Stripe rejects `payment_method_types` on Checkout
+      // Sessions and takes them from the Dashboard's payment-method settings (card, BLIK, ...).
+      const form: Record<string, string | number | undefined> = {
         mode: "payment",
         success_url: successUrl,
         cancel_url: cancelUrl,
@@ -249,24 +250,9 @@ export function createStripeOnramp(config: StripeConfig, deps: { fetch?: Fetch; 
         "line_items[0][price_data][unit_amount]": grosz.toString(),
         "line_items[0][price_data][product_data][name]": "Relstate top-up (Stripe test mode)",
         "line_items[0][price_data][product_data][description]": `${formatPln(grosz)} PLN of rUSDC on devnet — test mode, no real money`,
-        ...Object.fromEntries(methods.map((method, index) => [`payment_method_types[${index}]`, method])),
-      });
+      };
 
-      let session: Record<string, unknown>;
-      try {
-        session = await post("/v1/checkout/sessions", form(config.paymentMethods), metadata.intent);
-      } catch (error) {
-        // BLIK needs a PLN-capable account with the method enabled. Rather than
-        // failing a demo top-up over an account capability, drop back to card
-        // and say so once.
-        const extra = config.paymentMethods.filter((m) => m !== "card");
-        if (error instanceof StripeApiError && extra.length > 0 && /payment_method_types|not activated|invalid|capabilit/i.test(error.message)) {
-          log(`stripe: ${extra.join(", ")} rejected by this account (${error.message}); retrying with card only`);
-          session = await post("/v1/checkout/sessions", form(["card"]), `${metadata.intent}-card`);
-        } else {
-          throw error;
-        }
-      }
+      const session = await post("/v1/checkout/sessions", form, metadata.intent);
       const url = session.url;
       if (typeof url !== "string" || url === "") throw new StripeApiError("Stripe returned a Checkout Session with no URL", 502);
       return { url };

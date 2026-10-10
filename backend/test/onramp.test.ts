@@ -38,7 +38,6 @@ const stripeConfig = (patch: Partial<OnrampConfig> = {}): OnrampConfig =>
       webhookSecret: SECRET,
       apiBase: "https://stripe.invalid",
       toleranceSeconds: 300,
-      paymentMethods: ["card"],
       plnPerUsdc: parseRate("4.30"),
     },
     ...patch,
