@@ -119,8 +119,9 @@ pub struct Lease {
 impl Lease {
     /// End of the paid term: the first instant `release_deposit` is allowed.
     ///
-    /// Saturating, so a nonsense `period_secs` on a lease nobody would accept cannot panic the
-    /// instructions that read the clock.
+    /// `propose_lease` bounds `term_periods * period_secs` by `MAX_LEASE_SECS`, so for any lease
+    /// that exists this cannot overflow. It still saturates rather than panics, so a corrupt
+    /// account could never abort an instruction that merely reads the clock.
     pub fn end_ts(&self) -> i64 {
         self.start_ts
             .saturating_add((self.term_periods as i64).saturating_mul(self.period_secs))
@@ -211,19 +212,21 @@ impl Profile {
     /// Records one lease's deposit outcome: the lifetime totals the aggregate return rate is
     /// computed from, the most recent rate, and the event count behind both.
     ///
+    /// These counters are cosmetic and the deposit is real, so this must never be the reason a
+    /// payout fails: every addition saturates, and the only error left is `deduction > deposit`,
+    /// which every caller has already ruled out. A lease with no deposit has no outcome to record
+    /// (it is also refused at `propose_lease`), so it is a no-op rather than a free "full return".
+    ///
     /// Deliberately does **not** touch `deposits_returned_full`: a deposit the tenant had to take
     /// with `claim_deposit` came back in full without the landlord ever choosing to return it, so
     /// only the instructions where a party actually acted credit that counter.
     pub fn record_deposit_outcome(&mut self, deposit: u64, deduction: u64) -> Result<()> {
+        if deposit == 0 {
+            return Ok(());
+        }
         self.last_deposit_return_bps = return_bps(deposit, deduction)?;
-        self.deposit_total = self
-            .deposit_total
-            .checked_add(deposit)
-            .ok_or_else(|| error!(ErrorCode::MathOverflow))?;
-        self.deducted_total = self
-            .deducted_total
-            .checked_add(deduction)
-            .ok_or_else(|| error!(ErrorCode::MathOverflow))?;
+        self.deposit_total = self.deposit_total.saturating_add(deposit);
+        self.deducted_total = self.deducted_total.saturating_add(deduction);
         self.deposit_events = self.deposit_events.saturating_add(1);
         Ok(())
     }
@@ -301,9 +304,10 @@ pub struct DepositDisputeRejected {
 mod tests {
     use super::*;
 
-    /// The backend sizes the SOL it grants a new wallet from these (backend/src/treasury.ts,
-    /// `APPLICATION_ACCOUNT_SIZE` / `PROFILE_ACCOUNT_SIZE`). A layout change must fail here, not
-    /// as a tenant whose first `fund_deposit` runs out of rent.
+    /// Layout change-detector. These sizes have no migration (docs/contracts/program-interface.md
+    /// §5: a layout change needs a fresh deploy), and the backend's rent-dust sizing for a new
+    /// wallet's Application and Profile has to follow them. Changing a struct must fail here,
+    /// loudly, rather than as an upgrade that bricks existing accounts.
     #[test]
     fn account_sizes_the_backend_rent_dust_depends_on() {
         assert_eq!(8 + Application::INIT_SPACE, 104);
@@ -367,11 +371,30 @@ mod tests {
         assert_eq!(p.deposits_returned_full, 0);
     }
 
+    /// F3: the cosmetic counters must never block a payout, even when saturated.
     #[test]
-    fn record_deposit_outcome_overflow_is_an_error_not_a_wrap() {
+    fn record_deposit_outcome_saturates_instead_of_failing_near_u64_max() {
         let mut p = profile();
-        p.deposit_total = u64::MAX;
-        assert!(p.record_deposit_outcome(1, 0).is_err());
+        p.deposit_total = u64::MAX - 1;
+        p.deducted_total = u64::MAX;
+        p.deposit_events = u32::MAX;
+        assert!(p.record_deposit_outcome(2_000, 500).is_ok());
+        assert_eq!(
+            (p.deposit_total, p.deducted_total, p.deposit_events, p.last_deposit_return_bps),
+            (u64::MAX, u64::MAX, u32::MAX, 7_500)
+        );
+    }
+
+    /// F2 defence in depth: no deposit, no outcome, so no free "full return" event.
+    #[test]
+    fn a_zero_deposit_records_nothing() {
+        let mut p = profile();
+        p.last_deposit_return_bps = 1_234;
+        p.record_deposit_outcome(0, 0).unwrap();
+        assert_eq!(
+            (p.deposit_events, p.deposit_total, p.last_deposit_return_bps),
+            (0, 0, 1_234)
+        );
     }
 
     #[test]

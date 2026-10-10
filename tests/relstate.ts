@@ -28,8 +28,6 @@ const RENT = 1_000;
 const DEPOSIT = 2_000;
 const PERIOD = 100;
 const GRACE = 10;
-const CLAIM_WINDOW = 10; // CLAIM_WINDOW_SECS in the demo build
-const DISPUTE_WINDOW = 30; // DISPUTE_WINDOW_SECS in the demo build
 const TERM = 3;
 const START_BALANCE = 10_000;
 const LEASE_HASH = Array(32).fill(7);
@@ -131,6 +129,17 @@ describe("relstate", () => {
   const provider = anchor.getProvider() as anchor.AnchorProvider;
   const { connection } = provider;
   const program = anchor.workspace.relstate as Program<Relstate>;
+
+  // The build-dependent windows come from the IDL of the build under test, never mirrored here.
+  // the Anchor client camel-cases constant names (the raw IDL file keeps SCREAMING_SNAKE)
+  const idlConst = (name: string) => {
+    const camel = name.toLowerCase().replace(/_(\w)/g, (_, ch) => ch.toUpperCase());
+    const c = program.idl.constants?.find((x) => x.name === name || x.name === camel);
+    if (!c) throw new Error(`no ${name} in IDL: ${JSON.stringify(program.idl.constants?.map((x) => x.name))}`);
+    return Number(c.value);
+  };
+  const CLAIM_WINDOW = idlConst("CLAIM_WINDOW_SECS");
+  const DISPUTE_WINDOW = idlConst("DISPUTE_WINDOW_SECS");
 
   // Unique per test, so lease PDAs never collide on a shared validator.
   let nextLeaseId = Date.now();
@@ -246,10 +255,10 @@ describe("relstate", () => {
       landlordProfile, tenantProfile, tokenProgram,
 
       // overrides let tests try invalid lease terms
-      propose: (o: { rent?: number; term?: number; grace?: number; region?: number[]; tenant?: anchor.web3.PublicKey; tenantProfile?: anchor.web3.PublicKey } = {}) =>
+      propose: (o: { rent?: number; deposit?: number; term?: number; grace?: number; region?: number[]; tenant?: anchor.web3.PublicKey; tenantProfile?: anchor.web3.PublicKey } = {}) =>
         program.methods
           .proposeLease(
-            new BN(leaseId), new BN(o.rent ?? RENT), new BN(DEPOSIT), new BN(periodSecs),
+            new BN(leaseId), new BN(o.rent ?? RENT), new BN(o.deposit ?? DEPOSIT), new BN(periodSecs),
             new BN(o.grace ?? GRACE), o.term ?? TERM, LEASE_HASH, o.region ?? REGION
           )
           .accountsPartial({
@@ -573,6 +582,25 @@ describe("relstate", () => {
   it("rejects a period below the minimum", async () => {
     const env = await setup(0);
     await expectFail(env.propose(), "PeriodTooShort");
+  });
+
+  it("rejects a lease with no deposit, including one a discount rounds to nothing", async () => {
+    // a free "full return" would inflate the landlord's deposit_events at zero capital cost
+    const env = await setup();
+    await expectFail(env.propose({ deposit: 0 }), "ZeroDeposit");
+
+    const first = await active();
+    await finishLease(first); // earns the 50% discount
+    const second = await setup(PERIOD, USDC, first);
+    await expectFail(second.propose({ deposit: 1 }), "ZeroDeposit"); // 1 * 50% rounds down to 0
+  });
+
+  it("rejects an absurdly long term", async () => {
+    // would leave a funded deposit unreleasable and unclaimable forever
+    const env = await setup(2 ** 40); // x3 periods is ~10^5 years
+    await expectFail(env.propose(), "TermTooLong");
+    const huge = await setup(Number.MAX_SAFE_INTEGER);
+    await expectFail(huge.propose(), "TermTooLong");
   });
 
   it("rejects a region that is not two uppercase letters", async () => {
@@ -1326,7 +1354,7 @@ describe("relstate", () => {
     expect(lease.status).to.have.property("active");
     expect([lease.proposedDeduction.toNumber(), lease.disputedAt.toNumber(), lease.disputeRejected])
       .to.deep.equal([0, 0, true]);
-    expect(lease.claimPauseSecs.toNumber()).to.be.greaterThan(-1);
+    expect(lease.claimPauseSecs.toNumber()).to.be.at.most(DISPUTE_WINDOW);
     expect(await balance(env.vault)).to.equal(DEPOSIT);
 
     await timeTravel(CLAIM_WINDOW + 10);

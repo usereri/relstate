@@ -60,18 +60,34 @@ pub const MIN_PERIOD_SECS: i64 = if cfg!(feature = "demo") {
     28 * 24 * 60 * 60
 };
 
-// 14 days for releasing deposit by landlord before tenant may claim it. Shortened in the demo
-pub const CLAIM_WINDOW_SECS: i64 = if cfg!(feature = "demo") {
-    10
-} else {
-    14 * 24 * 60 * 60
-};
+// 14 days for releasing deposit by landlord before tenant may claim it. Shortened in the demo.
+//
+// These two are `#[constant]` so they land in the IDL and the app and tests read the value of the
+// build they run against instead of mirroring it. The release value is spelled as a literal
+// (14 * 24 * 60 * 60) because the IDL stores the expression's text, which the client must parse
+// as a number.
+#[cfg(feature = "demo")]
+#[constant]
+pub const CLAIM_WINDOW_SECS: i64 = 10;
+#[cfg(not(feature = "demo"))]
+#[constant]
+pub const CLAIM_WINDOW_SECS: i64 = 1_209_600;
 
 // How long the tenant has to answer a proposed deduction (accept it or reject it) before the
 // landlord may finalize it unanswered. Same 14 days as CLAIM_WINDOW_SECS in a real deployment,
-// and long enough in the demo build to be shown on stage without waiting.
-pub const DISPUTE_WINDOW_SECS: i64 = if cfg!(feature = "demo") {
-    30
-} else {
-    14 * 24 * 60 * 60
-};
+// and short enough in the demo build to be shown on stage without waiting.
+#[cfg(feature = "demo")]
+#[constant]
+pub const DISPUTE_WINDOW_SECS: i64 = 30;
+#[cfg(not(feature = "demo"))]
+#[constant]
+pub const DISPUTE_WINDOW_SECS: i64 = 1_209_600;
+
+// Upper bound on term_periods * period_secs. Nothing else bounds a lease from above, and a term
+// near i64::MAX would leave a funded deposit unreachable forever (release is "not ended", claim is
+// "too early"). Five years in a real deployment; the demo build is generous so local clock jumps
+// never trip it.
+#[cfg(feature = "demo")]
+pub const MAX_LEASE_SECS: i64 = 100 * 365 * 24 * 60 * 60;
+#[cfg(not(feature = "demo"))]
+pub const MAX_LEASE_SECS: i64 = 5 * 365 * 24 * 60 * 60;

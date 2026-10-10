@@ -74,4 +74,8 @@ pub enum ErrorCode {
     DisputeAlreadyRejected,
     #[msg("Arithmetic overflow")]
     MathOverflow,
+    #[msg("The deposit must be greater than zero")]
+    ZeroDeposit,
+    #[msg("The lease term (periods x period length) is too long")]
+    TermTooLong,
 }
