@@ -1,0 +1,160 @@
+// What a treasury-cosigned rent-payment transaction may contain.
+//
+// `/api/sponsor` refuses any transaction that names the fee payer inside an instruction, and that
+// rule stays absolute. A confidential transfer cannot satisfy it: the proof plan funds its
+// context-state accounts from the payer, so the payer is inside `createAccount`, inside every
+// proof-verify instruction (as the context-state authority) and inside every close (as the lamport
+// destination and authority). Measured on devnet, all 5 transactions of a real rent payment do.
+//
+// So this route uses the TREASURY key instead, the same trade `treasury.sponsorConfidentialAccountSetup`
+// makes, under a filter that is as tight as the plan allows. The shape below is what the plan
+// actually produces (scripts/exit-gate.ts --probe, 2026-10-10):
+//
+//   tx 1  System createAccount(treasury -> ctx A)      ZK verify (ctx A, authority treasury)
+//   tx 2  System createAccount(treasury -> ctx B)      ZK verify (ctx B, authority treasury)
+//   tx 3  System createAccount(treasury -> ctx C)
+//   tx 4                                               ZK verify range proof (ctx C, authority treasury)
+//   tx 5  Token-2022 ConfidentialTransfer   relstate pay_rent   ZK close x3 (dest + authority treasury)
+//
+// The treasury is confined to the positions where it is harmless:
+//
+//   - System `createAccount`, as the funder, into an account owned by the ZK proof program, with a
+//     lamport and size cap. No other System instruction exists in this route, so no transfer.
+//   - ZK proof program, as the context-state AUTHORITY only. That authority can close a context
+//     state and nothing else. Keeping it ours is what stops a client who created a context account
+//     with our rent from closing it to themselves: only we sign closes.
+//   - ZK `CloseContextState`, as lamport destination and authority, so the rent comes back to us.
+//     A close that named anyone else as destination would let a client spend OUR authority to move
+//     OUR rent, so the destination is pinned.
+//
+// And it can never be anywhere else: not in a Token-2022 instruction (so never an authority over a
+// token account or the mint), not in `pay_rent`, not at account 0 of a ZK instruction (the account
+// being written or closed). The wallet being paid for must be the confidential transfer's authority
+// and the owner of its source account, and the mint must be rUSDC.
+import { createHash } from "node:crypto";
+import { getAddressDecoder, type Address } from "@solana/kit";
+import { RELSTATE_PROGRAM, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, ZK_ELGAMAL_PROOF_PROGRAM } from "./contracts.ts";
+import { COMPUTE_BUDGET_PROGRAM, RejectedTransaction, type InspectedInstruction, type InspectedTransaction } from "./txinspect.ts";
+
+export const RENT_PAYMENT_ALLOWLIST = [SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, ZK_ELGAMAL_PROOF_PROGRAM, RELSTATE_PROGRAM, COMPUTE_BUDGET_PROGRAM] as const;
+
+/** Anchor's instruction discriminator: the first 8 bytes of sha256("global:pay_rent"). */
+export const PAY_RENT_DISCRIMINATOR = new Uint8Array(createHash("sha256").update("global:pay_rent").digest().subarray(0, 8));
+
+const SYSTEM_CREATE_ACCOUNT = 0;
+const CREATE_ACCOUNT_DATA_LENGTH = 4 + 8 + 8 + 32;
+/** Token-2022: `ConfidentialTransferExtension`, then `Transfer`. */
+const CT_EXTENSION = 27;
+const CT_TRANSFER = 7;
+/** ZK ElGamal proof program: tag 0 closes a context state, tags 1..12 verify a proof. */
+const ZK_CLOSE = 0;
+const ZK_MAX_VERIFY_TAG = 12;
+const MAX_TRANSFER_DATA = 512;
+
+export type RentPaymentRules = {
+  treasury: string;
+  /** The session wallet: the tenant, who signs the transfer and `pay_rent`. */
+  wallet: string;
+  /** The rUSDC mint, and the wallet's token account on it. */
+  mint: string;
+  walletToken: string;
+  maxContextLamports: bigint;
+  maxContextSpace: bigint;
+  maxCreateAccounts: number;
+};
+
+const deny = (index: number, why: string, code = "instruction-not-allowed"): never => {
+  throw new RejectedTransaction(`instruction ${index}: ${why}`, code);
+};
+
+const same = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+function isTransfer(ix: InspectedInstruction): boolean {
+  return ix.programAddress === TOKEN_2022_PROGRAM && ix.data[0] === CT_EXTENSION && ix.data[1] === CT_TRANSFER;
+}
+
+export function assertRentPaymentShape(tx: InspectedTransaction, rules: RentPaymentRules): void {
+  const decodeAddress = getAddressDecoder();
+  let creates = 0;
+  let transfers = 0;
+  let payRents = 0;
+
+  for (const ix of tx.instructions) {
+    const at = (position: number): Address | undefined => ix.accounts[position]?.address;
+    const treasuryAt = ix.accounts.flatMap((a, position) => (a.address === rules.treasury ? [position] : []));
+
+    switch (ix.programAddress) {
+      case SYSTEM_PROGRAM: {
+        // The only System instruction in this route is createAccount. A transfer, assign, allocate
+        // or create-with-seed would each let a signed treasury do something other than fund a proof.
+        if (ix.data.length !== CREATE_ACCOUNT_DATA_LENGTH) deny(ix.index, "only System createAccount is permitted");
+        const view = new DataView(ix.data.buffer, ix.data.byteOffset, ix.data.byteLength);
+        if (view.getUint32(0, true) !== SYSTEM_CREATE_ACCOUNT) deny(ix.index, "only System createAccount is permitted");
+        if (ix.accounts.length !== 2 || at(0) !== rules.treasury || at(1) === rules.treasury) {
+          deny(ix.index, "createAccount must be funded by the treasury into a different account");
+        }
+        const lamports = view.getBigUint64(4, true);
+        const space = view.getBigUint64(12, true);
+        const owner = decodeAddress.decode(ix.data.subarray(20, 52));
+        if (owner !== ZK_ELGAMAL_PROOF_PROGRAM) deny(ix.index, `the new account must be owned by the ZK proof program, not ${owner}`);
+        if (lamports > rules.maxContextLamports) deny(ix.index, `createAccount funds ${lamports} lamports, cap is ${rules.maxContextLamports}`, "context-too-expensive");
+        if (space === 0n || space > rules.maxContextSpace) deny(ix.index, `createAccount allocates ${space} bytes, allowed 1..${rules.maxContextSpace}`, "context-too-large");
+        if (++creates > rules.maxCreateAccounts) deny(ix.index, `more than ${rules.maxCreateAccounts} createAccount instructions`, "too-many-accounts");
+        break;
+      }
+
+      case ZK_ELGAMAL_PROOF_PROGRAM: {
+        const tag = ix.data[0];
+        if (tag === undefined || tag > ZK_MAX_VERIFY_TAG) deny(ix.index, `ZK proof instruction tag ${tag} is not permitted`);
+        // Account 0 is the context state being written or closed. It must never be ours.
+        if (treasuryAt.includes(0)) deny(ix.index, "the treasury cannot be the context-state account");
+        if (tag === ZK_CLOSE) {
+          // [context state, lamport destination, authority]. Both of ours: only we sign a close, and
+          // the rent must come back to us, never to a destination the client chose.
+          if (ix.accounts.length !== 3 || at(1) !== rules.treasury || at(2) !== rules.treasury) {
+            deny(ix.index, "CloseContextState must return the rent to the treasury, under the treasury's authority", "close-destination");
+          }
+        } else if (treasuryAt.some((p) => p > 1)) {
+          deny(ix.index, "the treasury may be only the context-state authority of a proof instruction");
+        }
+        break;
+      }
+
+      case TOKEN_2022_PROGRAM: {
+        // Never an authority over a token account or the mint: the treasury is the mint and freeze
+        // authority, so any Token-2022 instruction naming it could mint, freeze or burn.
+        if (!isTransfer(ix)) deny(ix.index, `Token-2022 instruction ${ix.data[0]},${ix.data[1]} is not permitted; only ConfidentialTransfer is`);
+        if (treasuryAt.length > 0) deny(ix.index, "the treasury cannot appear in a Token-2022 instruction", "treasury-in-token-instruction");
+        if (ix.data.length > MAX_TRANSFER_DATA) deny(ix.index, `ConfidentialTransfer data is ${ix.data.length} bytes, cap is ${MAX_TRANSFER_DATA}`);
+        const authority = ix.accounts[ix.accounts.length - 1];
+        if (at(0) !== rules.walletToken) deny(ix.index, "the transfer must come from the paying wallet's own rUSDC account", "wrong-source");
+        if (at(1) !== rules.mint) deny(ix.index, "the transfer must be on the rUSDC mint", "wrong-mint");
+        if (authority === undefined || authority.address !== rules.wallet || !authority.isSigner) {
+          deny(ix.index, "the paying wallet must be the transfer's signing authority", "wrong-authority");
+        }
+        if (++transfers > 1) deny(ix.index, "more than one confidential transfer in a transaction");
+        break;
+      }
+
+      case RELSTATE_PROGRAM: {
+        if (!same(ix.data, PAY_RENT_DISCRIMINATOR)) deny(ix.index, "only pay_rent may be called on the relstate program");
+        if (treasuryAt.length > 0) deny(ix.index, "the treasury cannot appear in a relstate instruction", "treasury-in-program-instruction");
+        const tenant = ix.accounts[0];
+        if (tenant === undefined || tenant.address !== rules.wallet || !tenant.isSigner) deny(ix.index, "the paying wallet must be pay_rent's tenant", "wrong-authority");
+        if (at(2) !== rules.mint || at(3) !== rules.walletToken) deny(ix.index, "pay_rent must name the rUSDC mint and the wallet's own account", "wrong-mint");
+        // The program insists on this too; checking it here keeps the route from being a general
+        // pay_rent relay, and stops a pay_rent that would fail from costing a cosignature.
+        const before = tx.instructions[ix.index - 1];
+        if (before === undefined || !isTransfer(before)) deny(ix.index, "pay_rent must directly follow the confidential transfer", "missing-transfer");
+        if (++payRents > 1) deny(ix.index, "more than one pay_rent in a transaction");
+        break;
+      }
+
+      case COMPUTE_BUDGET_PROGRAM:
+        break; // bounded separately by assertComputeBudgetWithinPolicy
+
+      default:
+        deny(ix.index, `program ${ix.programAddress} is not permitted`, "program-not-allowed");
+    }
+  }
+}

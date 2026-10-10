@@ -53,6 +53,9 @@ import {
 import { env } from "./env.ts";
 import type { ConfidentialKeyPair } from "./keys.ts";
 import { ZK_ELGAMAL_PROOF_PROGRAM } from "./contracts.ts";
+import { RENT_PAYMENT_ALLOWLIST, assertRentPaymentShape } from "./rentshape.ts";
+import { getTransferSolInstruction } from "@solana-program/system";
+import { createHash } from "node:crypto";
 import {
   COMPUTE_BUDGET_PROGRAM,
   RejectedTransaction,
@@ -169,6 +172,9 @@ export type TreasuryDeps = {
   maxRentLamports?: bigint;
   /** Per-wallet and global caps for the setup route. Defaults are deliberately tight. */
   setupLimiter?: RateLimiter;
+  /** Same, for the rent-payment and rent-dust routes. Tests inject their own. */
+  rentPaymentLimiter?: RateLimiter;
+  rentDustLimiter?: RateLimiter;
   log?: (...args: unknown[]) => void;
 };
 
@@ -498,6 +504,7 @@ export function createTreasury(deps: TreasuryDeps) {
     txBase64: string,
     worstCaseFee: bigint,
     reservation: { commit(n: bigint): void },
+    bounds: { maxSpend: bigint; allowCredit: boolean; label: string } = { maxSpend: maxRentLamports, allowCredit: false, label: "setup" },
   ): Promise<{ signature: Signature; broadcast: boolean; rentLamports: string; transactionBase64?: string }> {
     const balanceBefore = (await deps.rpc.getBalance(deps.treasury.address, { commitment: "confirmed" }).send()).value;
     const simulation = await deps.rpc
@@ -518,24 +525,168 @@ export function createTreasury(deps: TreasuryDeps) {
     const simulated = simulation.value.accounts?.[0];
     if (simulated == null) throw new RejectedTransaction("simulation did not return the treasury account state", "simulation-incomplete");
     const spent = balanceBefore - simulated.lamports;
-    if (spent > maxRentLamports) {
-      throw new RejectedTransaction(`transaction would debit the treasury ${spent} lamports, cap is ${maxRentLamports}`, "rent-too-high");
+    if (spent > bounds.maxSpend) {
+      throw new RejectedTransaction(`transaction would debit the treasury ${spent} lamports, cap is ${bounds.maxSpend}`, "rent-too-high");
     }
-    if (spent < 0n) throw new RejectedTransaction("transaction would increase the treasury balance; refusing to co-sign", "unexpected-credit");
+    // A rent payment's last transaction closes the context states and so credits the treasury: that
+    // is the rent coming back. A setup transaction has no reason to, so it is refused there.
+    if (spent < 0n && !bounds.allowCredit) {
+      throw new RejectedTransaction("transaction would increase the treasury balance; refusing to co-sign", "unexpected-credit");
+    }
 
     const signed = await partiallySignTransaction([deps.treasury.keyPair], tx.transaction);
     assertIsFullySignedTransaction(signed);
     const signature = getSignatureFromTransaction(signed);
     const wire = getBase64EncodedWireTransaction(signed);
-    reservation.commit(spent + worstCaseFee);
+    reservation.commit((spent > 0n ? spent : 0n) + worstCaseFee);
 
     if (deps.mode === "mock") {
-      log(`treasury: co-signed setup ${signature} (not broadcast: mock mode)`);
+      log(`treasury: co-signed ${bounds.label} ${signature} (not broadcast: mock mode)`);
       return { signature, broadcast: false, rentLamports: spent.toString(), transactionBase64: wire };
     }
     await deps.rpc.sendTransaction(wire, { encoding: "base64", skipPreflight: true, maxRetries: 3n }).send();
-    log(`treasury: sent setup ${signature}, rent ${spent} lamports`);
+    log(`treasury: sent ${bounds.label} ${signature}, net ${spent} lamports`);
     return { signature, broadcast: true, rentLamports: spent.toString() };
+  }
+
+
+  // --- confidential rent payment ----------------------------------------------------------------
+
+  const rentLimits = deps.rentPaymentLimiter ?? createRateLimiter({
+    maxPerWalletPerHour: env.rentPayment.maxPerWalletPerHour,
+    maxGlobalPerHour: env.rentPayment.maxGlobalPerHour,
+    maxLamportsPerWalletPerDay: env.rentPayment.maxLamportsPerWalletPerDay,
+    maxLamportsGlobalPerDay: env.rentPayment.maxLamportsGlobalPerDay,
+  });
+  /** Message hashes already cosigned, for the length of a blockhash's life. */
+  const seenMessages = new Map<string, number>();
+  const REPLAY_WINDOW_MS = 5 * 60_000;
+
+  /**
+   * Co-signs one transaction of a wallet's confidential rent payment, paying the fee AND the rent
+   * of the proof context-state accounts from the treasury.
+   *
+   * The reason this is not `/api/sponsor`: the proof plan names the payer inside its instructions,
+   * which the sponsor refuses outright. See `rentshape.ts` for exactly where the treasury is allowed
+   * to appear (and everywhere it is not). On top of that shape: every other signature present and
+   * valid, the session wallet must be a signer, a per-wallet and global limiter, a replay guard, and
+   * a simulated cap on how far the treasury can be down.
+   */
+  async function sponsorRentPayment({ txBase64, wallet }: { txBase64: string; wallet: string }): Promise<{
+    signature: Signature;
+    broadcast: boolean;
+    rentLamports: string;
+    transactionBase64?: string;
+  }> {
+    const tx = inspectTransaction(txBase64, { maxBytes: env.sponsor.maxTxBytes, maxInstructions: env.sponsor.maxInstructions });
+    assertProgramsAllowed(tx, RENT_PAYMENT_ALLOWLIST);
+    assertOnlySponsorSignatureMissing(tx, deps.treasury.address);
+    await assertPresentSignaturesValid(tx);
+    if (wallet === deps.treasury.address || !tx.accounts.some((a) => a.isSigner && a.address === wallet && a.address !== deps.treasury.address)) {
+      throw new RejectedTransaction(`the session wallet ${wallet} is not a signer of this transaction`, "wallet-mismatch");
+    }
+    assertRentPaymentShape(tx, {
+      treasury: deps.treasury.address,
+      wallet,
+      mint: deps.mint,
+      walletToken: await associatedTokenAddress(wallet as Address, deps.mint),
+      maxContextLamports: env.rentPayment.maxContextLamports,
+      maxContextSpace: env.rentPayment.maxContextSpace,
+      maxCreateAccounts: env.rentPayment.maxCreateAccounts,
+    });
+    const worstCaseFee = assertComputeBudgetWithinPolicy(tx, {
+      allowlist: RENT_PAYMENT_ALLOWLIST,
+      maxComputeUnits: env.sponsor.maxComputeUnits,
+      maxCuPriceMicroLamports: env.sponsor.maxCuPriceMicroLamports,
+      maxFeeLamports: env.sponsor.maxFeeLamports,
+    });
+
+    // Replay: the same signed message cosigned twice spends the limiter's budget twice for one
+    // landing. Remembered for longer than a blockhash lives, so a replay can never land anyway.
+    const key = createHash("sha256").update(new Uint8Array(tx.transaction.messageBytes)).digest("hex");
+    const now = Date.now();
+    for (const [k, at] of seenMessages) if (now - at > REPLAY_WINDOW_MS) seenMessages.delete(k);
+    if (seenMessages.has(key)) throw new RejectedTransaction("this exact transaction was already co-signed", "replay");
+
+    let reservation;
+    try {
+      reservation = rentLimits.reserve(wallet, env.rentPayment.maxSpendLamports + worstCaseFee);
+    } catch (e) {
+      if (e instanceof LimitError) throw new RejectedTransaction(e.message, "rate-limited");
+      throw e;
+    }
+    seenMessages.set(key, now);
+    try {
+      return await cosignAndSend(tx, txBase64, worstCaseFee, reservation, {
+        maxSpend: env.rentPayment.maxSpendLamports,
+        allowCredit: true,
+        label: "rent payment",
+      });
+    } catch (e) {
+      // Nothing landed, so a corrected retry of the same message is legitimate.
+      seenMessages.delete(key);
+      reservation.cancel();
+      throw e;
+    }
+  }
+
+  // --- rent dust --------------------------------------------------------------------------------
+
+  /** `8 + INIT_SPACE` of `Application` (3 pubkeys) and `Profile` (programs/relstate/src/state.rs). */
+  const APPLICATION_ACCOUNT_SIZE = 104;
+  const PROFILE_ACCOUNT_SIZE = 88;
+  const dustGranted = new Set<string>();
+  const dustLimiter = deps.rentDustLimiter ?? createRateLimiter({
+    maxPerWalletPerHour: 1,
+    maxGlobalPerHour: env.rentDust.maxGlobalPerHour,
+    maxLamportsPerWalletPerDay: 1_000_000_000n,
+    maxLamportsGlobalPerDay: env.rentDust.maxLamportsGlobalPerDay,
+  });
+
+  /** Just enough for a tenant's Application and Profile accounts: nothing for fees, which are the sponsor's. */
+  async function rentDustAmount(): Promise<bigint> {
+    const [application, profile] = await Promise.all([
+      deps.rpc.getMinimumBalanceForRentExemption(BigInt(APPLICATION_ACCOUNT_SIZE)).send(),
+      deps.rpc.getMinimumBalanceForRentExemption(BigInt(PROFILE_ACCOUNT_SIZE)).send(),
+    ]);
+    return BigInt(application) + BigInt(profile);
+  }
+
+  /**
+   * Provisions the rent a wallet's `apply` and `fund_deposit` charge it (the program makes the
+   * tenant the payer of its Application and Profile). The platform pays it invisibly: users never
+   * hold or acquire SOL. Once per wallet, never to a wallet that already holds enough, and bounded
+   * by a global daily cap.
+   */
+  async function grantRentDust({ wallet }: { wallet: string }): Promise<{ granted: boolean; lamports: string; signature?: Signature; reason?: string }> {
+    if (wallet === deps.treasury.address) throw new RejectedTransaction("the treasury does not need rent dust", "wallet-is-treasury");
+    if (dustGranted.has(wallet)) return { granted: false, lamports: "0", reason: "already-granted" };
+    const amount = await rentDustAmount();
+    const balance = (await deps.rpc.getBalance(wallet as Address, { commitment: "confirmed" }).send()).value;
+    if (balance >= amount) return { granted: false, lamports: "0", reason: "already-funded" };
+
+    let reservation;
+    try {
+      reservation = dustLimiter.reserve(wallet, amount);
+    } catch (e) {
+      if (e instanceof LimitError) throw new RejectedTransaction(e.message, "rate-limited");
+      throw e;
+    }
+    // Marked before the send, not after: two concurrent requests must not both pass the check above.
+    dustGranted.add(wallet);
+    try {
+      const signatures = await deps.run(
+        deps.treasury,
+        sequentialInstructionPlan([getTransferSolInstruction({ source: deps.treasury, destination: wallet as Address, amount })]),
+        `rent dust ${amount} lamports to ${wallet}`,
+      );
+      reservation.commit(amount);
+      return { granted: true, lamports: amount.toString(), signature: signatures[0] };
+    } catch (e) {
+      dustGranted.delete(wallet);
+      reservation.cancel();
+      throw e;
+    }
   }
 
   return {
@@ -554,6 +705,9 @@ export function createTreasury(deps: TreasuryDeps) {
     unwrap,
     ensureAccount,
     sponsorConfidentialAccountSetup,
+    sponsorRentPayment,
+    grantRentDust,
+    rentDustAmount,
     /** Append-only record of every reserve and wrap/unwrap movement this process saw. */
     ledger: () => ledger.slice(),
   };

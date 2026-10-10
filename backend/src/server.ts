@@ -199,6 +199,44 @@ export function createApp(services: Services = createServices()) {
   });
 
   /**
+   * One transaction of a confidential rent payment, co-signed by the TREASURY.
+   *
+   * Not `/api/sponsor`, whose rule (the fee payer never appears inside an instruction) stays
+   * absolute: the proof plan funds its context-state accounts from the payer, so every transaction
+   * of it would be refused there. The treasury is confined to the few positions that are harmless
+   * (`rentshape.ts`), the session wallet must be the paying tenant, and the route has its own
+   * limiter and replay guard.
+   */
+  app.post("/api/treasury/rent-payment", async (c) => {
+    const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
+    const { txBase64 } = await readJson<{ txBase64?: string }>(c);
+    if (typeof txBase64 !== "string" || txBase64 === "") {
+      throw new RejectedTransaction("txBase64 is required", "malformed-body");
+    }
+    const treasury = await services.treasury();
+    return c.json(await treasury.sponsorRentPayment({ txBase64, wallet: session.wallet }));
+  });
+
+  /**
+   * The platform provisions the rent a tenant's Application and Profile cost, so nobody ever holds or
+   * acquires SOL. Bound to the session wallet (a body that names another wallet is refused, not
+   * obeyed), once per wallet, never to a wallet that already holds enough.
+   */
+  app.post("/api/treasury/rent-dust", async (c) => {
+    const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
+    const body = await c.req.json().catch(() => ({})) as { wallet?: unknown };
+    if (body.wallet !== undefined && body.wallet !== session.wallet) {
+      throw new RejectedTransaction("rent dust can only be requested for the session's own wallet", "wallet-mismatch");
+    }
+    const sponsor = await services.sponsor();
+    if (session.wallet === sponsor.feePayer) {
+      throw new RejectedTransaction("the fee payer does not need rent dust", "wallet-is-sponsor");
+    }
+    const treasury = await services.treasury();
+    return c.json(await treasury.grantRentDust({ wallet: session.wallet }));
+  });
+
+  /**
    * The after-the-fact amount check — the mechanism the auditor key exists for.
    *
    * `pay_rent` credits `lease.rent_amount` whatever was actually sent, because the amount is

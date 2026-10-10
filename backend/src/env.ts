@@ -182,6 +182,33 @@ export const env = {
     maxLamportsPerWalletPerDay: bigintOf("SPONSOR_MAX_LAMPORTS_PER_WALLET_PER_DAY", 2_000_000n),
     maxLamportsGlobalPerDay: bigintOf("SPONSOR_MAX_LAMPORTS_GLOBAL_PER_DAY", 50_000_000n),
   },
+
+  /**
+   * POST /api/treasury/rent-payment: the treasury funds the proof context-state accounts of a
+   * confidential rent payment (docs/contracts/pay.md). The rent comes back when the plan closes
+   * them, so these bound the float and the grief, not the cost.
+   */
+  rentPayment: {
+    /** Per context-state account. A range-proof context is ~300 bytes, about 3M lamports. */
+    maxContextLamports: bigintOf("RENT_PAYMENT_MAX_CONTEXT_LAMPORTS", 5_000_000n),
+    maxContextSpace: bigintOf("RENT_PAYMENT_MAX_CONTEXT_SPACE", 512n),
+    maxCreateAccounts: num("RENT_PAYMENT_MAX_CREATE_ACCOUNTS", 2),
+    /** Most the treasury may be down on ONE transaction, by simulation. */
+    maxSpendLamports: bigintOf("RENT_PAYMENT_MAX_SPEND_LAMPORTS", 12_000_000n),
+    maxPerWalletPerHour: num("RENT_PAYMENT_MAX_PER_WALLET_PER_HOUR", 30),
+    maxGlobalPerHour: num("RENT_PAYMENT_MAX_GLOBAL_PER_HOUR", 300),
+    maxLamportsPerWalletPerDay: bigintOf("RENT_PAYMENT_MAX_LAMPORTS_PER_WALLET_PER_DAY", 60_000_000n),
+    maxLamportsGlobalPerDay: bigintOf("RENT_PAYMENT_MAX_LAMPORTS_GLOBAL_PER_DAY", 300_000_000n),
+  },
+
+  /**
+   * POST /api/treasury/rent-dust: the platform provisions the rent a wallet's Application and
+   * Profile accounts cost, so that nobody ever holds or acquires SOL. Once per wallet.
+   */
+  rentDust: {
+    maxGlobalPerHour: num("RENT_DUST_MAX_GLOBAL_PER_HOUR", 60),
+    maxLamportsGlobalPerDay: bigintOf("RENT_DUST_MAX_LAMPORTS_GLOBAL_PER_DAY", 100_000_000n),
+  },
 } as const;
 
 export type Env = typeof env;
