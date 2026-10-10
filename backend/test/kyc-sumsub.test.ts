@@ -198,7 +198,13 @@ describe("eventRef", () => {
   });
 
   it("uses correlationId when present", () => {
-    assert.equal(eventRef(reviewed({ correlationId: "abc" })), "sumsub-abc");
+    assert.equal(eventRef(reviewed({ correlationId: "abc" })), "sumsub-abc-GREEN");
+  });
+
+  // Sumsub may reuse one correlationId for a GREEN and a later RED: the RED must not replay the GREEN.
+  it("keeps GREEN and RED apart even under one correlationId", () => {
+    const red = reviewed({ correlationId: "abc", reviewResult: { reviewAnswer: "RED" } });
+    assert.notEqual(eventRef(red), eventRef(reviewed({ correlationId: "abc" })));
   });
 
   it("falls back to the composite of type, applicant, answer and timestamp", () => {

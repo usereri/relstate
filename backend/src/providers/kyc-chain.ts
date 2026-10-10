@@ -158,7 +158,8 @@ export async function fetchKycPolicy(rpc: AttestationChainRpc): Promise<KycPolic
 /** Mirrors `Attestation::is_valid` in the program, so the backend and the chain agree on "verified". */
 export function isValid(attestation: AttestationAccount | null, policy: KycPolicy | null, now = Math.floor(Date.now() / 1000)): boolean {
   if (attestation === null) return false;
-  if (policy !== null && attestation.issuer !== policy.issuer) return false;
+  // No readable Config means no known issuer to compare against, so nothing can be vouched for.
+  if (policy === null || attestation.issuer !== policy.issuer) return false;
   return attestation.level >= 1 && !attestation.revoked && (attestation.expiresAt === 0 || attestation.expiresAt > now);
 }
 

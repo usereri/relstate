@@ -145,8 +145,10 @@ export function verifySumsubSignature(
  * audit trail honest.
  */
 export function eventRef(payload: SumsubPayload): string {
-  if (typeof payload.correlationId === "string" && payload.correlationId !== "") return `sumsub-${payload.correlationId}`;
   const answer = payload.reviewResult?.reviewAnswer ?? "?";
+  // The answer is part of the key even with a correlationId: if Sumsub reuses one id for a GREEN
+  // and a later RED, the RED must not be swallowed as a replay of the GREEN and skip the revoke.
+  if (typeof payload.correlationId === "string" && payload.correlationId !== "") return `sumsub-${payload.correlationId}-${answer}`;
   return `sumsub-${payload.type ?? "?"}-${payload.applicantId ?? "?"}-${answer}-${payload.createdAtMs ?? "?"}`;
 }
 
