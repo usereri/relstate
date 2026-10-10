@@ -441,6 +441,8 @@ async function main() {
     maxContextLamports: env.rentPayment.maxContextLamports,
     maxContextSpace: env.rentPayment.maxContextSpace,
     maxCreateAccounts: env.rentPayment.maxCreateAccounts,
+    // The one figure a createAccount with no proof beside it is held to: read from the cluster, as the route does.
+    rangeContextLamports: BigInt(await client.rpc.getMinimumBalanceForRentExemption(rentshape.RANGE_PROOF_CONTEXT_SPACE).send()),
   };
   const treasuryBefore = await connection.getBalance(treasuryKp.publicKey);
   let sponsorRejects = 0;
