@@ -17,7 +17,7 @@ Pitch wording: "what you pay each month is between you and your landlord", NOT "
 
 ## Deposit amounts and deductions are public, rent payments are confidential
 
-Stated plainly so nothing implies otherwise: the **deposit amount**, the **deduction** a landlord proposes, and the **settled split** are public on chain (`Lease.deposit_amount`, `Lease.proposed_deduction`, the vault transfers, `LeaseClosed`). The landlord return-rate reputation (`Profile.deposit_total`, `deducted_total`, `last_deposit_return_bps`, `deposit_events`) depends on that, because transparency is what deters an unfair deduction. The only confidential amount is the recurring **rent payment** on a confidential mint (`pay_rent`). Making the deposit vault confidential is a known limitation (B2), not a hidden property.
+Stated plainly so nothing implies otherwise: the **deposit amount**, the **deduction** a landlord proposes, and the **settled split** are public on chain (`Lease.deposit_amount`, `Lease.proposed_deduction`, the vault transfers, `LeaseClosed`). The landlord return-rate reputation (`Profile.deposit_total`, `deducted_total`, `last_deposit_return_bps`, `deposit_events`) depends on that, because a deduction that is public can be judged by future tenants. That makes it a published record, not a guarantee: it is not an on-chain deterrent, and leases between wallets one person controls can inflate it, so it leans on the KYC issuer for sybil resistance (`docs/contracts/attestation.md`). The only confidential amount is the recurring **rent payment** on a confidential mint (`pay_rent`). Making the deposit vault confidential is a known limitation (B2), not a hidden property.
 
 ## Keys
 

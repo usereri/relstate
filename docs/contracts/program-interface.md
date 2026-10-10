@@ -215,6 +215,15 @@ needs its own `solana-keygen` step.
 
 ## 5. Deposit exits and the dispute state machine (D1)
 
+> **BREAKING: requires a fresh deploy.** `Profile` grew 88 → 94 B, `Lease` 193 → 218 B, and there is
+> no `realloc` or migration instruction. An in-place upgrade of the program id over existing
+> accounts makes them undeserializable (`AccountDidNotDeserialize`), which also strands any deposit
+> escrowed under them, because only the lease PDA can sign the vault and no instruction can load
+> the lease. Deploy to a network with no old leases/profiles (devnet: wipe or use a new program id).
+> The demo build must be the deployed one: the client reads `CLAIM_WINDOW_SECS` and
+> `DISPUTE_WINDOW_SECS` from the IDL (`#[constant]`), so build the IDL and the deploy from the same
+> feature set.
+
 `release_deposit` with a deduction no longer pays anything. It moves the lease to `Disputed` and
 records `proposed_deduction` and `disputed_at`. Constants (`constants.rs`, demo / release):
 `DISPUTE_WINDOW_SECS` = 30 s / 14 days, `CLAIM_WINDOW_SECS` = 10 s / 14 days.
@@ -278,6 +287,17 @@ flow (D2, not built). `dispute_rejected` stops a landlord re-disputing every tim
 (which would keep the deposit out of reach forever); `release_deposit(0)` stays available so a
 landlord can still choose a full return.
 
+Roadmap, not built: **D2** (appraiser arbitration) and a **tenant bond** variant, where rejecting
+a deduction requires a small bond that the landlord keeps if damage is later upheld. The bond is
+the safer middle ground between "tenant can always reject for free" and "landlord decides", at the
+cost of a second fund-moving path, so it waits for D2.
+
+Also new in this version: `propose_lease` rejects a zero deposit (`ZeroDeposit`, checked after the
+good-standing discount, which can round a tiny deposit to 0) and a term above `MAX_LEASE_SECS`
+(`TermTooLong`: 5 years in a release build, 100 in the demo build). `record_deposit_outcome` uses
+saturating counters, so bookkeeping can never fail a payout. `settle_dispute` needs two signatures
+on one transaction, so the app only has a transaction builder for it (`settleDisputeTx`), no button.
+
 ### Reputation fields (A1/A2)
 
 `Profile` gained `last_deposit_return_bps: u16` (0-10000) and `deposit_events: u32`. All exits that
@@ -289,7 +309,7 @@ missing there, which let a landlord who always defaults tenants show a perfect r
 bps = `(deposit - deduction) * 10000 / deposit` in u128, rounded down, and a zero deposit is 10000.
 
 Account sizes (for the backend's rent-dust sizing, `8 + INIT_SPACE`, pinned by a Rust test):
-`Application` **104 B** (unchanged), `Profile` **94 B** (was 88). `Lease` is now **218 B** (was 193); the
+`Application` **104 B** (unchanged), `Profile` **94 B** (was 88); the backend's rent-dust sizing for a new wallet must use these. `Lease` is now **218 B** (was 193); the
 landlord pays it and the backend does not size it.
 
 ## 6. Known gaps
@@ -297,6 +317,7 @@ landlord pays it and the backend does not size it.
 | Gap | Where |
 |---|---|
 | The settled confidential amount is unverified on chain | by design, `docs/privacy.md` |
+| The deposit-return % is a published record, not a guarantee: leases between wallets one person controls inflate it (the landlord picks the deposit size), so its only sybil resistance is the KYC issuer. Not fixable on chain without an oracle | disclosed; D2 roadmap |
 | Deposit amount and deduction are public by design (the return-% reputation depends on it):  `fund_deposit` moves a public amount into the vault, and `release_deposit` / `claim_deposit` / `mark_default` pay out publicly | settled, `docs/privacy.md`. The vault is a PDA-owned token account and a PDA cannot hold ElGamal keys, so its balance cannot be confidential. Only rent is private |
 | `init_config` is first-caller-wins | acceptable for a demo; `set_admin` is the recovery path |
 | The confidential **accept** path is not covered on chain by `make test-demo` | a confidential `Transfer` needs real ZK proofs, which the local suite cannot produce: with a dummy payload the transfer fails inside Token-2022 *before* `pay_rent` runs, so any assertion about `pay_rent`'s behaviour would pass for the wrong reason. Covered instead by 10 Rust unit tests over the matcher in `programs/relstate/src/instructions/pay_rent.rs`, and end to end by the Phase 1 exit-gate devnet run |
