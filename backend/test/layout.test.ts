@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { getAddressEncoder, generateKeyPairSigner } from "@solana/kit";
 import { FALLBACK_LAYOUTS, IDL_PATH, accountLayout, computeLayout, fieldOffset, type Idl } from "../src/layout.ts";
-import { decodeLease } from "../src/lease.ts";
+import { LEASE_DISCRIMINATOR, decodeLease } from "../src/lease.ts";
 
 // The program's Lease and Profile are about to change before the first deploy. These tests are what
 // makes that a one-file update: the layout is computed from the IDL, the snapshot used when no IDL is
@@ -56,6 +56,12 @@ describe("the fallback snapshot", () => {
   });
 });
 
+const withDiscriminator = (size: number) => {
+  const data = new Uint8Array(size);
+  data.set(LEASE_DISCRIMINATOR, 0);
+  return data;
+};
+
 describe("decodeLease follows the layout", () => {
   // A new field inserted BEFORE rent_amount shifts every later offset. With hand-copied offsets this
   // returns a plausible wrong figure; reading them from the layout it still returns the right one.
@@ -68,6 +74,7 @@ describe("decodeLease follows the layout", () => {
     };
     const data = new Uint8Array(shifted.size);
     const view = new DataView(data.buffer);
+    data.set(LEASE_DISCRIMINATOR, 0);
     const [landlord, tenant, mint] = await Promise.all([0, 1, 2].map(async () => (await generateKeyPairSigner()).address));
     for (const [field, address] of [["landlord", landlord], ["tenant", tenant], ["mint", mint]] as const) data.set(getAddressEncoder().encode(address!), shifted.offsets[field]!);
     view.setBigUint64(shifted.offsets.rent_amount!, 1_234_567n, true);
@@ -84,7 +91,7 @@ describe("decodeLease follows the layout", () => {
 
   it("names the field when the program no longer has one the reader needs", () => {
     const { rent_amount: _gone, ...rest } = FALLBACK_LAYOUTS.Lease!.offsets;
-    assert.throws(() => decodeLease(new Uint8Array(FALLBACK_LAYOUTS.Lease!.size), { size: FALLBACK_LAYOUTS.Lease!.size, offsets: rest }), /Lease has no field rent_amount/);
+    assert.throws(() => decodeLease(withDiscriminator(FALLBACK_LAYOUTS.Lease!.size), { size: FALLBACK_LAYOUTS.Lease!.size, offsets: rest }), /Lease has no field rent_amount/);
     assert.throws(() => fieldOffset(FALLBACK_LAYOUTS.Lease!, "Lease", "dispute_state"), /no field dispute_state/);
   });
 });

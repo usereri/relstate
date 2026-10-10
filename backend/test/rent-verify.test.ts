@@ -17,7 +17,7 @@ const { createSessionToken } = await import("../src/auth.ts");
 const { ServiceUnavailable } = await import("../src/services.ts");
 import type { Services } from "../src/services.ts";
 import { RELSTATE_PROGRAM } from "../src/contracts.ts";
-import { LEASE_ACCOUNT_SIZE } from "../src/lease.ts";
+import { LEASE_ACCOUNT_SIZE, LEASE_DISCRIMINATOR } from "../src/lease.ts";
 import { PAY_RENT_DISCRIMINATOR } from "../src/rentshape.ts";
 import { TOKEN_PROGRAM, buildTx } from "./txfixtures.ts";
 
@@ -30,6 +30,7 @@ const auditor = ConfidentialKeys.fromIkm(new Uint8Array(32).fill(7));
 function leaseAccount(tenant: Address, landlord: Address, owner: Address = PROGRAM) {
   const data = new Uint8Array(LEASE_ACCOUNT_SIZE);
   const view = new DataView(data.buffer);
+  data.set(LEASE_DISCRIMINATOR, 0);
   data.set(getAddressEncoder().encode(landlord), 8);
   data.set(getAddressEncoder().encode(tenant), 40);
   view.setBigUint64(112, RENT, true);

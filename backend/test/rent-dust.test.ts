@@ -29,7 +29,7 @@ async function fixture(options: { limiter?: RateLimiter; balances?: Record<strin
     getMinimumBalanceForRentExemption: (size: bigint) => ({
       send: async () => {
         state.rentQueries.push(size);
-        return size === 104n ? APPLICATION : size === 88n ? PROFILE : size === 120n ? PROFILE + 400_000n : 999n;
+        return size === 104n ? APPLICATION : size === 94n ? PROFILE : size === 120n ? PROFILE + 400_000n : 999n;
       },
     }),
     // A real RPC yields to the event loop here, which is what makes two requests interleave.
@@ -69,10 +69,10 @@ async function fixture(options: { limiter?: RateLimiter; balances?: Record<strin
 }
 
 describe("rentDustAmount", () => {
-  it("is the rent-exempt minimum of an Application (104 bytes) plus a Profile (88 bytes)", async () => {
+  it("is the rent-exempt minimum of an Application (104 bytes) plus a Profile (94 bytes, with the deposit-return fields)", async () => {
     const f = await fixture();
     assert.equal(await f.treasury.rentDustAmount(), AMOUNT);
-    assert.deepEqual([...f.state.rentQueries].sort((a, b) => (a < b ? -1 : 1)), [88n, 104n]);
+    assert.deepEqual([...f.state.rentQueries].sort((a, b) => (a < b ? -1 : 1)), [94n, 104n]);
   });
 });
 
