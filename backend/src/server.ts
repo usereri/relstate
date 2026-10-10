@@ -286,7 +286,12 @@ export function createApp(services: Services = createServices()) {
       relstateProgram: RELSTATE_PROGRAM as Address,
       expectedAmount: lease.rentAmount,
       auditorSecret: auditor.keys.elgamal.secret(),
+      // Authorisation above is per LEASE; decryption is per TRANSACTION. Without this the caller is
+      // cleared for one lease and handed the plaintext of any payment on the platform. A mismatch is
+      // refused before anything is decrypted, and answers exactly like an unknown lease.
+      expectedLease: body.lease as Address,
     });
+    if (check.leaseMismatch) return c.json({ error: `no lease ${body.lease}`, code: "lease-unknown" }, 404);
     return c.json({
       ok: check.ok,
       lease: body.lease,
@@ -296,15 +301,7 @@ export function createApp(services: Services = createServices()) {
       reason: check.reason ?? null,
       mint: lease.mint,
       paidCount: lease.paidCount,
-      transfer:
-        check.transfer === undefined
-          ? null
-          : {
-              instructionIndex: check.transfer.instructionIndex,
-              sourceToken: check.transfer.sourceToken,
-              destinationToken: check.transfer.destinationToken,
-              mint: check.transfer.mint,
-            },
+      transfer: check.transfer === undefined ? null : { instructionIndex: check.transfer.instructionIndex, mint: check.transfer.mint },
     });
   });
 

@@ -18,6 +18,7 @@ const { ServiceUnavailable } = await import("../src/services.ts");
 import type { Services } from "../src/services.ts";
 import { RELSTATE_PROGRAM } from "../src/contracts.ts";
 import { LEASE_ACCOUNT_SIZE } from "../src/lease.ts";
+import { PAY_RENT_DISCRIMINATOR } from "../src/rentshape.ts";
 import { TOKEN_PROGRAM, buildTx } from "./txfixtures.ts";
 
 const PROGRAM = RELSTATE_PROGRAM as Address;
@@ -40,7 +41,7 @@ function leaseAccount(tenant: Address, landlord: Address, owner: Address = PROGR
  * A real wire transaction of `[confidential Transfer, pay_rent]` whose auditor ciphertexts encrypt
  * `amount`. The proofs and balances are zeroed: the audit only ever reads the auditor halves.
  */
-async function paymentTx(amount: bigint): Promise<string> {
+async function paymentTx(amount: bigint, lease: Address, undecryptable = false): Promise<string> {
   const pubkey = auditor.elgamal().pubkey();
   const payer = await generateKeyPairSigner();
   const [source, mint, destination] = await Promise.all([1, 2, 3].map(async () => (await generateKeyPairSigner()).address));
@@ -50,24 +51,34 @@ async function paymentTx(amount: bigint): Promise<string> {
     data: new Uint8Array(
       getConfidentialTransferInstructionDataEncoder().encode({
         newSourceDecryptableAvailableBalance: new Uint8Array(36),
-        transferAmountAuditorCiphertextLo: pubkey.encryptU64(amount & 0xffffn).toBytes(),
-        transferAmountAuditorCiphertextHi: pubkey.encryptU64(amount >> 16n).toBytes(),
+        transferAmountAuditorCiphertextLo: undecryptable ? new Uint8Array(64).fill(0xff) : pubkey.encryptU64(amount & 0xffffn).toBytes(),
+        transferAmountAuditorCiphertextHi: undecryptable ? new Uint8Array(64).fill(0xff) : pubkey.encryptU64(amount >> 16n).toBytes(),
         equalityProofInstructionOffset: 1,
         ciphertextValidityProofInstructionOffset: 2,
         rangeProofInstructionOffset: 3,
       }),
     ),
   } as unknown as Instruction;
-  const payRent = { programAddress: PROGRAM, accounts: [{ address: payer.address, role: AccountRole.WRITABLE_SIGNER, signer: payer }], data: new Uint8Array([1]) } as unknown as Instruction;
+  // A real pay_rent: the Anchor discriminator, and [tenant, lease, ...] as its first two accounts.
+  const payRent = {
+    programAddress: PROGRAM,
+    accounts: [
+      { address: payer.address, role: AccountRole.WRITABLE_SIGNER, signer: payer },
+      { address: lease, role: AccountRole.WRITABLE },
+    ],
+    data: PAY_RENT_DISCRIMINATOR,
+  } as unknown as Instruction;
   return buildTx({ feePayer: payer.address, instructions: [transfer, payRent] });
 }
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
-async function fixture(options: { lease?: "known" | "missing" | "foreign"; settled?: bigint; auditorDown?: boolean } = {}) {
+async function fixture(options: { lease?: "known" | "missing" | "foreign"; settled?: bigint; auditorDown?: boolean; payment?: "own" | "of-another-lease"; undecryptable?: boolean } = {}) {
   const tenant = (await generateKeyPairSigner()).address;
   const landlord = (await generateKeyPairSigner()).address;
   const stranger = (await generateKeyPairSigner()).address;
-  const wire = await paymentTx(options.settled ?? RENT);
+  const lease = (await generateKeyPairSigner()).address;
+  const otherLease = (await generateKeyPairSigner()).address;
+  const wire = await paymentTx(options.settled ?? RENT, options.payment === "of-another-lease" ? otherLease : lease, options.undecryptable);
   const calls = { getAccountInfo: 0, getTransaction: 0 };
   const rpc = {
     getAccountInfo: () => ({
@@ -92,7 +103,6 @@ async function fixture(options: { lease?: "known" | "missing" | "foreign"; settl
     },
   } as unknown as Services;
   const app = createApp(services);
-  const lease = (await generateKeyPairSigner()).address;
   const as = (wallet: Address, body: unknown) =>
     app.request("/api/rent/verify", {
       method: "POST",
@@ -190,6 +200,9 @@ describe("POST /api/rent/verify: the audit", () => {
     assert.equal(body.ok, false);
     assert.equal(body.settledAmount, (RENT - 1n).toString());
     assert.match(String(body.reason), /settled/);
+    // The accounts of the transfer are no longer echoed: nothing here needs them.
+    assert.equal((body.transfer as Record<string, unknown>).sourceToken, undefined);
+    assert.equal((body.transfer as Record<string, unknown>).destinationToken, undefined);
   });
 
   it("takes the expected amount from the lease, ignoring one smuggled into the body", async () => {
@@ -198,6 +211,41 @@ describe("POST /api/rent/verify: the audit", () => {
     const body = (await res.json()) as Record<string, unknown>;
     assert.equal(body.ok, false);
     assert.equal(body.expectedAmount, RENT.toString());
+  });
+
+  // The regression for the decryption oracle. Authorisation is per LEASE and decryption is per
+  // TRANSACTION; a caller who is a genuine party to one lease must not be able to name some other
+  // payment's signature and read its amount. The existing tests all used a transaction that belonged
+  // to the lease being asked about, which is exactly the direction that cannot show this.
+  describe("a payment that belongs to a different lease", () => {
+    it("is refused as an unknown lease, and leaks neither the amount nor the accounts", async () => {
+      const f = await fixture({ payment: "of-another-lease", settled: 7_654_321n });
+      const res = await f.as(f.tenant, valid(f)); // f.tenant IS a party to f.lease
+      assert.equal(res.status, 404);
+      const text = await res.text();
+      assert.equal(JSON.parse(text).code, "lease-unknown");
+      for (const secret of ["7654321", "settledAmount", "sourceToken", "destinationToken", "reason"]) {
+        assert.ok(!text.includes(secret), `the refusal leaked ${secret}`);
+      }
+    });
+
+    it("answers byte-for-byte like a lease that does not exist", async () => {
+      const mismatch = await fixture({ payment: "of-another-lease" });
+      const unknown = await fixture({ lease: "missing" });
+      const a = await (await mismatch.as(mismatch.tenant, valid(mismatch))).text();
+      const b = await (await unknown.as(unknown.tenant, valid(unknown))).text();
+      assert.equal(a.replace(mismatch.lease, "L"), b.replace(unknown.lease, "L"));
+    });
+
+    // If the route decrypted before comparing, ciphertext that cannot be decrypted would surface as a
+    // server error. A clean 404 therefore shows the lease is decided from the transaction's accounts
+    // alone, before the transfer is touched.
+    it("decrypts nothing: undecryptable ciphertext still gets the clean 404", async () => {
+      const f = await fixture({ payment: "of-another-lease", undecryptable: true });
+      assert.equal((await f.as(f.tenant, valid(f))).status, 404);
+      const control = await fixture({ payment: "own", undecryptable: true });
+      assert.notEqual((await control.as(control.tenant, valid(control))).status, 200, "the control must actually fail to decrypt");
+    });
   });
 
   it("answers 503 when no auditor key is configured", async () => {

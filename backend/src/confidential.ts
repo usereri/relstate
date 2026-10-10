@@ -38,6 +38,7 @@ import {
 } from "@solana-program/token-2022/confidential";
 import { ElGamalCiphertext, type ElGamalSecretKey } from "@solana/zk-sdk";
 import type { ConfidentialKeyPair } from "./keys.ts";
+import { PAY_RENT_DISCRIMINATOR } from "./rentshape.ts";
 import { inspectTransaction } from "./txinspect.ts";
 
 export type ConfidentialRpc = Rpc<GetAccountInfoApi & GetMinimumBalanceForRentExemptionApi>;
@@ -307,6 +308,14 @@ export async function auditTransaction(
 
 export type RentPaymentCheck = {
   ok: boolean;
+  /**
+   * The lease account the named transaction's `pay_rent` actually refers to. The caller must bind
+   * this to whatever authorised the request BEFORE it reads anything else here, or the check is a
+   * decryption service for every payment on the platform.
+   */
+  lease: Address | undefined;
+  /** True when `expectedLease` was given and the transaction's `pay_rent` is for a different lease. */
+  leaseMismatch: boolean;
   /** The decrypted amount that actually settled, when a paired transfer was found. */
   settledAmount: bigint | undefined;
   expectedAmount: bigint;
@@ -328,7 +337,16 @@ export type RentPaymentCheck = {
 export async function verifyRentPayment(
   rpc: Rpc<GetTransactionApi>,
   signature: Signature,
-  options: { relstateProgram: Address; expectedAmount: bigint; auditorSecret: ElGamalSecretKey },
+  options: {
+    relstateProgram: Address;
+    expectedAmount: bigint;
+    auditorSecret: ElGamalSecretKey;
+    /**
+     * Refuse, WITHOUT decrypting anything, unless the transaction's `pay_rent` is for this lease.
+     * Authorisation is per lease and decryption is per transaction; this is what joins them.
+     */
+    expectedLease?: Address;
+  },
 ): Promise<RentPaymentCheck> {
   const result = await rpc
     .getTransaction(signature, { encoding: "base64", commitment: "confirmed", maxSupportedTransactionVersion: 0 })
@@ -336,8 +354,15 @@ export async function verifyRentPayment(
   if (result === null) throw new Error(`transaction ${signature} not found`);
 
   const inspected = inspectTransaction(result.transaction[0], { maxBytes: 1232, maxInstructions: 64 });
-  const payRentIndex = inspected.instructions.findIndex((ix) => ix.programAddress === options.relstateProgram);
+  // The first `pay_rent`, not merely the first relstate instruction: a transaction can carry others.
+  const payRentIndex = inspected.instructions.findIndex(
+    (ix) => ix.programAddress === options.relstateProgram && ix.data.length === PAY_RENT_DISCRIMINATOR.length && PAY_RENT_DISCRIMINATOR.every((b, i) => ix.data[i] === b),
+  );
+  // pay_rent's accounts are [tenant, lease, ...].
+  const lease = payRentIndex < 0 ? undefined : inspected.instructions[payRentIndex]!.accounts[1]?.address;
   const miss = (reason: string): RentPaymentCheck => ({
+    lease,
+    leaseMismatch: false,
     ok: false,
     settledAmount: undefined,
     expectedAmount: options.expectedAmount,
@@ -346,12 +371,17 @@ export async function verifyRentPayment(
   });
   if (payRentIndex < 0) return miss(`no ${options.relstateProgram} instruction in ${signature}`);
   if (payRentIndex === 0) return miss("the relstate instruction is first, so no transfer can precede it");
+  if (options.expectedLease !== undefined && lease !== options.expectedLease) {
+    return { ...miss("this transaction's pay_rent is for a different lease"), leaseMismatch: true };
+  }
 
   const transfers = await auditTransaction(rpc, signature, options.auditorSecret);
   const paired = transfers.find((t) => t.instructionIndex === payRentIndex - 1);
   if (paired === undefined) return miss(`instruction ${payRentIndex - 1} is not a confidential transfer`);
 
   return {
+    lease,
+    leaseMismatch: false,
     ok: paired.amount === options.expectedAmount,
     settledAmount: paired.amount,
     expectedAmount: options.expectedAmount,
