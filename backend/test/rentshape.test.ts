@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { type Address, type Instruction } from "@solana/kit";
 import { ASSOCIATED_TOKEN_PROGRAM, MEMO_PROGRAM } from "../src/contracts.ts";
-import { PAY_RENT_DISCRIMINATOR, RENT_PAYMENT_ALLOWLIST, assertRentPaymentShape, type RentPaymentRules } from "../src/rentshape.ts";
+import { PAY_RENT_DISCRIMINATOR, RANGE_PROOF_CONTEXT_SPACE, RENT_PAYMENT_ALLOWLIST, assertRentPaymentShape, type RentPaymentRules } from "../src/rentshape.ts";
 import { RejectedTransaction, inspectTransaction } from "../src/txinspect.ts";
-import { RELSTATE, SYSTEM, TOKEN22, W, R, WS, RS, ZK, acct, build, cast, createAccountData, ix, plan, tx1, tx5, type Cast } from "./rentfixtures.ts";
+import { REAL_CONTEXTS, RELSTATE, SYSTEM, TOKEN22, W, R, WS, RS, ZK, acct, build, cast, createAccountData, ix, plan, tx1, tx5, type Cast } from "./rentfixtures.ts";
 
 async function check(c: Cast, instructions: Instruction[], rules: RentPaymentRules = c.rules) {
   const tx = inspectTransaction(await build(c, instructions), { maxBytes: 1232, maxInstructions: 32 });
@@ -51,7 +51,8 @@ describe("the real plan shape", () => {
   it("accepts the caps exactly: lamports, space and the number of creates", async () => {
     const c = await cast();
     const p = plan(c);
-    await accepted(c, [p.createContext(c.ctxA, { lamports: 5_000_000n, space: 512n }), p.createContext(c.ctxB)]);
+    // At both caps, and verified in the same transaction so the create is allowed to exist.
+    await accepted(c, [p.createContext(c.ctxA, { lamports: 3_000_000n, space: 400n }), p.verify(c.ctxA)]);
   });
 });
 
@@ -163,7 +164,7 @@ describe("rent payment shape: System program", () => {
   it("rejects more than maxCreateAccounts creates", async () => {
     const c = await cast();
     const p = plan(c);
-    await denied(c, [p.createContext(c.ctxA), p.createContext(c.ctxB), p.createContext(c.ctxC)], "too-many-accounts");
+    await denied(c, [p.createContext(c.ctxA), p.verify(c.ctxA), p.createContext(c.ctxB), p.verify(c.ctxB)], "too-many-accounts");
   });
 });
 
@@ -212,16 +213,13 @@ describe("rent payment shape: ZK proof program", () => {
       await denied(c, [p.createContext(c.ctxA), ix(ZK, [3, 1, 2, 3], [acct(c.ctxA.address, W), acct(c.wallet, R)])], "wrong-context-authority");
     });
 
-    it("refuses it at the maximum cost: two max-size contexts, both naming the attacker", async () => {
+    it("refuses it at the maximum cost: a max-size context naming the attacker", async () => {
       const c = await cast();
-      const big = { lamports: c.rules.maxContextLamports, space: c.rules.maxContextSpace };
       await denied(
         c,
         [
-          ix(SYSTEM, createAccountData(big.lamports, big.space, ZK), [acct(c.treasury.address, WS), acct(c.ctxA.address, WS)]),
-          ix(SYSTEM, createAccountData(big.lamports, big.space, ZK), [acct(c.treasury.address, WS), acct(c.ctxB.address, WS)]),
+          ix(SYSTEM, createAccountData(c.rules.maxContextLamports, c.rules.maxContextSpace, ZK), [acct(c.treasury.address, WS), acct(c.ctxA.address, WS)]),
           ix(ZK, [3, 1], [acct(c.ctxA.address, W), acct(c.wallet, R)]),
-          ix(ZK, [7, 1], [acct(c.ctxB.address, W), acct(c.wallet, R)]),
         ],
         "wrong-context-authority",
       );
@@ -370,5 +368,85 @@ describe("rent payment shape: programs", () => {
     for (const program of [ASSOCIATED_TOKEN_PROGRAM, MEMO_PROGRAM, "Stake11111111111111111111111111111111111111"]) {
       await denied(c, [...tx1(c), ix(program as Address, [1], [acct(c.wallet, WS)])], "program-not-allowed");
     }
+  });
+});
+
+// Review F2, the part a filter can only narrow. The plan's tx 3 creates the range-proof context in a
+// transaction with no proof beside it, so the treasury funds an account whose authority is not yet
+// recorded. Whoever initialises it first owns the close. The filter cannot stop that; it pins that
+// shape to exactly the one the plan needs, at exactly its rent, so the loss is one range context.
+describe("a context created without a proof in the same transaction", () => {
+  const create = (c: Cast, ctx = c.ctxC, space: bigint = REAL_CONTEXTS.range.space, lamports: bigint = REAL_CONTEXTS.range.lamports) =>
+    ix(SYSTEM, createAccountData(lamports, space, ZK), [acct(c.treasury.address, WS), acct(ctx.address, WS)]);
+
+  it("is accepted when it is exactly the range-proof context at exactly its rent (the real tx 3)", async () => {
+    const c = await cast();
+    await accepted(c, [create(c)]);
+  });
+
+  it("is refused when it is cheaper or smaller than that, however plausible", async () => {
+    const c = await cast();
+    // The equality and validity contexts are real and legitimate, but only WITH their proof beside them.
+    for (const real of [REAL_CONTEXTS.equality, REAL_CONTEXTS.validity]) {
+      await denied(c, [create(c, c.ctxC, real.space, real.lamports)], "unverified-context");
+    }
+  });
+
+  it("is refused one lamport above or below the range context's rent, and one byte off its size", async () => {
+    const c = await cast();
+    await denied(c, [create(c, c.ctxC, REAL_CONTEXTS.range.space, REAL_CONTEXTS.range.lamports + 1n)], "unverified-context");
+    await denied(c, [create(c, c.ctxC, REAL_CONTEXTS.range.space, REAL_CONTEXTS.range.lamports - 1n)], "unverified-context");
+    await denied(c, [create(c, c.ctxC, REAL_CONTEXTS.range.space + 1n)], "unverified-context");
+    await denied(c, [create(c, c.ctxC, REAL_CONTEXTS.range.space - 1n)], "unverified-context");
+  });
+
+  it("is refused at the old, larger caps: 5M lamports and 512 bytes", async () => {
+    const c = await cast();
+    await denied(c, [create(c, c.ctxC, 512n, 5_000_000n)], /cap is|allowed 1\.\./);
+  });
+
+  it("is not saved by a proof for a DIFFERENT context in the same transaction", async () => {
+    const c = await cast();
+    const p = plan(c);
+    await denied(c, [p.createContext(c.ctxA), p.verify(c.ctxB)], "unverified-context");
+  });
+
+  it("is not saved by a proof that comes BEFORE the create", async () => {
+    const c = await cast();
+    const p = plan(c);
+    await denied(c, [p.verify(c.ctxA), p.createContext(c.ctxA)], "unverified-context");
+  });
+
+  it("is not saved by a CLOSE of the same context", async () => {
+    const c = await cast();
+    const p = plan(c);
+    await denied(c, [p.createContext(c.ctxA), p.close(c.ctxA.address)], "unverified-context");
+  });
+
+  it("is allowed at any real size once the same transaction verifies it", async () => {
+    const c = await cast();
+    const p = plan(c);
+    await accepted(c, [p.createContext(c.ctxA, { lamports: REAL_CONTEXTS.validity.lamports, space: REAL_CONTEXTS.validity.space }), p.verify(c.ctxA, REAL_CONTEXTS.validity.verifyTag)]);
+  });
+});
+
+describe("the real plan, with the real sizes measured on devnet", () => {
+  it("fits the configured caps with the real contexts, so the caps are the plan's, not a round number", async () => {
+    const c = await cast();
+    for (const [name, real] of Object.entries(REAL_CONTEXTS)) {
+      assert.ok(real.lamports <= c.rules.maxContextLamports, `${name} context (${real.lamports}) is over maxContextLamports`);
+      assert.ok(real.space <= c.rules.maxContextSpace, `${name} context (${real.space}) is over maxContextSpace`);
+    }
+    assert.equal(REAL_CONTEXTS.range.space, RANGE_PROOF_CONTEXT_SPACE);
+  });
+
+  it("accepts all five transactions: equality + verify, validity + verify, range alone, range verify, transfer + pay_rent + closes", async () => {
+    const c = await cast();
+    const p = plan(c);
+    await accepted(c, [p.createContext(c.ctxA), p.verify(c.ctxA, REAL_CONTEXTS.equality.verifyTag)]);
+    await accepted(c, [p.createContext(c.ctxB, { lamports: REAL_CONTEXTS.validity.lamports, space: REAL_CONTEXTS.validity.space }), p.verify(c.ctxB, REAL_CONTEXTS.validity.verifyTag)]);
+    await accepted(c, [p.createContext(c.ctxC, { lamports: REAL_CONTEXTS.range.lamports, space: REAL_CONTEXTS.range.space })]);
+    await accepted(c, [p.verify(c.ctxC, REAL_CONTEXTS.range.verifyTag)]);
+    await accepted(c, tx5(c));
   });
 });

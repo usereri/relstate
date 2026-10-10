@@ -1,36 +1,18 @@
 // Reading a `Lease` account without Anchor.
 //
-// The backend has no Anchor client and no IDL — it is a plain kit/Node service — but the auditor
-// check needs one number off the chain: `rent_amount`, the figure a confidential payment is
-// supposed to have settled. So the account is decoded by hand from the layout in
-// `programs/relstate/src/state.rs`.
+// The backend has no Anchor client, but the auditor check needs one number off the chain:
+// `rent_amount`, the figure a confidential payment is supposed to have settled. The byte offsets come
+// from the program's own IDL (`layout.ts`), not from constants here: the Lease struct is going to
+// change, and hand-copied offsets fail silently with a plausible wrong amount in a compliance answer.
 //
-// Hand-written offsets rot silently, which is why `decodeLease` refuses anything that is not
-// exactly the size Anchor allocates for this struct. A field added to `Lease` changes that size, so
-// the mismatch surfaces here, at the first request, naming the account — not as a plausible-looking
-// wrong amount in a compliance answer.
+// `decodeLease` still refuses any account that is not exactly the size the layout says, so a struct
+// that changed under an old IDL fails loudly at the first request, naming the account.
 import { getAddressDecoder, getBase64Encoder, type Address, type GetAccountInfoApi, type Rpc } from "@solana/kit";
+import { FALLBACK_LAYOUTS, accountLayout, fieldOffset, type Layout } from "./layout.ts";
 
-/**
- * `8 + Lease::INIT_SPACE`: discriminator, landlord, tenant, mint, lease_id, rent_amount,
- * deposit_amount, start_ts, term_periods, paid_count, lease_hash, status, bump, period_secs,
- * grace_secs, region, discount_pct.
- */
-export const LEASE_ACCOUNT_SIZE = 193;
-
-/** Byte offset of every field this module reads. Anchor packs the struct with no padding. */
-const AT = {
-  landlord: 8,
-  tenant: 40,
-  mint: 72,
-  leaseId: 104,
-  rentAmount: 112,
-  depositAmount: 120,
-  startTs: 128,
-  termPeriods: 136,
-  paidCount: 138,
-  status: 172,
-} as const;
+export const leaseLayout = (): Layout => accountLayout("Lease");
+/** The snapshot size, for tests that build a buffer by hand. The live figure is `leaseLayout().size`. */
+export const LEASE_ACCOUNT_SIZE = FALLBACK_LAYOUTS.Lease!.size;
 
 export const LEASE_STATUS = ["proposed", "active", "closed", "defaulted"] as const;
 export type LeaseStatus = (typeof LEASE_STATUS)[number];
@@ -52,6 +34,34 @@ export type DecodedLease = {
 export class LeaseDecodeError extends Error {}
 export class LeaseNotFound extends Error {}
 
+export function decodeLease(data: Uint8Array, layout: Layout = leaseLayout()): DecodedLease {
+  if (data.length !== layout.size) {
+    throw new LeaseDecodeError(
+      `expected a ${layout.size}-byte lease account, got ${data.length} bytes. ` +
+        "The Lease struct changed: rebuild the program (target/idl) or update FALLBACK_LAYOUTS in backend/src/layout.ts.",
+    );
+  }
+  const at = (field: string) => fieldOffset(layout, "Lease", field);
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const decodeAddress = getAddressDecoder();
+  const address = (field: string): Address => decodeAddress.decode(data.subarray(at(field), at(field) + 32));
+  const statusByte = data[at("status")];
+  const status = LEASE_STATUS[statusByte!];
+  if (status === undefined) throw new LeaseDecodeError(`unknown lease status byte ${statusByte}`);
+  return {
+    landlord: address("landlord"),
+    tenant: address("tenant"),
+    mint: address("mint"),
+    leaseId: view.getBigUint64(at("lease_id"), true),
+    rentAmount: view.getBigUint64(at("rent_amount"), true),
+    depositAmount: view.getBigUint64(at("deposit_amount"), true),
+    startTs: view.getBigInt64(at("start_ts"), true),
+    termPeriods: view.getUint16(at("term_periods"), true),
+    paidCount: view.getUint16(at("paid_count"), true),
+    status,
+  };
+}
+
 /**
  * Reads one lease off the chain.
  *
@@ -64,30 +74,4 @@ export async function fetchLease(rpc: Rpc<GetAccountInfoApi>, lease: Address, pr
   if (value === null) throw new LeaseNotFound(`no account at ${lease}`);
   if (value.owner !== program) throw new LeaseNotFound(`${lease} is not a ${program} account`);
   return decodeLease(new Uint8Array(getBase64Encoder().encode(value.data[0])));
-}
-
-export function decodeLease(data: Uint8Array): DecodedLease {
-  if (data.length !== LEASE_ACCOUNT_SIZE) {
-    throw new LeaseDecodeError(
-      `expected a ${LEASE_ACCOUNT_SIZE}-byte lease account, got ${data.length} bytes. ` +
-        "If the Lease struct changed, backend/src/lease.ts has to change with it.",
-    );
-  }
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  const decodeAddress = getAddressDecoder();
-  const address = (offset: number): Address => decodeAddress.decode(data.subarray(offset, offset + 32));
-  const status = LEASE_STATUS[data[AT.status]!];
-  if (status === undefined) throw new LeaseDecodeError(`unknown lease status byte ${data[AT.status]}`);
-  return {
-    landlord: address(AT.landlord),
-    tenant: address(AT.tenant),
-    mint: address(AT.mint),
-    leaseId: view.getBigUint64(AT.leaseId, true),
-    rentAmount: view.getBigUint64(AT.rentAmount, true),
-    depositAmount: view.getBigUint64(AT.depositAmount, true),
-    startTs: view.getBigInt64(AT.startTs, true),
-    termPeriods: view.getUint16(AT.termPeriods, true),
-    paidCount: view.getUint16(AT.paidCount, true),
-    status,
-  };
 }

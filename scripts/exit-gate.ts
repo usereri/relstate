@@ -466,6 +466,10 @@ async function main() {
     if (process.env.GATE_DUMP) {
       const label = (a: string) => (a === treasury.address ? "TREASURY" : a === tenant.address ? "TENANT" : a === tenantToken ? "SRC" : a === landlordToken ? "DST" : a.slice(0, 4));
       for (const ix of inspected.instructions) {
+        if (ix.programAddress.startsWith("1111111") && ix.data.length === 52) {
+          const v = new DataView(ix.data.buffer, ix.data.byteOffset, ix.data.byteLength);
+          info(`  createAccount lamports=${v.getBigUint64(4, true)} space=${v.getBigUint64(12, true)}`);
+        }
         info(`  ix${ix.index} ${ix.programAddress.slice(0, 8)} data[0..4]=${[...ix.data.slice(0, 4)].join(",")} len=${ix.data.length} accts=${ix.accounts.map((a) => label(a.address)).join(" ")}`);
       }
     }

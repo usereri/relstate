@@ -41,10 +41,18 @@
 // one transaction), so a client can have the treasury fund a ZK-owned context and then, in their own
 // transaction outside any route, verify a proof into it naming THEMSELVES as authority and close it
 // to themselves. Requiring the treasury as authority closes the other route to the same end (a
-// verify inside a cosigned transaction); it cannot close this one without a transaction big enough
-// to create and verify in one go. The loss per cosigned transaction is capped by maxContextLamports
-// x maxCreateAccounts (0.01 SOL by default), per wallet per day and globally per day by the
-// limiter. Tighten those, not this filter, to tighten the bound.
+// verify inside a cosigned transaction); nothing in a filter can close this one.
+//
+// What the filter does is make it as small as the plan allows: one createAccount per transaction, a
+// createAccount with no proof beside it must be exactly the range context at exactly its rent
+// (2_159_000 lamports on devnet today, about 0.0022 SOL), and every other context must be verified
+// in the same transaction with the treasury as authority. So the loss per cosigned transaction is
+// that one rent, and the limiter caps how many such transactions a wallet (30M lamports, about 13)
+// and the whole backend (100M, about 46) may have per day: roughly 0.03 SOL per wallet per day and
+// 0.1 SOL globally per day. Per-wallet caps only mean something if a wallet costs something to make,
+// which is what real identity (KYC) is for; with mock auth one attacker can rotate wallets to the
+// global cap. The fix is post-demo: a treasury-owned pool of pre-created contexts, so no separate
+// create is ever needed.
 import { createHash } from "node:crypto";
 import { getAddressDecoder, type Address } from "@solana/kit";
 import { RELSTATE_PROGRAM, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, ZK_ELGAMAL_PROOF_PROGRAM } from "./contracts.ts";
@@ -65,6 +73,14 @@ const ZK_CLOSE = 0;
 const ZK_MAX_VERIFY_TAG = 12;
 const MAX_TRANSFER_DATA = 512;
 
+/**
+ * The range-proof context state: `ProofContextState` header (authority 32 + proof type 1) plus the
+ * batched u128 range-proof context (264). Measured from a real plan on devnet (scripts/exit-gate.ts
+ * --probe, 2026-10-10: space 297, rent 2_159_000), where it is the one context created in a
+ * transaction of its own, because the proof that fills it is too large to share one with it.
+ */
+export const RANGE_PROOF_CONTEXT_SPACE = 297n;
+
 export type RentPaymentRules = {
   treasury: string;
   /** The session wallet: the tenant, who signs the transfer and `pay_rent`. */
@@ -75,6 +91,13 @@ export type RentPaymentRules = {
   maxContextLamports: bigint;
   maxContextSpace: bigint;
   maxCreateAccounts: number;
+  /**
+   * What a createAccount that is NOT verified in the same transaction must fund: exactly the range
+   * context's rent-exempt minimum at this moment (the caller reads it from the cluster; rent is not
+   * a constant). Anything else created alone is refused, so the one shape the plan forces on us is
+   * also the only one a client can use to leave an uninitialised account behind.
+   */
+  rangeContextLamports: bigint;
 };
 
 const deny = (index: number, why: string, code = "instruction-not-allowed"): never => {
@@ -114,6 +137,21 @@ export function assertRentPaymentShape(tx: InspectedTransaction, rules: RentPaym
         if (lamports > rules.maxContextLamports) deny(ix.index, `createAccount funds ${lamports} lamports, cap is ${rules.maxContextLamports}`, "context-too-expensive");
         if (space === 0n || space > rules.maxContextSpace) deny(ix.index, `createAccount allocates ${space} bytes, allowed 1..${rules.maxContextSpace}`, "context-too-large");
         if (++creates > rules.maxCreateAccounts) deny(ix.index, `more than ${rules.maxCreateAccounts} createAccount instructions`, "too-many-accounts");
+        // Either the SAME transaction verifies a proof into the new account, which (because the
+        // verify must name the treasury as its authority, below) leaves nothing a client can later
+        // claim; or this is the range-proof context in a transaction of its own, and then it must be
+        // exactly that and nothing bigger or cheaper. See the RESIDUAL note in the header.
+        const created = at(1);
+        const initialisedHere = tx.instructions.some(
+          (other) => other.index > ix.index && other.programAddress === ZK_ELGAMAL_PROOF_PROGRAM && other.data[0] !== ZK_CLOSE && other.accounts[0]?.address === created,
+        );
+        if (!initialisedHere && (space !== RANGE_PROOF_CONTEXT_SPACE || lamports !== rules.rangeContextLamports)) {
+          deny(
+            ix.index,
+            `a context created without a proof in the same transaction must be exactly the range-proof context (${RANGE_PROOF_CONTEXT_SPACE} bytes, ${rules.rangeContextLamports} lamports), not ${space} bytes and ${lamports} lamports`,
+            "unverified-context",
+          );
+        }
         break;
       }
 

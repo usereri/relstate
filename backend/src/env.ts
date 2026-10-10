@@ -189,16 +189,22 @@ export const env = {
    * them, so these bound the float and the grief, not the cost.
    */
   rentPayment: {
-    /** Per context-state account. A range-proof context is ~300 bytes, about 3M lamports. */
-    maxContextLamports: bigintOf("RENT_PAYMENT_MAX_CONTEXT_LAMPORTS", 5_000_000n),
-    maxContextSpace: bigintOf("RENT_PAYMENT_MAX_CONTEXT_SPACE", 512n),
-    maxCreateAccounts: num("RENT_PAYMENT_MAX_CREATE_ACCOUNTS", 2),
+    /**
+     * Per context-state account. The three a real plan creates fund 1_468_120 (161 B), 2_606_040
+     * (385 B) and 2_159_000 (297 B) lamports on devnet, so 3M is the largest legitimate one with a
+     * little headroom, not a round number.
+     */
+    maxContextLamports: bigintOf("RENT_PAYMENT_MAX_CONTEXT_LAMPORTS", 3_000_000n),
+    maxContextSpace: bigintOf("RENT_PAYMENT_MAX_CONTEXT_SPACE", 400n),
+    /** The plan creates one per transaction. */
+    maxCreateAccounts: num("RENT_PAYMENT_MAX_CREATE_ACCOUNTS", 1),
     /** Most the treasury may be down on ONE transaction, by simulation. */
-    maxSpendLamports: bigintOf("RENT_PAYMENT_MAX_SPEND_LAMPORTS", 12_000_000n),
+    maxSpendLamports: bigintOf("RENT_PAYMENT_MAX_SPEND_LAMPORTS", 4_000_000n),
     maxPerWalletPerHour: num("RENT_PAYMENT_MAX_PER_WALLET_PER_HOUR", 30),
     maxGlobalPerHour: num("RENT_PAYMENT_MAX_GLOBAL_PER_HOUR", 300),
-    maxLamportsPerWalletPerDay: bigintOf("RENT_PAYMENT_MAX_LAMPORTS_PER_WALLET_PER_DAY", 60_000_000n),
-    maxLamportsGlobalPerDay: bigintOf("RENT_PAYMENT_MAX_LAMPORTS_GLOBAL_PER_DAY", 300_000_000n),
+    /** A legitimate payment books about 6.3M (its three creates); this allows about four a day. */
+    maxLamportsPerWalletPerDay: bigintOf("RENT_PAYMENT_MAX_LAMPORTS_PER_WALLET_PER_DAY", 30_000_000n),
+    maxLamportsGlobalPerDay: bigintOf("RENT_PAYMENT_MAX_LAMPORTS_GLOBAL_PER_DAY", 100_000_000n),
   },
 
   /**

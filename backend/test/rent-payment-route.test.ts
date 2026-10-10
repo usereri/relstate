@@ -10,7 +10,7 @@ import { RejectedTransaction, inspectTransaction } from "../src/txinspect.ts";
 import { createTreasury } from "../src/treasury.ts";
 import type { TreasuryRpc } from "../src/treasury.ts";
 import type { Services } from "../src/services.ts";
-import { TOKEN22, WS, acct, build, cast, ix, plan, tx5, type Cast } from "./rentfixtures.ts";
+import { REAL_CONTEXTS, TOKEN22, WS, acct, build, cast, ix, plan, tx5, type Cast } from "./rentfixtures.ts";
 import { corruptSignature, ixSignedBy } from "./txfixtures.ts";
 
 const { createApp } = await import("../src/server.ts");
@@ -27,6 +27,8 @@ async function fixture(options: { limiter?: RateLimiter; mode?: "mock" | "live" 
   const state = { balance: 10n ** 10n, balanceAfterSim: null as bigint | null, simPre: null as bigint | null, spent: 2_500_000n, simError: null as unknown, failSends: 0, sent: [] as string[] };
   let simulated = false;
   const rpc = {
+    // The range context's rent-exempt minimum, as the cluster reports it.
+    getMinimumBalanceForRentExemption: () => ({ send: async () => REAL_CONTEXTS.range.lamports }),
     getBalance: () => ({
       send: async () => {
         // After the simulation has run, a test can make the next read see a different balance.

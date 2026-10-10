@@ -53,7 +53,8 @@ import {
 import { env } from "./env.ts";
 import type { ConfidentialKeyPair } from "./keys.ts";
 import { ZK_ELGAMAL_PROOF_PROGRAM } from "./contracts.ts";
-import { RENT_PAYMENT_ALLOWLIST, assertRentPaymentShape } from "./rentshape.ts";
+import { accountLayout, type Layout } from "./layout.ts";
+import { RANGE_PROOF_CONTEXT_SPACE, RENT_PAYMENT_ALLOWLIST, assertRentPaymentShape } from "./rentshape.ts";
 import { getTransferSolInstruction } from "@solana-program/system";
 import { createHash } from "node:crypto";
 import {
@@ -175,6 +176,8 @@ export type TreasuryDeps = {
   /** Same, for the rent-payment and rent-dust routes. Tests inject their own. */
   rentPaymentLimiter?: RateLimiter;
   rentDustLimiter?: RateLimiter;
+  /** Test seam for the account layouts rent dust sizes itself from; defaults to the program's IDL. */
+  accountLayout?: (account: string) => Layout;
   log?: (...args: unknown[]) => void;
 };
 
@@ -578,6 +581,19 @@ export function createTreasury(deps: TreasuryDeps) {
   const REPLAY_WINDOW_MS = 5 * 60_000;
 
   /**
+   * The rent-exempt minimum of the range-proof context, from the cluster. Not a constant: rent is a
+   * network parameter, and this is the one figure a createAccount-without-a-proof is held to.
+   * Cached briefly; a failed read is not cached.
+   */
+  let rangeRent: { at: number; lamports: bigint } | undefined;
+  async function rangeContextRent(): Promise<bigint> {
+    if (rangeRent !== undefined && Date.now() - rangeRent.at < 5 * 60_000) return rangeRent.lamports;
+    const lamports = BigInt(await deps.rpc.getMinimumBalanceForRentExemption(RANGE_PROOF_CONTEXT_SPACE).send());
+    rangeRent = { at: Date.now(), lamports };
+    return lamports;
+  }
+
+  /**
    * Co-signs one transaction of a wallet's confidential rent payment, paying the fee AND the rent
    * of the proof context-state accounts from the treasury.
    *
@@ -608,6 +624,7 @@ export function createTreasury(deps: TreasuryDeps) {
       maxContextLamports: env.rentPayment.maxContextLamports,
       maxContextSpace: env.rentPayment.maxContextSpace,
       maxCreateAccounts: env.rentPayment.maxCreateAccounts,
+      rangeContextLamports: await rangeContextRent(),
     });
     const worstCaseFee = assertComputeBudgetWithinPolicy(tx, {
       allowlist: RENT_PAYMENT_ALLOWLIST,
@@ -647,9 +664,8 @@ export function createTreasury(deps: TreasuryDeps) {
 
   // --- rent dust --------------------------------------------------------------------------------
 
-  /** `8 + INIT_SPACE` of `Application` (3 pubkeys) and `Profile` (programs/relstate/src/state.rs). */
-  const APPLICATION_ACCOUNT_SIZE = 104;
-  const PROFILE_ACCOUNT_SIZE = 88;
+  // Sizes come from the program's IDL (layout.ts), never from constants here: Profile and Lease are
+  // changing, and a hard-coded size would fund the wrong rent without any error.
   const dustGranted = new Set<string>();
   const dustLimiter = deps.rentDustLimiter ?? createRateLimiter({
     maxPerWalletPerHour: 1,
@@ -661,8 +677,8 @@ export function createTreasury(deps: TreasuryDeps) {
   /** Just enough for a tenant's Application and Profile accounts: nothing for fees, which are the sponsor's. */
   async function rentDustAmount(): Promise<bigint> {
     const [application, profile] = await Promise.all([
-      deps.rpc.getMinimumBalanceForRentExemption(BigInt(APPLICATION_ACCOUNT_SIZE)).send(),
-      deps.rpc.getMinimumBalanceForRentExemption(BigInt(PROFILE_ACCOUNT_SIZE)).send(),
+      deps.rpc.getMinimumBalanceForRentExemption(BigInt((deps.accountLayout ?? accountLayout)("Application").size)).send(),
+      deps.rpc.getMinimumBalanceForRentExemption(BigInt((deps.accountLayout ?? accountLayout)("Profile").size)).send(),
     ]);
     return BigInt(application) + BigInt(profile);
   }

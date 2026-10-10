@@ -2,6 +2,7 @@ import "./noenv.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { generateKeyPairSigner } from "@solana/kit";
+import { accountLayout, type Layout } from "../src/layout.ts";
 import { createRateLimiter, type RateLimiter } from "../src/limits.ts";
 import { createTreasury, type TreasuryRpc } from "../src/treasury.ts";
 import { RejectedTransaction } from "../src/txinspect.ts";
@@ -19,7 +20,7 @@ const limiter = (perWallet = 100, global = 100) =>
 
 type Planned = { kind: string; plans?: Array<{ instruction: { programAddress: string; data: Uint8Array; accounts: Array<{ address: string }> } }> };
 
-async function fixture(options: { limiter?: RateLimiter; balances?: Record<string, bigint>; failRuns?: number; slowBalance?: boolean } = {}) {
+async function fixture(options: { limiter?: RateLimiter; balances?: Record<string, bigint>; failRuns?: number; slowBalance?: boolean; layout?: (account: string) => Layout } = {}) {
   const treasurySigner = await generateKeyPairSigner();
   const wallet = (await generateKeyPairSigner()).address;
   const feePayer = (await generateKeyPairSigner()).address;
@@ -28,7 +29,7 @@ async function fixture(options: { limiter?: RateLimiter; balances?: Record<strin
     getMinimumBalanceForRentExemption: (size: bigint) => ({
       send: async () => {
         state.rentQueries.push(size);
-        return size === 104n ? APPLICATION : size === 88n ? PROFILE : 999n;
+        return size === 104n ? APPLICATION : size === 88n ? PROFILE : size === 120n ? PROFILE + 400_000n : 999n;
       },
     }),
     // A real RPC yields to the event loop here, which is what makes two requests interleave.
@@ -54,6 +55,7 @@ async function fixture(options: { limiter?: RateLimiter; balances?: Record<strin
     decimals: 6,
     mode: "live",
     rentDustLimiter: options.limiter ?? limiter(),
+    ...(options.layout ? { accountLayout: options.layout } : {}),
   });
   const services = { treasury: async () => treasury, sponsor: async () => ({ feePayer }) } as unknown as Services;
   const app = createApp(services);
@@ -71,6 +73,16 @@ describe("rentDustAmount", () => {
     const f = await fixture();
     assert.equal(await f.treasury.rentDustAmount(), AMOUNT);
     assert.deepEqual([...f.state.rentQueries].sort((a, b) => (a < b ? -1 : 1)), [88n, 104n]);
+  });
+});
+
+describe("rentDustAmount follows the program's account layout", () => {
+  // The program's Profile is about to change (dispute fields) before the first deploy. The size must
+  // come from the layout, so that change reaches the rent amount without anyone editing this module.
+  it("asks for the rent of whatever size the layout says, not a constant", async () => {
+    const f = await fixture({ layout: (account) => (account === "Profile" ? { ...accountLayout("Profile"), size: 120 } : accountLayout(account)) });
+    assert.equal(await f.treasury.rentDustAmount(), APPLICATION + PROFILE + 400_000n);
+    assert.deepEqual([...f.state.rentQueries].sort((a, b) => (a < b ? -1 : 1)), [104n, 120n]);
   });
 });
 

@@ -37,6 +37,17 @@ export const ix = (programAddress: Address, data: number[] | Uint8Array, account
 
 export const u64 = (n: bigint) => [...new Uint8Array(new BigUint64Array([n]).buffer)];
 
+/**
+ * The three context states a real rent payment creates, as measured on devnet by
+ * `GATE_DUMP=1 node scripts/exit-gate.ts --probe` (2026-10-10). Pinning the filter to these is the
+ * point: tests that invent sizes prove nothing about the plan we actually have to co-sign.
+ */
+export const REAL_CONTEXTS = {
+  equality: { space: 161n, lamports: 1_468_120n, verifyTag: 3 },
+  validity: { space: 385n, lamports: 2_606_040n, verifyTag: 12 },
+  range: { space: 297n, lamports: 2_159_000n, verifyTag: 7 },
+} as const;
+
 export type Cast = Awaited<ReturnType<typeof cast>>;
 export async function cast() {
   const [treasury, wallet, other, ctxA, ctxB, ctxC] = await Promise.all(Array.from({ length: 6 }, () => generateKeyPairSigner()));
@@ -46,9 +57,10 @@ export async function cast() {
     wallet: wallet!.address,
     mint: mint!,
     walletToken: walletToken!,
-    maxContextLamports: 5_000_000n,
-    maxContextSpace: 512n,
-    maxCreateAccounts: 2,
+    maxContextLamports: 3_000_000n,
+    maxContextSpace: 400n,
+    maxCreateAccounts: 1,
+    rangeContextLamports: REAL_CONTEXTS.range.lamports,
   };
   return { treasury: treasury!, wallet: wallet!, other: other!, ctxA: ctxA!, ctxB: ctxB!, ctxC: ctxC!, mint: mint!, walletToken: walletToken!, destToken: destToken!, lease: lease!, profile: profile!, rules };
 }
@@ -67,7 +79,7 @@ export const createAccountData = (lamports: bigint, space: bigint, owner: Addres
 /** The real plan's instructions. Each builder takes the cast so a test can swap one account out. */
 export const plan = (c: Cast) => ({
   createContext: (ctx: KeyPairSigner = c.ctxA, overrides: { lamports?: bigint; space?: bigint; owner?: Address } = {}) =>
-    ix(SYSTEM, createAccountData(overrides.lamports ?? 2_500_000n, overrides.space ?? 225n, overrides.owner ?? ZK), [acct(c.treasury.address, WS), acct(ctx, WS)]),
+    ix(SYSTEM, createAccountData(overrides.lamports ?? REAL_CONTEXTS.equality.lamports, overrides.space ?? REAL_CONTEXTS.equality.space, overrides.owner ?? ZK), [acct(c.treasury.address, WS), acct(ctx, WS)]),
   verify: (ctx: Who = c.ctxA, tag = 3) => ix(ZK, [tag, 1, 2, 3], [acct(ctx, W), acct(c.treasury.address, R)]),
   close: (ctx: Who = c.ctxA) => ix(ZK, [0], [acct(ctx, W), acct(c.treasury.address, W), acct(c.treasury.address, RS)]),
   transfer: (accounts?: Array<ReturnType<typeof acct>>, data: number[] = [27, 7, ...new Array(100).fill(1)]) =>
