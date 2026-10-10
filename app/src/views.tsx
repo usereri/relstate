@@ -91,8 +91,8 @@ export function Listings({
                     <p className="text-xs text-muted-foreground">This is your own listing.</p>
                   ) : lease ? (
                     <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                      <Badge variant={lease.status === "active" ? "success" : "warning"}>{lease.status === "active" ? "Lease active" : "Lease proposed"}</Badge>
-                      {lease.status === "active" ? "with this landlord" : "accept it in My lease"}
+                      <Badge variant={lease.status === "active" ? "success" : "warning"}>{lease.status === "active" ? "Lease active" : lease.status === "disputed" ? "Deduction proposed" : "Lease proposed"}</Badge>
+                      {lease.status === "proposed" ? "accept it in My lease" : "with this landlord"}
                     </p>
                   ) : applied ? (
                     <Button variant="outline" disabled={!!h.busy} onClick={() => act(applied.address, () => h.closeApplication(applied))}>
