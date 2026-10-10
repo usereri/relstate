@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import * as fiat from "@/lib/fiat";
+import { SecurePrivateBalance } from "@/screens/Pay";
 import { USDC } from "@/lib/config";
 
 const PRESETS_PLN = ["400", "1200", "2500"];
@@ -202,7 +203,11 @@ export function TopUp({ wallet, onCredited }: { wallet: string | null; onCredite
           {phase.at === "waiting" ? (
             <Waiting amountPln={phase.amountPln} amountUsdc={phase.amountUsdc} />
           ) : phase.at === "done" ? (
-            <Credited credit={phase.credit} />
+            <>
+              <Credited credit={phase.credit} />
+              {/* workstream F: finishes the credit by moving it to the private balance */}
+              <SecurePrivateBalance credit={phase.credit} />
+            </>
           ) : (
             <Button onClick={start} disabled={!valid || !config || phase.at === "starting"} size="lg">
               {phase.at === "starting" ? <Loader2 className="animate-spin" /> : <CreditCard />}
@@ -239,8 +244,8 @@ const Credited = ({ credit }: { credit: fiat.OnrampCredit }) => (
     {credit.publicHoldback !== "0" && <Row label="Kept public for the deposit" value={`${fiat.usdcFromBase(credit.publicHoldback)} rUSDC`} />}
     {credit.confidentialPending && BigInt(credit.confidentialAmount) > 0n && (
       <p className="mt-1 text-sm text-muted-foreground">
-        {fiat.usdcFromBase(credit.confidentialAmount)} rUSDC is ready to move to your private balance; that step is signed by your own wallet, so it
-        happens the first time you pay rent.
+        {fiat.usdcFromBase(credit.confidentialAmount)} rUSDC is moving to your private balance. That step is signed by your own wallet — nobody here
+        holds your key — so it happens in this browser, now.
       </p>
     )}
     {credit.signatures[0] && (
