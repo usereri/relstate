@@ -47,13 +47,18 @@ http://localhost:5173/?role=tenant&city=Krak%C3%B3w&near=50.0647%2C19.9229&radiu
 
 ### Notes for whoever implements the filter (workstream H)
 
-- **`near`/`radius`/`label` are proposed, not yet agreed.** Only `role` is read by the app today.
-  The shape above is what the site emits; if the filter wants something else (a venue slug, a
-  bounding box, metres instead of kilometres), change `AppParams` in `site/src/lib/links.ts` and
-  this table together.
-- Listings need `lat`/`lng` before a radius filter can do anything. Until they have it, treating
-  `city` as the filter and `label` as a heading ("Near AGH University of Krakow") already makes the
-  button do something useful.
+- **The shape above is agreed and implemented.** The app reads all five parameters; `docs/events.md`
+  is the other half of this contract and says what it does with each one. Changing the shape means
+  changing `AppParams` in `site/src/lib/links.ts`, this table and `app/src/events/params.ts`
+  together.
+- The app reads them from **both** `location.search` (what this site emits) and the hash query
+  (`#/app?city=…`, which the app writes back as the user picks a venue in its own events strip).
+- Listings still have no `lat`/`lng` on chain: the app places them itself from
+  `app/public/listings-geo.json`, keyed by title and city. A listing missing from that file shows
+  without a distance. Nothing on the site depends on this.
+- Every value is treated as hostile on the far side — numbers shape-checked, the radius clamped to
+  0.25–50 km (default 3), the label reduced to a short run of printable text. A link that fails
+  validation degrades to a narrower filter or none, never an error.
 - Unknown parameters must stay harmless: the site may emit a param the app does not read yet.
 
 Screenshots (light/dark, desktop 1440 and phone 390): `docs/screenshots/site/`.

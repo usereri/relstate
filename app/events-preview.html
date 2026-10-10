@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <title>Relstate · nearby-events preview</title>
+  </head>
+  <body>
+    <!--
+      A developer page, not a screen. It renders the real Apartments browse view -- the events
+      strip, the "showing homes near …" banner and the per-listing walking distances -- against
+      invented listings, so the filter can be seen without a validator or a wallet:
+
+          npm run app   →   http://localhost:5173/events-preview.html
+
+      Add the site's hand-off to arrive pre-filtered:
+
+          ?city=Krak%C3%B3w&near=50.0647,19.9229&radius=3&label=AGH+University+of+Krakow
+
+      It is deliberately not an entry in vite.config.ts, so it never ships in the app bundle.
+      See app/src/events/preview.tsx.
+    -->
+    <div id="root"></div>
+    <script type="module" src="/src/events/preview.tsx"></script>
+  </body>
+</html>
