@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Listing } from "@/components/Terms";
 import { ProfileCard } from "@/components/ProfileCard";
 import { Handlers, Waiting, statusBadge } from "@/screens";
+import { useKycStatus } from "@/screens/Kyc";
 import * as chain from "@/lib/chain";
 import { LeaseView, ListingView, ProfileView, Role, typicalRent } from "@/lib/chain";
 import { MAX_TEXT, USDC } from "@/lib/config";
@@ -235,6 +236,7 @@ function ListingForm({ h }: { h: Handlers }) {
 
 export function MyProfile({ role, me }: { role: Role; me: string }) {
   const profile = useChain(() => chain.loadProfile(me), [me]);
+  const kycStatus = useKycStatus(me);
   const leases = useChain(() => chain.loadLeases(me, role), [me, role]);
   const other: Role = role === "landlord" ? "tenant" : "landlord";
   const records = useRecords(unique((leases ?? []).map((l) => l[other])));
@@ -277,7 +279,7 @@ export function MyProfile({ role, me }: { role: Role; me: string }) {
   return (
     <div className="rise grid items-start gap-8 lg:grid-cols-[400px_minmax(0,1fr)]">
       <div className="flex flex-col gap-3 lg:sticky lg:top-6">
-        <ProfileCard role={role} address={me} profile={profile ?? null} countries={countries} />
+        <ProfileCard role={role} address={me} profile={profile ?? null} countries={countries} verified={kycStatus?.verified} />
       </div>
       <div className="flex flex-col gap-8">
         {rows(role === "landlord" ? "Current tenants" : "Current landlord", current, role === "landlord" ? "No tenant is in a lease with you right now." : "You have no lease in progress.")}

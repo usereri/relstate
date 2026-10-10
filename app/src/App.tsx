@@ -18,7 +18,9 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { LocalWalletProvider, WalletButton, useLocalWallet, useMe } from "@/components/WalletButton";
 import { Handlers, LeaseTab, LogEntry, Waiting } from "@/screens";
+import { Kyc, VerifyFirst } from "@/screens/Kyc";
 import { Payout, TopUp } from "@/screens/TopUp";
+import { isKycRequired } from "@/lib/kyc";
 import { Listings, MyProfile } from "@/views";
 
 const ROLE_KEY = "relstate.role";
@@ -114,18 +116,20 @@ export default function App() {
   );
 }
 
-type Tab = "apartments" | "listings" | "lease" | "wallet" | "profile";
+type Tab = "apartments" | "listings" | "lease" | "wallet" | "identity" | "profile";
 const TABS: Record<Role, [Tab, string][]> = {
   tenant: [
     ["apartments", "Apartments"],
     ["lease", "My lease"],
     ["wallet", "Add funds"],
+    ["identity", "Verify"],
     ["profile", "My profile"],
   ],
   landlord: [
     ["listings", "My listings"],
     ["lease", "Leases"],
     ["wallet", "Payouts"],
+    ["identity", "Verify"],
     ["profile", "My profile"],
   ],
 };
@@ -186,6 +190,8 @@ function Shell({
   const [tab, setTab] = useState<Tab>(() => tabFromHash(role));
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // apply / propose_lease refused for want of a verified identity: a prompt, not an error
+  const [needsKyc, setNeedsKyc] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [now, setNow] = useState<number>();
 
@@ -217,13 +223,15 @@ function Shell({
     }
     setBusy(label);
     setError(null);
+    setNeedsKyc(false);
     try {
       const sig = await fn(me);
       if (sig) setLog((l) => [{ label, sig }, ...l]);
       bump();
       return true;
     } catch (e) {
-      setError(chain.errorMessage(e));
+      if (isKycRequired(e)) setNeedsKyc(true);
+      else setError(chain.errorMessage(e));
       return false;
     } finally {
       setBusy(null);
@@ -322,6 +330,8 @@ function Shell({
           </p>
         )}
 
+        {needsKyc && <VerifyFirst onVerify={() => (setNeedsKyc(false), setTab("identity"))} onDismiss={() => setNeedsKyc(false)} />}
+
         {readError && !error && (
           <p role="alert" className="rounded-xl border border-destructive/30 bg-danger-soft p-3 text-sm text-destructive">
             Could not read from the network: {readError}
@@ -366,6 +376,7 @@ function Shell({
           ))}
         {tab === "wallet" &&
           (role === "tenant" ? <TopUp wallet={address} onCredited={bump} /> : <Payout wallet={address} balanceBase={balances?.usdc} />)}
+        {tab === "identity" && <Kyc wallet={address} onVerified={bump} />}
         {tab === "profile" && (address ? <MyProfile role={role} me={address} /> : connectFirst)}
       </div>
     </div>
@@ -378,6 +389,7 @@ const GREETING: Record<Tab, string> = {
   listings: "Your properties",
   lease: "Leases",
   wallet: "Money in and out",
+  identity: "Verify your identity",
   profile: "Your rental record",
 };
 const SUBTITLE: Record<Role, Partial<Record<Tab, string>>> = {
@@ -385,12 +397,14 @@ const SUBTITLE: Record<Role, Partial<Record<Tab, string>>> = {
     apartments: "Every landlord's record is verified on-chain. Apply in one click.",
     lease: "Accept proposals, pay rent and get your deposit back.",
     wallet: "Pay in złoty. Rent settles in rUSDC, and the amount stays private.",
+    identity: "One check, reusable with every landlord. They see a badge, not your documents.",
     profile: "Written only by the protocol. Take it to any city.",
   },
   landlord: {
     listings: "Publish apartments and review applicants with a verified history.",
     lease: "Propose leases, track rent and release deposits.",
     wallet: "Cash rent out to your bank. Simulated for the demo.",
+    identity: "A verified landlord is trusted faster. Required before you can propose a lease.",
     profile: "Tenants see this before they apply. Keep it clean.",
   },
 };

@@ -129,9 +129,9 @@ export function sessionToken(wallet: string, { refresh = false } = {}): Promise<
 /** Clears the cached session, e.g. on sign-out. */
 export const forgetSession = (wallet?: string) => (wallet === undefined ? sessions.clear() : sessions.delete(wallet));
 
-type Req = { path: string; method?: "GET" | "POST"; body?: unknown; what: string };
+export type Req = { path: string; method?: "GET" | "POST"; body?: unknown; what: string };
 
-async function withSession<T>(wallet: string, { path, method = "GET", body, what }: Req): Promise<T> {
+export async function withSession<T>(wallet: string, { path, method = "GET", body, what }: Req): Promise<T> {
   if (!API) throw noBackend();
   const send = async (token: string) =>
     fetch(`${API}${path}`, {

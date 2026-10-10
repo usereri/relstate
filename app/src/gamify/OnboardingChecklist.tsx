@@ -5,6 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import * as chain from "@/lib/chain";
 import type { ProfileView } from "@/lib/chain";
+import { useKycStatus } from "@/screens/Kyc";
 import { useChain } from "@/lib/useChain";
 import { cn } from "@/lib/utils";
 import { Step, checklist, onboarded, openSteps, rememberOnboarded, wasOnboarded } from "./checklist";
@@ -37,12 +38,17 @@ function Steps({ address, balance, profile, onFinished }: Props & { onFinished: 
   const applications = useChain(() => (address ? chain.loadApplications({ tenant: address }) : Promise.resolve([])), [address]);
   const leases = useChain(() => (address ? chain.loadLeases(address, "tenant") : Promise.resolve([])), [address]);
 
+  // identity: done once the chain says so, a step to do when the identity service answers, otherwise "soon"
+  const kycStatus = useKycStatus(address);
+  const identity = kycStatus === undefined ? undefined : kycStatus.verified ? "done" : kycStatus.unavailable ? undefined : "todo";
+
   const waiting = !!address && (profile === undefined || applications === undefined || leases === undefined);
   const steps = checklist({
     signedIn: !!address,
     balance,
     applied: (applications?.length ?? 0) > 0 || (leases?.length ?? 0) > 0,
     rentPaid: (profile?.paidOnTime ?? 0) + (profile?.paidLate ?? 0) > 0,
+    identity,
   });
   const done = onboarded(steps);
 
