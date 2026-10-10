@@ -7,13 +7,17 @@ Settled decisions for the demo. Change only by agreement.
 | Data | Visibility | Why |
 |---|---|---|
 | Amount of every **rent payment** (rUSDC confidential transfer) | **Hidden** (encrypted) | the pitch: "what you pay each month is private" |
-| **Deposit** funding, release, claim, default payouts | **Public** | the vault is a PDA-owned token account; a PDA cannot hold ElGamal keys, so its balance cannot be confidential. A backend-held confidential escrow is post-demo |
+| **Deposit** funding, release, claim, default payouts, and every **deduction** (proposed or settled) | **Public** | the vault is a PDA-owned token account; a PDA cannot hold ElGamal keys, so its balance cannot be confidential. A backend-held confidential escrow is post-demo. It is also deliberate: the landlord's public "returns X% of deposits" reputation is computed from these amounts, and cannot be both hidden and published |
 | Listing price, `Lease.rent_amount`, `deposit_amount`, term | **Public** | the program computes discounts and default arithmetic on them; moving to commitments is out of scope |
 | That a payment happened, who paid whom, when | Public | reputation counters need it |
 | Contract text | Never on chain; only SHA-256 (`lease_hash`) | already true |
 | KYC personal data | Never on chain or in our DB; stays with Sumsub. Chain holds `subject_hash` + level | |
 
 Pitch wording: "what you pay each month is between you and your landlord", NOT "lease terms are secret".
+
+## Deposit amounts and deductions are public, rent payments are confidential
+
+Stated plainly so nothing implies otherwise: the **deposit amount**, the **deduction** a landlord proposes, and the **settled split** are public on chain (`Lease.deposit_amount`, `Lease.proposed_deduction`, the vault transfers, `LeaseClosed`). The landlord return-rate reputation (`Profile.deposit_total`, `deducted_total`, `last_deposit_return_bps`, `deposit_events`) depends on that, because transparency is what deters an unfair deduction. The only confidential amount is the recurring **rent payment** on a confidential mint (`pay_rent`). Making the deposit vault confidential is a known limitation (B2), not a hidden property.
 
 ## Keys
 

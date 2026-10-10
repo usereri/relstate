@@ -308,6 +308,7 @@ mod tests {
     fn account_sizes_the_backend_rent_dust_depends_on() {
         assert_eq!(8 + Application::INIT_SPACE, 104);
         assert_eq!(8 + Profile::INIT_SPACE, 94);
+        assert_eq!(8 + Lease::INIT_SPACE, 218);
     }
 
     #[test]
