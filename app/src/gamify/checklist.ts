@@ -47,7 +47,7 @@ export function checklist(s: OnboardingState): Step[] {
       label: "Verify your identity",
       detail:
         s.identity === "done"
-          ? "Verified. Landlords see the badge, not your documents."
+          ? "Verified. Only a level and an expiry are recorded, never your documents."
           : s.identity === "todo"
             ? "One quick check, reusable with every landlord. Open the Verify tab."
             : "Coming soon: one check, reusable with every landlord.",

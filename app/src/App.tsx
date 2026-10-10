@@ -397,7 +397,7 @@ const SUBTITLE: Record<Role, Partial<Record<Tab, string>>> = {
     apartments: "Every landlord's record is verified on-chain. Apply in one click.",
     lease: "Accept proposals, pay rent and get your deposit back.",
     wallet: "Pay in złoty. Rent settles in rUSDC, and the amount stays private.",
-    identity: "One check, reusable with every landlord. They see a badge, not your documents.",
+    identity: "One check, reusable with every landlord. Only a level and an expiry go on chain, never your documents.",
     profile: "Written only by the protocol. Take it to any city.",
   },
   landlord: {

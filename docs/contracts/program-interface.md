@@ -186,6 +186,14 @@ The `RentPaid` event gained a field:
 RentPaid { lease: Pubkey, period: u16, on_time: bool, confidential: bool }
 ```
 
+### `fund_deposit` account list (KYC change)
+
+`fund_deposit` gained two accounts for the tenant identity gate (`require_kyc`, default off; see
+`docs/contracts/attestation.md`): `config` (PDA `[b"config"]`) and `attestation` (PDA
+`[b"attestation", tenant]`). Both are derived from accounts the caller already passes, so the Anchor
+client fills them in — the same as on `apply`. Hand-built callers must pass them. Failure when the
+gate is on and the tenant is unverified: `KycRequired`.
+
 ## 4. Setting up a fresh network
 
 Before any lease can be proposed, on localnet or devnet:

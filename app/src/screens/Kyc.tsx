@@ -116,7 +116,7 @@ export function Kyc({ wallet, onVerified }: { wallet: string | null; onVerified?
           </div>
           <CardTitle className="mt-2">Verify your identity</CardTitle>
           <CardDescription>
-            One check, reusable with every landlord. They see a Verified badge, never your documents.
+            One check, reusable with every landlord. It is recorded on chain as a level and an expiry, never your documents.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-5">
@@ -207,7 +207,7 @@ export function VerifyFirst({ onVerify, onDismiss }: { onVerify: () => void; onD
       <p className="flex items-center gap-2">
         <ShieldCheck className="size-4 shrink-0 text-primary" />
         <span>
-          <b>Verify your identity first.</b> This takes a minute, and landlords see only a badge.
+          <b>Verify your identity first.</b> This takes a minute, and only a level and an expiry go on chain.
         </span>
       </p>
       <span className="flex gap-2">
