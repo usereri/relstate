@@ -524,7 +524,15 @@ export function createTreasury(deps: TreasuryDeps) {
     // instructions themselves would take out of the treasury.
     const simulated = simulation.value.accounts?.[0];
     if (simulated == null) throw new RejectedTransaction("simulation did not return the treasury account state", "simulation-incomplete");
-    const spent = balanceBefore - simulated.lamports;
+    // `balanceBefore` was read in a different round trip from the simulation, so they may describe
+    // different bank states. On this route's own traffic the treasury is CREDITED in between (every
+    // closing transaction returns rent), which made `spent` too small, or negative, and booked
+    // almost nothing against the daily cap. The simulation reports only the post-state, so the
+    // pre-state is bracketed by a read on each side and the larger of the two is used: that can only
+    // over-count a debit, never under-count it.
+    const balanceAfter = (await deps.rpc.getBalance(deps.treasury.address, { commitment: "confirmed" }).send()).value;
+    const reference = balanceBefore > balanceAfter ? balanceBefore : balanceAfter;
+    const spent = reference - simulated.lamports;
     if (spent > bounds.maxSpend) {
       throw new RejectedTransaction(`transaction would debit the treasury ${spent} lamports, cap is ${bounds.maxSpend}`, "rent-too-high");
     }
@@ -543,7 +551,11 @@ export function createTreasury(deps: TreasuryDeps) {
     if (deps.mode === "mock") {
       reservation.commit(booked);
       log(`treasury: co-signed ${bounds.label} ${signature} (not broadcast: mock mode)`);
-      return { signature, broadcast: false, rentLamports: spent.toString(), transactionBase64: wire };
+      // Deliberately NOT the signed wire. "Not broadcast" must mean "cannot land": a fully signed
+      // transaction in the response lets any client submit it themselves, which turns mock mode into
+      // a live path (and was the delivery mechanism for the context-authority theft in review F2).
+      void wire;
+      return { signature, broadcast: false, rentLamports: spent.toString() };
     }
     await deps.rpc.sendTransaction(wire, { encoding: "base64", skipPreflight: true, maxRetries: 3n }).send();
     // Committed only once the send succeeded, so a failed send leaves the caller's budget alone.

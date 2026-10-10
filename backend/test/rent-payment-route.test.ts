@@ -19,16 +19,28 @@ const { createSessionToken } = await import("../src/auth.ts");
 const code = (c: string) => (e: unknown) => e instanceof RejectedTransaction && e.code === c;
 const generous = () => createRateLimiter({ maxPerWalletPerHour: 100, maxGlobalPerHour: 100, maxLamportsPerWalletPerDay: 10n ** 12n, maxLamportsGlobalPerDay: 10n ** 12n });
 
-async function fixture(options: { limiter?: RateLimiter } = {}) {
+async function fixture(options: { limiter?: RateLimiter; mode?: "mock" | "live" } = {}) {
   const c0 = await cast();
   const mint = c0.mint;
   // The route derives the wallet's token account itself, so the cast has to agree with it.
   const c: Cast = { ...c0, walletToken: await associatedTokenAddress(c0.wallet.address, mint), rules: { ...c0.rules, walletToken: await associatedTokenAddress(c0.wallet.address, mint) } };
-  const state = { balance: 10n ** 10n, spent: 2_500_000n, simError: null as unknown, failSends: 0, sent: [] as string[] };
+  const state = { balance: 10n ** 10n, balanceAfterSim: null as bigint | null, simPre: null as bigint | null, spent: 2_500_000n, simError: null as unknown, failSends: 0, sent: [] as string[] };
+  let simulated = false;
   const rpc = {
-    getBalance: () => ({ send: async () => ({ context: { slot: 1n }, value: state.balance }) }),
+    getBalance: () => ({
+      send: async () => {
+        // After the simulation has run, a test can make the next read see a different balance.
+        const value = simulated && state.balanceAfterSim !== null ? state.balanceAfterSim : state.balance;
+        return { context: { slot: 1n }, value };
+      },
+    }),
     simulateTransaction: () => ({
-      send: async () => ({ context: { slot: 1n }, value: { err: state.simError, accounts: [{ lamports: state.balance - state.spent }] } }),
+      send: async () => {
+        simulated = true;
+        // `simPre` is the balance the simulation ran against, when it differs from the earlier read.
+        const pre = state.simPre ?? state.balance;
+        return { context: { slot: 1n }, value: { err: state.simError, accounts: [{ lamports: pre - state.spent }] } };
+      },
     }),
     sendTransaction: (wire: string) => ({
       send: async () => {
@@ -47,7 +59,7 @@ async function fixture(options: { limiter?: RateLimiter } = {}) {
     treasury: c.treasury,
     mint,
     decimals: 6,
-    mode: "live",
+    mode: options.mode ?? "live",
     rentPaymentLimiter: options.limiter ?? generous(),
   });
   const services = { treasury: async () => treasury, sponsor: async () => ({ feePayer: "fp" }) } as unknown as Services;
@@ -300,6 +312,68 @@ describe("POST /api/treasury/rent-payment", () => {
     assert.equal(res.status, 400);
     assert.equal(((await res.json()) as { code: string }).code, "treasury-in-token-instruction");
     assert.equal(f.state.sent.length, 0);
+  });
+
+  // Review F4. The balance is read in one round trip and the simulation runs in another. This
+  // route's own closing transactions CREDIT the treasury, so a credit landing in between made `spent`
+  // too small, or negative, and booked almost nothing against the wallet's daily lamport cap.
+  describe("spend accounting when the treasury balance moves during the simulation", () => {
+    const rentLimiter = () => createRateLimiter({ maxPerWalletPerHour: 100, maxGlobalPerHour: 100, maxLamportsPerWalletPerDay: 10n ** 12n, maxLamportsGlobalPerDay: 10n ** 12n });
+
+    it("books the real debit even though the earlier read was stale (credit in between)", async () => {
+      const limiter = rentLimiter();
+      const f = await fixture({ limiter });
+      // The first read sees 1.0M; by the time the simulation runs the treasury holds 5.0M (a refund
+      // landed) and the transaction debits 3.0M from that.
+      f.state.balance = 1_000_000n;
+      f.state.simPre = 5_000_000n;
+      f.state.balanceAfterSim = 5_000_000n;
+      f.state.spent = 3_000_000n;
+      await f.sponsor(valid(f));
+      assert.ok(limiter.snapshot(f.c.wallet.address).walletLamportsLastDay >= 3_000_000n, "a 3M debit was booked as less than 3M");
+    });
+
+    it("never books a negative amount for a transaction that only credits the treasury", async () => {
+      const limiter = rentLimiter();
+      const f = await fixture({ limiter });
+      f.state.spent = -4_000_000n; // the closing transaction: the treasury ends up richer
+      await f.sponsor(valid(f));
+      const booked = limiter.snapshot(f.c.wallet.address).walletLamportsLastDay;
+      assert.ok(booked >= 0n, `booked ${booked}`);
+      assert.ok(booked < 100_000n, "a pure credit should book only its fee");
+    });
+
+    it("refuses on the larger reading: a stale LOW read cannot hide an overspend", async () => {
+      const f = await fixture();
+      f.state.balance = 1_000_000n;
+      f.state.simPre = 50_000_000n;
+      f.state.balanceAfterSim = 50_000_000n;
+      f.state.spent = 20_000_000n; // above the 12M cap, invisible to the stale read
+      await assert.rejects(f.sponsor(valid(f)), code("rent-too-high"));
+    });
+  });
+
+  // Review F5. "Not broadcast" has to mean "cannot land". A fully signed wire in the response lets
+  // any client submit it themselves, so mock mode was not the dry run it reads as.
+  describe("mock mode", () => {
+    it("co-signs and reports broadcast false, without handing back a landable transaction", async () => {
+      const f = await fixture({ mode: "mock" });
+      const res = await f.post(f.c.wallet.address, { txBase64: await build(f.c, valid(f)) });
+      const body = (await res.json()) as Record<string, unknown>;
+      assert.equal(res.status, 200);
+      assert.equal(body.broadcast, false);
+      assert.equal(body.transactionBase64, undefined, "the signed wire must not be returned");
+      assert.ok(!JSON.stringify(body).includes(f.state.sent[0] ?? "\u0000"));
+      assert.equal(f.state.sent.length, 0, "nothing is sent to the network either");
+    });
+
+    it("live mode still sends, and still does not echo the wire back", async () => {
+      const f = await fixture({ mode: "live" });
+      const body = (await (await f.post(f.c.wallet.address, { txBase64: await build(f.c, valid(f)) })).json()) as Record<string, unknown>;
+      assert.equal(body.broadcast, true);
+      assert.equal(body.transactionBase64, undefined);
+      assert.equal(f.state.sent.length, 1);
+    });
   });
 
   it("reports a rate limit as a rejected transaction with code rate-limited, like the setup route", async () => {

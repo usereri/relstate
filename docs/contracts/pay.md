@@ -46,7 +46,7 @@ Two things cost SOL that the user cannot be asked for, and neither can go throug
 
 ### `POST /api/treasury/rent-dust`
 
-Session required and bound to the wallet: a body naming another wallet is a 400, not obeyed. Once per wallet; refused (`already-funded`) when the wallet already holds that much; amount is exactly the rent-exempt minimum of the 104-byte Application plus the 88-byte Profile, nothing for fees (the sponsor pays those). A global hourly count and daily lamport cap apply (`RENT_DUST_*`). The app asks for it when the session is registered, best-effort. **Landlords** also need rent (listing, lease, vault, profile) and this does not cover them; the gate funds the landlord directly.
+Session required and bound to the wallet: a body naming another wallet is a 400, not obeyed. Once per wallet; refused (`already-funded`) when the wallet already holds that much; amount is exactly the rent-exempt minimum of the 104-byte Application plus the 88-byte Profile, nothing for fees (the sponsor pays those). A global hourly count and daily lamport cap apply (`RENT_DUST_*`). The app asks for it when the session is registered, best-effort. **Landlords are not covered, by decision.** They need rent for a listing, lease, vault and profile (about 0.01 SOL); for the demo they use a funded operator wallet, and the gate funds its landlord directly. The zero-SOL claim is about tenants.
 
 ### `POST /api/treasury/rent-payment`
 
@@ -88,7 +88,7 @@ Why the treasury is *required* to be the ZK context-state authority: that author
 
 ## `POST /api/rent/verify`
 
-Session required. Body `{ signature, lease }`. The expected amount is read from the lease account on chain, never from the body. Only the lease's tenant or landlord may ask; anyone else gets the same `404 lease-unknown` as for a lease that does not exist. A wrong amount is `200 { ok: false, reason }`; only a failure to perform the audit is an error status. `503` when `RUSDC_AUDITOR_IKM` is unset.
+Session required. Body `{ signature, lease }`. The expected amount is read from the lease account on chain, never from the body. Only the lease's tenant or landlord may ask; anyone else gets the same `404 lease-unknown` as for a lease that does not exist. **The transaction must be that lease's payment:** the `pay_rent` in the named transaction has to reference `body.lease`, checked before anything is decrypted, else the same 404. (Authorisation is per lease and decryption per transaction; without this binding the route was a decryption oracle for every payment on the platform.) The transfer's token accounts are not echoed. A wrong amount is `200 { ok: false, reason }`; only a failure to perform the audit is an error status. `503` when `RUSDC_AUDITOR_IKM` is unset.
 
 ## Exit gate
 
@@ -107,4 +107,5 @@ Measured on devnet with `--probe`: 5 transactions of 680, 904, 321, 1207 and 836
 
 1. **No USDC reserve account is configured** (`USDC_RESERVE_TOKEN_ACCOUNT` is empty in both env files), so the invariant is checked against the mock ledger.
 2. **The devnet program is not deployed.** Deploying is the user's step; the full gate has not run.
-3. **Landlord rent is not provisioned** (see rent dust above).
+3. **Landlords use a funded operator wallet** (see rent dust above).
+4. **Mock mode returns no signed transaction.** `broadcast: false` means it cannot land; the co-signed wire is not handed back.
