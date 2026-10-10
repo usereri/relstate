@@ -109,6 +109,12 @@ pub fn handle_propose_lease(
     lease.discount_pct = discount_pct;
     lease.status = Status::Proposed;
     lease.bump = ctx.bumps.lease;
+    // Set explicitly rather than left to the zeroed account, so the dispute state of a fresh
+    // lease is a statement in the code and not an accident of `init`.
+    lease.proposed_deduction = 0;
+    lease.disputed_at = 0;
+    lease.claim_pause_secs = 0;
+    lease.dispute_rejected = false;
 
     ctx.accounts.landlord_profile.wallet = landlord;
     Ok(())

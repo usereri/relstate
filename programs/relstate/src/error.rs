@@ -66,4 +66,12 @@ pub enum ErrorCode {
     AttestationExpiryInPast,
     #[msg("An attestation needs a non-zero subject hash")]
     InvalidSubjectHash,
+    #[msg("The tenant still has time to answer the proposed deduction")]
+    DisputeWindowOpen,
+    #[msg("The window to reject the proposed deduction has passed")]
+    DisputeWindowClosed,
+    #[msg("The tenant already rejected a deduction on this lease, so the deposit returns in full")]
+    DisputeAlreadyRejected,
+    #[msg("Arithmetic overflow")]
+    MathOverflow,
 }

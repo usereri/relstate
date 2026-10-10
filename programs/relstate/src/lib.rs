@@ -119,4 +119,24 @@ pub mod relstate {
     pub fn release_deposit(ctx: Context<ReleaseDeposit>, deduction: u64) -> Result<()> {
         crate::instructions::release_deposit::handle_release_deposit(ctx, deduction)
     }
+
+    /// Both parties sign a final deduction and the lease closes on it (D1).
+    pub fn settle_dispute(ctx: Context<SettleDispute>, deduction: u64) -> Result<()> {
+        crate::instructions::settle_dispute::handle_settle_dispute(ctx, deduction)
+    }
+
+    /// Tenant accepts the landlord's proposed deduction as it stands.
+    pub fn accept_deduction(ctx: Context<AcceptDeduction>) -> Result<()> {
+        crate::instructions::settle_dispute::handle_accept_deduction(ctx)
+    }
+
+    /// Tenant rejects the proposed deduction; the deposit returns in full.
+    pub fn abandon_dispute(ctx: Context<AbandonDispute>) -> Result<()> {
+        crate::instructions::settle_dispute::handle_abandon_dispute(ctx)
+    }
+
+    /// Landlord closes an unanswered dispute once the tenant's window has passed.
+    pub fn finalize_deduction(ctx: Context<FinalizeDeduction>) -> Result<()> {
+        crate::instructions::settle_dispute::handle_finalize_deduction(ctx)
+    }
 }

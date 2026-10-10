@@ -11,6 +11,7 @@ pub mod mark_default;
 pub mod pay_rent;
 pub mod payout;
 pub mod release_deposit;
+pub mod settle_dispute;
 
 pub use claim_deposit::*;
 pub use apply::*;
@@ -24,3 +25,4 @@ pub use fund_deposit::*;
 pub use mark_default::*;
 pub use pay_rent::*;
 pub use release_deposit::*;
+pub use settle_dispute::*;
