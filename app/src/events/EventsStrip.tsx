@@ -1,7 +1,7 @@
 import { CalendarDays, GraduationCap } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { EVENTS_NOTE, dateLabel, toFilter, upcoming } from "./events";
+import { EVENTS, EVENTS_NOTE, dateLabel, toFilter, upcoming } from "./events";
 import type { EventEntry } from "./events";
 import { sameName } from "./params";
 import type { NearFilter } from "./params";
@@ -32,7 +32,11 @@ export function EventsStrip({
   onPick: (filter: NearFilter) => void;
   onShowAll: () => void;
 }) {
-  const events = upcoming();
+  // a link from the site can point at an occasion that has already been and gone, and a strip that
+  // shows no selection while the list is filtered reads as a bug: pin the active one to the front
+  const soon = upcoming();
+  const active = EVENTS.find((e) => isActive(filter, e));
+  const events = active && !soon.some((e) => e.id === active.id) ? [active, ...soon.slice(0, soon.length - 1)] : soon;
   return (
     <section aria-labelledby="near-an-event" className="flex flex-col gap-2">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
