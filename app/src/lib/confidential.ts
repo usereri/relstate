@@ -31,7 +31,7 @@ import type { AeKey, ElGamalKeypair } from "@solana/zk-sdk/bundler";
 import type { ConfidentialTransferBalance } from "@solana-program/token-2022/confidential";
 import { RPC, RUSDC_MINT } from "./config";
 import { retryOn429 } from "./rpc";
-import { backendInfo, postConfidentialAccountSetup, postSponsored, sponsorFeePayer } from "./sponsor";
+import { backendInfo, postConfidentialAccountSetup, postRentPayment, postSponsoredDetailed, sponsorFeePayer, type Cosigned } from "./sponsor";
 import { CONFIDENTIAL_DERIVATION_MESSAGE, isConfidentialDerivationMessage, type WalletProvider } from "./wallet";
 
 /** The kit, token-2022 and zk-sdk modules, imported on first use so the wasm stays lazy. */
@@ -107,6 +107,12 @@ export interface ConfidentialSession {
   submit: Submit;
   /** Submits a setup transaction, which a different backend route co-signs. */
   submitSetup: Submit;
+  /**
+   * Submits a transaction of a confidential rent payment. Its proof plan funds context-state
+   * accounts from the payer, so it is co-signed by the treasury (`/api/treasury/rent-payment`) and
+   * must be PLANNED with {@link setupPayer} as the fee payer, not {@link payer}.
+   */
+  submitRentPayment: Submit;
 }
 
 const rpcFor = async (url: string, { kit }: Libs) =>
@@ -144,8 +150,9 @@ export async function openSession(opts: { wallet: WalletProvider; mint?: string;
     payer: kit.createNoopSigner(kit.address(feePayer)),
     setupPayer: kit.createNoopSigner(kit.address(backend.treasury)),
     authority: owner,
-    submit: sponsoredSubmit(opts.wallet, l, postSponsored),
+    submit: sponsoredSubmit(opts.wallet, l, postSponsoredDetailed),
     submitSetup: sponsoredSubmit(opts.wallet, l, postConfidentialAccountSetup),
+    submitRentPayment: sponsoredSubmit(opts.wallet, l, postRentPayment),
   };
 }
 
@@ -177,6 +184,7 @@ export async function openLocalSession(opts: {
     authority: opts.signer,
     submit,
     submitSetup: submit,
+    submitRentPayment: submit,
   };
 }
 
@@ -213,16 +221,23 @@ function localSubmit(rpc: Rpc<SolanaRpcApi>, l: Libs): Submit {
  * kit and web3.js disagree about types but agree about the wire format, so the bridge between
  * them is the serialized transaction itself.
  */
-function sponsoredSubmit(wallet: WalletProvider, l: Libs, post: (txBase64: string) => Promise<string>): Submit {
+function sponsoredSubmit(wallet: WalletProvider, l: Libs, post: (txBase64: string) => Promise<Cosigned>): Submit {
   const { kit } = l;
   return async (message) => {
-    const { message: m } = await withLifetime({ rpc: await rpcFor(RPC, l) }, message, l);
+    const rpc = await rpcFor(RPC, l);
+    const { message: m, blockhash } = await withLifetime({ rpc }, message, l);
     const partial = await kit.partiallySignTransactionMessageWithSigners(m);
     const anchor = await import("@anchor-lang/core");
     const wire = Buffer.from(kit.getBase64EncodedWireTransaction(partial), "base64");
     const tx = anchor.web3.VersionedTransaction.deserialize(wire);
     const signed = await wallet.signTransaction(tx);
-    return post(Buffer.from(signed.serialize()).toString("base64"));
+    const { signature, broadcast } = await post(Buffer.from(signed.serialize()).toString("base64"));
+    // The backend returns as soon as it has SENT the transaction. A proof plan is a chain of
+    // dependent transactions (each reads the context state the one before created), and so are
+    // deposit then apply-pending, so the next one cannot be co-signed until this one has landed:
+    // its simulation would fail on a missing account. Polled over HTTP, like every other wait here.
+    if (broadcast) await confirm(rpc, signature, blockhash.lastValidBlockHeight);
+    return signature;
   };
 }
 

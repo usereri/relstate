@@ -40,11 +40,19 @@ const submitSetup = vi.fn(async (m: Message) => {
   log.push(`submitSetup:${m.tag}`);
   return `setup-${m.tag}`;
 });
+// The rent payment's proof plan funds its context-state accounts from the payer, which /api/sponsor
+// refuses, so it has its own route and its own (treasury) payer.
+const submitRentPayment = vi.fn(async (m: Message) => {
+  log.push(`submitRent:${m.tag}`);
+  return `rent-${m.tag}`;
+});
+const payer = { address: "sponsor" };
+const setupPayer = { address: "treasury" };
 
 beforeEach(() => {
   log.length = 0;
   vi.clearAllMocks();
-  conf.openSession.mockResolvedValue({ submit, submitSetup });
+  conf.openSession.mockResolvedValue({ submit, submitSetup, submitRentPayment, payer, setupPayer });
   conf.accountState.mockResolvedValue({ exists: true, configured: true, publicAmount: 0n });
   conf.mintDecimals.mockResolvedValue(6);
   conf.planCreateAccount.mockImplementation(async () => (log.push("plan:create"), [{ tag: "create" }]));
@@ -196,8 +204,16 @@ describe("payRentPrivately", () => {
 
   it("reports the signature of the transaction that carries the transfer", async () => {
     const result = await payRentPrivately({ me, lease });
-    expect(result.signature).toBe("sig-transfer");
-    expect(result.signatures).toEqual(["sig-proof", "sig-transfer"]);
+    expect(result.signature).toBe("rent-transfer");
+    expect(result.signatures).toEqual(["rent-proof", "rent-transfer"]);
+  });
+
+  it("plans and sends the whole rent payment through the treasury route, never /api/sponsor", async () => {
+    await payRentPrivately({ me, lease });
+    const planned = conf.planTransfer.mock.calls[0]![0] as { payer: unknown };
+    expect(planned.payer).toBe(setupPayer);
+    expect(log.filter((l) => l.startsWith("submit"))).toEqual(["submitRent:proof", "submitRent:transfer"]);
+    expect(submit).not.toHaveBeenCalled();
   });
 
   it("throws an actionable PayError, and sends nothing, when the landlord's account is not set up", async () => {

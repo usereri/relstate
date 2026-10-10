@@ -5,7 +5,7 @@
 // same way. Without this, `POST /api/sponsor` answers 401 for everyone in sponsored mode.
 
 import { useEffect } from "react";
-import { SPONSORED, setSessionTokenSource } from "@/lib/sponsor";
+import { SPONSORED, requestRentDust, setSessionTokenSource } from "@/lib/sponsor";
 import { obtainSession } from "./session";
 
 export function useSponsorSession(address: string | null): void {
@@ -14,6 +14,10 @@ export function useSponsorSession(address: string | null): void {
     // A source rather than a token: `postSponsored` calls it per request, so a session that
     // expired mid-session is renewed instead of failing.
     setSessionTokenSource(async () => (await obtainSession(address)).token);
+    // The platform provisions the rent a first lease application will cost, so nobody ever holds or
+    // acquires SOL. Best-effort and idempotent: a refusal (already granted, already funded, backend
+    // without a treasury) changes nothing the user can see.
+    void requestRentDust().catch(() => {});
     return () => setSessionTokenSource(null);
   }, [address]);
 }

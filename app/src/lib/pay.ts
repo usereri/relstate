@@ -212,11 +212,15 @@ export async function payRentPrivately(opts: { me: Me; lease: LeaseView; onProgr
 
   report(onProgress, "proving", "Preparing a private payment…");
   const payRent = await conf.fromWeb3Instruction(await chain.payRentInstruction(me, lease));
-  const messages = await conf.planTransfer(session, { destinationToken: destination, amount: rent, rightAfterTransfer: [payRent] });
+  // The proof plan funds its context-state accounts from the payer, so the payer appears inside
+  // instructions and `/api/sponsor` would refuse every transaction of it. The treasury pays for this
+  // plan instead (`/api/treasury/rent-payment`), and gets the rent back when the plan closes them.
+  const rentSession: ConfidentialSession = { ...session, payer: session.setupPayer, submit: session.submitRentPayment };
+  const messages = await conf.planTransfer(rentSession, { destinationToken: destination, amount: rent, rightAfterTransfer: [payRent] });
   const carriesPayment = conf.transferMessageIndex(messages);
 
   report(onProgress, "paying", "Sending your rent…", 0, messages.length);
-  const signatures = await conf.runPlan(session, messages, (done, steps) =>
+  const signatures = await conf.runPlan(rentSession, messages, (done, steps) =>
     report(onProgress, done === steps ? "confirming" : "paying", done === steps ? "Confirming…" : "Sending your rent…", done, steps),
   );
 

@@ -94,8 +94,14 @@ export function sponsorFeePayer(): Promise<string> {
   return discovering;
 }
 
+export interface Cosigned {
+  signature: string;
+  /** False when the backend co-signed but did not send (mock mode): the signature will never land. */
+  broadcast: boolean;
+}
+
 /** Posts a user-signed transaction to a co-signing route and returns the submitted signature. */
-async function postForCosigning(path: string, txBase64: string, what: string): Promise<string> {
+async function postForCosigning(path: string, txBase64: string, what: string): Promise<Cosigned> {
   if (!API) throw new Error("No backend configured (VITE_API), so there is nobody to pay the fee.");
   if (!sessionToken)
     throw new Error("No session layer is registered, so this transaction cannot be authenticated to the sponsor. This is a bug: report it.");
@@ -108,20 +114,50 @@ async function postForCosigning(path: string, txBase64: string, what: string): P
   if (!res.ok) return fail(res, what);
   // The backend simulates before co-signing and reports simulation failures as { error },
   // so a 200 without a signature is still a failure.
-  const body = (await res.json()) as { signature?: string; error?: string };
+  const body = (await res.json()) as { signature?: string; error?: string; broadcast?: boolean };
   if (!body.signature) throw new Error(body.error ?? `${what} returned no signature`);
-  return body.signature;
+  return { signature: body.signature, broadcast: body.broadcast !== false };
 }
 
 /** Posts a user-signed, fee-payer-unsigned transaction. Returns the submitted signature. */
-export const postSponsored = (txBase64: string): Promise<string> => postForCosigning("/api/sponsor", txBase64, "sponsor");
+export const postSponsored = async (txBase64: string): Promise<string> => (await postForCosigning("/api/sponsor", txBase64, "sponsor")).signature;
 
 /**
- * The one flow that cannot go through `/api/sponsor`: creating a wallet's confidential token
- * account. Somebody has to fund the account's rent, and the sponsor refuses outright any
- * transaction that references the fee payer inside an instruction — a rule with no exception
- * carved into it. So first-use setup is co-signed by the **treasury** key instead, under its own
- * narrower bounds (docs/contracts/treasury.md, "Why the setup path uses the treasury key").
+ * The flows that cannot go through `/api/sponsor`: creating a wallet's confidential token account,
+ * and every transaction of a confidential rent payment. Both need the payer to appear inside
+ * instructions (it funds rent), and the sponsor refuses outright any transaction that does — a
+ * rule with no exception carved into it. So they are co-signed by the **treasury** instead, each
+ * route under its own narrower bounds (docs/contracts/treasury.md, docs/contracts/pay.md).
  */
-export const postConfidentialAccountSetup = (txBase64: string): Promise<string> =>
+export const postConfidentialAccountSetup = (txBase64: string): Promise<Cosigned> =>
   postForCosigning("/api/treasury/confidential-account", txBase64, "confidential account setup");
+
+export const postRentPayment = (txBase64: string): Promise<Cosigned> => postForCosigning("/api/treasury/rent-payment", txBase64, "rent payment");
+
+/** `POST /api/sponsor`, with the broadcast flag kept, for callers that wait for the transaction to land. */
+export const postSponsoredDetailed = (txBase64: string): Promise<Cosigned> => postForCosigning("/api/sponsor", txBase64, "sponsor");
+
+export interface RentDust {
+  granted: boolean;
+  lamports: string;
+  signature?: string;
+  /** Why nothing was granted: `already-granted` or `already-funded`. */
+  reason?: string;
+}
+
+/**
+ * Asks the platform to provision the rent this wallet's Application and Profile accounts cost.
+ * Idempotent and best-effort: a wallet that has had its grant, or already holds enough, is told so.
+ * Users never hold or acquire SOL; the platform provisions rent.
+ */
+export async function requestRentDust(): Promise<RentDust> {
+  if (!API) throw new Error("No backend configured (VITE_API).");
+  if (!sessionToken) throw new Error("No session layer is registered.");
+  const res = await fetch(`${API}/api/treasury/rent-dust`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${await sessionToken()}` },
+    body: "{}",
+  });
+  if (!res.ok) return fail(res, "rent provisioning");
+  return (await res.json()) as RentDust;
+}
