@@ -538,13 +538,16 @@ export function createTreasury(deps: TreasuryDeps) {
     assertIsFullySignedTransaction(signed);
     const signature = getSignatureFromTransaction(signed);
     const wire = getBase64EncodedWireTransaction(signed);
-    reservation.commit((spent > 0n ? spent : 0n) + worstCaseFee);
+    const booked = (spent > 0n ? spent : 0n) + worstCaseFee;
 
     if (deps.mode === "mock") {
+      reservation.commit(booked);
       log(`treasury: co-signed ${bounds.label} ${signature} (not broadcast: mock mode)`);
       return { signature, broadcast: false, rentLamports: spent.toString(), transactionBase64: wire };
     }
     await deps.rpc.sendTransaction(wire, { encoding: "base64", skipPreflight: true, maxRetries: 3n }).send();
+    // Committed only once the send succeeded, so a failed send leaves the caller's budget alone.
+    reservation.commit(booked);
     log(`treasury: sent ${bounds.label} ${signature}, net ${spent} lamports`);
     return { signature, broadcast: true, rentLamports: spent.toString() };
   }
@@ -661,20 +664,24 @@ export function createTreasury(deps: TreasuryDeps) {
   async function grantRentDust({ wallet }: { wallet: string }): Promise<{ granted: boolean; lamports: string; signature?: Signature; reason?: string }> {
     if (wallet === deps.treasury.address) throw new RejectedTransaction("the treasury does not need rent dust", "wallet-is-treasury");
     if (dustGranted.has(wallet)) return { granted: false, lamports: "0", reason: "already-granted" };
-    const amount = await rentDustAmount();
-    const balance = (await deps.rpc.getBalance(wallet as Address, { commitment: "confirmed" }).send()).value;
-    if (balance >= amount) return { granted: false, lamports: "0", reason: "already-funded" };
-
-    let reservation;
-    try {
-      reservation = dustLimiter.reserve(wallet, amount);
-    } catch (e) {
-      if (e instanceof LimitError) throw new RejectedTransaction(e.message, "rate-limited");
-      throw e;
-    }
-    // Marked before the send, not after: two concurrent requests must not both pass the check above.
+    // Marked synchronously, before the first await: the checks below take network round trips, and
+    // two concurrent requests for one wallet must not both get past the line above. Released on
+    // every path that does not end in a grant.
     dustGranted.add(wallet);
+    let reservation: ReturnType<typeof dustLimiter.reserve> | undefined;
     try {
+      const amount = await rentDustAmount();
+      const balance = (await deps.rpc.getBalance(wallet as Address, { commitment: "confirmed" }).send()).value;
+      if (balance >= amount) {
+        dustGranted.delete(wallet);
+        return { granted: false, lamports: "0", reason: "already-funded" };
+      }
+      try {
+        reservation = dustLimiter.reserve(wallet, amount);
+      } catch (e) {
+        if (e instanceof LimitError) throw new RejectedTransaction(e.message, "rate-limited");
+        throw e;
+      }
       const signatures = await deps.run(
         deps.treasury,
         sequentialInstructionPlan([getTransferSolInstruction({ source: deps.treasury, destination: wallet as Address, amount })]),
@@ -684,7 +691,7 @@ export function createTreasury(deps: TreasuryDeps) {
       return { granted: true, lamports: amount.toString(), signature: signatures[0] };
     } catch (e) {
       dustGranted.delete(wallet);
-      reservation.cancel();
+      reservation?.cancel();
       throw e;
     }
   }

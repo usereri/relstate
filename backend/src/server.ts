@@ -224,7 +224,7 @@ export function createApp(services: Services = createServices()) {
    */
   app.post("/api/treasury/rent-dust", async (c) => {
     const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
-    const body = await c.req.json().catch(() => ({})) as { wallet?: unknown };
+    const body = ((await c.req.json().catch(() => null)) ?? {}) as { wallet?: unknown };
     if (body.wallet !== undefined && body.wallet !== session.wallet) {
       throw new RejectedTransaction("rent dust can only be requested for the session's own wallet", "wallet-mismatch");
     }
