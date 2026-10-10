@@ -6,6 +6,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Listing } from "@/components/Terms";
 import { ProfileCard } from "@/components/ProfileCard";
+import { EventsStrip, NearbyBanner, NearbyNote, useNearby } from "@/events";
 import { Handlers, Waiting, statusBadge } from "@/screens";
 import * as chain from "@/lib/chain";
 import { LeaseView, ListingView, ProfileView, Role, typicalRent } from "@/lib/chain";
@@ -31,10 +32,15 @@ export function Listings({
 }) {
   const [q, setQ] = useState("");
   const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-  const shown = (listings ?? []).filter(
+  const matching = (listings ?? []).filter(
     (l) =>
       (mode === "browse" || l.landlord === me) && words.every((w) => `${l.title} ${l.city} ${l.blurb} ${l.region}`.toLowerCase().includes(w)),
   );
+  // workstream H: "near an event". Without a venue in the URL or a card picked in the strip this
+  // is the identity: every match, in the same order, with no distance. Never in "mine" mode.
+  const near = useNearby(mode === "browse");
+  const { rows, hidden, unplaced } = near.apply(matching);
+  const shown = rows.map((r) => r.listing);
   // only the button that was clicked shows its progress; the others just wait
   const [acting, setActing] = useState<string | null>(null);
   const act = (key: string, fn: () => Promise<unknown>) => {
@@ -55,7 +61,7 @@ export function Listings({
 
   const grid = (
     <div className={mode === "mine" ? "grid gap-5 sm:grid-cols-2" : "grid gap-5 sm:grid-cols-2 xl:grid-cols-3"}>
-      {shown.map((l) => {
+      {rows.map(({ listing: l, km, area }) => {
         const rec = records[l.landlord];
         const forListing = applications.filter((a) => a.listing === l.address);
         const applied = forListing[0];
@@ -66,6 +72,7 @@ export function Listings({
             <div className="flex flex-col gap-3 border-t px-4 py-3">
               {mode === "browse" ? (
                 <>
+                  <NearbyNote km={km} area={area} label={near.filter?.label} />
                   <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                     <UserRound className="size-3.5" />
                     <span className="font-mono">{short(l.landlord)}</span>
@@ -123,7 +130,13 @@ export function Listings({
   const empty =
     listings && shown.length === 0 ? (
       <p className="text-sm text-muted-foreground">
-        {mode === "mine" && !q ? "You have no listings yet. Add one with the form." : q ? `Nothing matches “${q}”.` : "No apartments are listed yet. Run `make demo-setup` for the default listings, or add one in a landlord window."}
+        {mode === "mine" && !q
+          ? "You have no listings yet. Add one with the form."
+          : q
+            ? `Nothing matches “${q}”.`
+            : near.filter
+              ? "Nothing within that distance. Widen the search with “Show all”."
+              : "No apartments are listed yet. Run `make demo-setup` for the default listings, or add one in a landlord window."}
       </p>
     ) : null;
 
@@ -156,6 +169,10 @@ export function Listings({
         <Search className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input className="pl-11" placeholder="Search by district, city or feature: Kraków, garden, furnished…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search apartments" />
       </div>
+      <EventsStrip filter={near.filter} onPick={near.select} onShowAll={near.clear} />
+      {near.filter && !near.dismissed && (
+        <NearbyBanner filter={near.filter} count={shown.length} hidden={hidden} unplaced={unplaced} onShowAll={near.clear} onDismiss={near.dismiss} />
+      )}
       {!listings && <p className="text-sm text-muted-foreground">Loading apartments…</p>}
       {empty}
       {grid}
