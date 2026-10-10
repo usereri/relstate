@@ -1,6 +1,6 @@
 import "./noenv.ts";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { describe, it } from "node:test";
 import type { Address, Signature } from "@solana/kit";
 
@@ -473,5 +473,131 @@ describe("mockVerificationPage", () => {
       ["session", "decision"],
     );
     assert.ok(!/getElementById\("name"\)|\.value/.test(html), "the name input is never read");
+  });
+});
+
+describe("construction", () => {
+  it("throws, rather than falling back to the mock verifier, when sumsub is named without settings", () => {
+    // The click-to-approve provider must never be what answers when real verification was intended.
+    assert.throws(() => createKyc({ config: config({ provider: "sumsub" }), chain: async () => fakeChain().chain, log: () => {} }), /sumsub/);
+  });
+
+  it("accepts the same config when a provider is injected", () => {
+    const provider = { start: async () => ({ url: "u" }), webhook: async () => ({}) as never };
+    assert.doesNotThrow(() => createKyc({ config: config({ provider: "sumsub" }), chain: async () => fakeChain().chain, provider, log: () => {} }));
+  });
+});
+
+describe("start rate limit", () => {
+  const HOUR = 3_600_000;
+  function clocked(limit: number) {
+    let t = NOW;
+    const kyc = createKyc({ config: config({ maxStartsPerWalletPerHour: limit }), chain: async () => fakeChain().chain, now: () => t, log: () => {} });
+    return { kyc, advance: (ms: number) => void (t += ms) };
+  }
+  const refused = (e: unknown) => e instanceof KycError && e.code === "rate-limited" && e.status === 429;
+
+  it("refuses the start after the limit, and leaves another wallet alone", async () => {
+    const { kyc } = clocked(3);
+    for (let i = 0; i < 3; i++) await kyc.start({ wallet: WALLET });
+    await assert.rejects(() => kyc.start({ wallet: WALLET }), refused);
+    await assert.doesNotReject(() => kyc.start({ wallet: OTHER }));
+  });
+
+  it("slides: a start frees up once the oldest falls out of the hour", async () => {
+    const { kyc, advance } = clocked(2);
+    await kyc.start({ wallet: WALLET });
+    advance(HOUR / 2);
+    await kyc.start({ wallet: WALLET });
+    await assert.rejects(() => kyc.start({ wallet: WALLET }), refused);
+    advance(HOUR / 2 + 1); // the first start is now just over an hour old, the second is not
+    await kyc.start({ wallet: WALLET });
+    await assert.rejects(() => kyc.start({ wallet: WALLET }), refused);
+  });
+
+  it("does not count a start the provider failed to issue", async () => {
+    let fail = true;
+    const kyc = createKyc({
+      config: config({ maxStartsPerWalletPerHour: 1 }),
+      chain: async () => fakeChain().chain,
+      provider: { start: async () => (fail ? { url: "" } : { url: "u" }), webhook: async () => ({}) as never },
+      now: () => NOW,
+      log: () => {},
+    });
+    await assert.rejects(() => kyc.start({ wallet: WALLET }), { code: "provider-no-url" });
+    fail = false;
+    await assert.doesNotReject(() => kyc.start({ wallet: WALLET }));
+  });
+
+  it("defaults to ten an hour", async () => {
+    const kyc = createKyc({ config: config(), chain: async () => fakeChain().chain, now: () => NOW, log: () => {} });
+    for (let i = 0; i < 10; i++) await kyc.start({ wallet: WALLET });
+    await assert.rejects(() => kyc.start({ wallet: WALLET }), refused);
+  });
+});
+
+describe("session pruning", () => {
+  it("drops sessions older than 24 hours on the next start, and keeps younger ones", async () => {
+    let t = NOW;
+    const kyc = createKyc({ config: config(), chain: async () => fakeChain().chain, now: () => t, log: () => {} });
+    const old = await kyc.start({ wallet: WALLET });
+    t += 12 * 3_600_000;
+    const mid = await kyc.start({ wallet: OTHER });
+    t += 13 * 3_600_000; // old is 25h, mid is 13h
+    await kyc.start({ wallet: OTHER });
+    assert.equal(kyc.session(old.session), undefined);
+    assert.ok(kyc.session(mid.session));
+    await assert.rejects(() => hook(kyc, approve(old.session)), (e: unknown) => e instanceof WebhookError && e.code === "session-unknown");
+  });
+});
+
+describe("replay of a captured Sumsub delivery after a restart", () => {
+  const SECRET = "whsec_restart";
+  const sumsub = { appToken: "t", secretKey: "k", webhookSecret: SECRET, apiBase: "https://s.test", levelName: "l", linkTtlSeconds: 60, digestAlg: "", maxEventAgeSeconds: 600 };
+  const stamp = (ms: number) => new Date(ms).toISOString().replace("T", " ").replace("Z", "");
+  const delivery = (answer: "GREEN" | "RED", createdMs: number) => {
+    const raw = JSON.stringify({
+      type: "applicantReviewed",
+      applicantId: "app-1",
+      correlationId: `corr-${answer}`,
+      externalUserId: WALLET,
+      reviewResult: { reviewAnswer: answer, ...(answer === "RED" ? { reviewRejectType: "FINAL" } : {}) },
+      createdAtMs: stamp(createdMs),
+    });
+    return { raw, headers: { "x-payload-digest": createHmac("sha256", SECRET).update(raw).digest("hex") } };
+  };
+  const boot = (chain: AttestationChain, clock: { t: number }) =>
+    createKyc({ config: config({ provider: "sumsub", sumsub }), chain: async () => chain, now: () => clock.t, log: () => {} });
+
+  it("is refused as stale by a fresh instance, does not attest, and the wallet stays revoked", async () => {
+    const fake = fakeChain();
+    const clock = { t: NOW };
+    const first = boot(fake.chain, clock);
+
+    const green = delivery("GREEN", NOW);
+    assert.equal((await first.handleWebhook(green.headers, green.raw)).record.status, "attested");
+    clock.t += 60_000;
+    const red = delivery("RED", clock.t);
+    assert.equal((await first.handleWebhook(red.headers, red.raw)).record.status, "revoked");
+    assert.equal(fake.calls.attest.length, 1);
+
+    // A restart empties the dedupe store, so the only thing left between the captured GREEN and the
+    // revoked wallet is the freshness window.
+    const restarted = boot(fake.chain, { t: clock.t + 20 * 60_000 });
+    await assert.rejects(() => restarted.handleWebhook(green.headers, green.raw), (e: unknown) => e instanceof WebhookError && e.code === "event-stale");
+    assert.equal(fake.calls.attest.length, 1);
+    assert.equal(fake.store.get(WALLET)!.revoked, true);
+    assert.equal((await restarted.status(WALLET)).verified, false);
+  });
+
+  it("the same replay inside the window is caught by the dedupe store of a live instance instead", async () => {
+    const fake = fakeChain();
+    const clock = { t: NOW };
+    const kyc = boot(fake.chain, clock);
+    const green = delivery("GREEN", NOW);
+    await kyc.handleWebhook(green.headers, green.raw);
+    const again = await kyc.handleWebhook(green.headers, green.raw);
+    assert.equal(again.replay, true);
+    assert.equal(fake.calls.attest.length, 1);
   });
 });

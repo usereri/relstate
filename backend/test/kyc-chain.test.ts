@@ -260,30 +260,36 @@ describe("isValid", () => {
   const policy: KycPolicy = { issuer: OTHER, requireKyc: true };
 
   it("accepts a live level-1 and level-2 attestation from the configured issuer", () => {
-    assert.equal(isValid(att(), policy, NOW), true);
-    assert.equal(isValid(att({ level: 2 }), policy, NOW), true);
+    assert.equal(isValid(att(), policy, NOW, WALLET), true);
+    assert.equal(isValid(att({ level: 2 }), policy, NOW, WALLET), true);
   });
 
   it("rejects no attestation, level 0, and a revoked one", () => {
-    assert.equal(isValid(null, policy, NOW), false);
-    assert.equal(isValid(att({ level: 0 }), policy, NOW), false);
-    assert.equal(isValid(att({ revoked: true }), policy, NOW), false);
+    assert.equal(isValid(null, policy, NOW, WALLET), false);
+    assert.equal(isValid(att({ level: 0 }), policy, NOW, WALLET), false);
+    assert.equal(isValid(att({ revoked: true }), policy, NOW, WALLET), false);
   });
 
   it("treats expiry 0 as never, and rejects an expiry at or before now", () => {
-    assert.equal(isValid(att({ expiresAt: 0 }), policy, NOW), true);
-    assert.equal(isValid(att({ expiresAt: NOW + 1 }), policy, NOW), true);
+    assert.equal(isValid(att({ expiresAt: 0 }), policy, NOW, WALLET), true);
+    assert.equal(isValid(att({ expiresAt: NOW + 1 }), policy, NOW, WALLET), true);
     // `expires_at > now` in the program: the boundary second is already expired.
-    assert.equal(isValid(att({ expiresAt: NOW }), policy, NOW), false);
-    assert.equal(isValid(att({ expiresAt: NOW - 1 }), policy, NOW), false);
+    assert.equal(isValid(att({ expiresAt: NOW }), policy, NOW, WALLET), false);
+    assert.equal(isValid(att({ expiresAt: NOW - 1 }), policy, NOW, WALLET), false);
   });
 
   it("rejects an attestation signed by an issuer other than the policy's", () => {
     // Rotating the issuer in Config must invalidate everything the old key vouched for.
-    assert.equal(isValid(att({ issuer: WALLET }), policy, NOW), false);
+    assert.equal(isValid(att({ issuer: WALLET }), policy, NOW, WALLET), false);
   });
 
   it("is false when no policy could be read: with no known issuer nothing can be vouched for", () => {
-    assert.equal(isValid(att({ issuer: WALLET }), null, NOW), false);
+    assert.equal(isValid(att({ issuer: WALLET }), null, NOW, WALLET), false);
+  });
+
+  it("is false when the attestation belongs to a different wallet than the one asked about", () => {
+    // The PDA seeds already bind the two; the explicit comparison keeps a mis-addressed read from vouching.
+    assert.equal(isValid(att({ wallet: OTHER }), policy, NOW, WALLET), false);
+    assert.equal(isValid(att({ wallet: OTHER }), policy, NOW, OTHER), true);
   });
 });

@@ -255,18 +255,32 @@ export function createKyc(deps: KycDeps) {
     // Sessions are only useful while a check is in flight; drop the stale ones.
     for (const [id, s] of sessions) if (now() - s.createdAt > 24 * HOUR_MS) sessions.delete(id);
 
+    // Book the slot before any await so concurrent starts cannot all pass the check; it is given
+    // back below if the provider fails to issue a link.
+    const slot = now();
+    startsByWallet.set(wallet, [...recent, slot]);
+    const release = () => startsByWallet.set(wallet, (startsByWallet.get(wallet) ?? []).filter((t) => t !== slot));
+
     const session: KycSession = { id: randomUUID(), wallet, provider: config.provider, createdAt: now() };
     // The app is a hash router, so the return path lives inside the fragment.
     const returnBase = `${config.appUrl}/#/app?tab=identity&kyc=`;
-    const { url } = await provider.start(wallet, {
-      session: session.id,
-      returnBase,
-      successUrl: `${returnBase}done&session=${session.id}`,
-      cancelUrl: `${returnBase}cancelled&session=${session.id}`,
-    });
-    if (url === undefined || url === "") throw new KycError("the KYC provider returned no verification URL", "provider-no-url", 503);
+    let url: string | undefined;
+    try {
+      ({ url } = await provider.start(wallet, {
+        session: session.id,
+        returnBase,
+        successUrl: `${returnBase}done&session=${session.id}`,
+        cancelUrl: `${returnBase}cancelled&session=${session.id}`,
+      }));
+    } catch (error) {
+      release();
+      throw error;
+    }
+    if (url === undefined || url === "") {
+      release();
+      throw new KycError("the KYC provider returned no verification URL", "provider-no-url", 503);
+    }
 
-    startsByWallet.set(wallet, [...recent, now()]);
     sessions.set(session.id, session);
     openSessionByWallet.set(wallet, session.id);
     log(`kyc: session ${session.id} started for ${wallet} (${config.provider})`);

@@ -3,13 +3,19 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { describe, it } from "node:test";
 
-const { SumsubApiError, createSumsubKyc, eventRef, payloadToProviderEvent, signRequest, verifySumsubSignature } = await import(
+const { SumsubApiError, createSumsubKyc, eventRef, parseCreatedAtMs, payloadToProviderEvent, signRequest, verifySumsubSignature } = await import(
   "../src/providers/kyc-sumsub.ts"
 );
 import type { SumsubConfig, SumsubPayload } from "../src/providers/kyc-sumsub.ts";
 
 // There are no Sumsub keys in this project, so this file is the only place the verifier is ever
 // exercised: every case below is one the first real webhook must not get wrong.
+// The fixtures are stamped 2026-10-10 10:00:00 UTC; the clock is injected so the freshness window
+// is deterministic instead of depending on when the suite runs.
+const NOW = Date.UTC(2026, 9, 10, 10, 0, 5);
+const verify = (rawBody: string, headers: Record<string, string>, secret: string, opts: Parameters<typeof verifySumsubSignature>[3] = {}) =>
+  verifySumsubSignature(rawBody, headers, secret, { now: NOW, ...opts });
+
 const SECRET = "whsec_sumsub_known_secret";
 const WALLET = "EBMibFLTvr5GDpgxNqt5Gqp9B1xLMr32aNwGDJV2oGJ6";
 
@@ -47,25 +53,25 @@ describe("verifySumsubSignature: accepting", () => {
   for (const alg of Object.keys(ALGS)) {
     it(`accepts a correct ${alg} digest`, () => {
       const raw = body();
-      const payload = verifySumsubSignature(raw, headersFor(raw, alg), SECRET);
+      const payload = verify(raw, headersFor(raw, alg), SECRET);
       assert.equal(payload.applicantId, "app-123");
     });
   }
 
   it("defaults to HMAC_SHA256_HEX when the algorithm header is absent", () => {
     const raw = body();
-    assert.equal(verifySumsubSignature(raw, headersFor(raw), SECRET).type, "applicantReviewed");
+    assert.equal(verify(raw, headersFor(raw), SECRET).type, "applicantReviewed");
   });
 
   it("accepts an upper-case hex digest and a lower-case algorithm name", () => {
     const raw = body();
     const h = { "x-payload-digest": digest(raw).toUpperCase(), "x-payload-digest-alg": "hmac_sha256_hex" };
-    assert.equal(verifySumsubSignature(raw, h, SECRET).type, "applicantReviewed");
+    assert.equal(verify(raw, h, SECRET).type, "applicantReviewed");
   });
 
   it("accepts the configured digestAlg and nothing else", () => {
     const raw = body();
-    assert.ok(verifySumsubSignature(raw, headersFor(raw, "HMAC_SHA512_HEX"), SECRET, { digestAlg: "HMAC_SHA512_HEX" }));
+    assert.ok(verify(raw, headersFor(raw, "HMAC_SHA512_HEX"), SECRET, { digestAlg: "HMAC_SHA512_HEX" }));
   });
 });
 
@@ -74,52 +80,52 @@ describe("verifySumsubSignature: rejecting", () => {
 
   it("refuses everything when no webhook secret is configured, even a digest made with the empty secret", () => {
     // Verifying with "" would make the digest forgeable by anyone.
-    assert.equal(codeOf(() => verifySumsubSignature(raw, headersFor(raw, undefined, ""), "")), "webhook-not-configured");
+    assert.equal(codeOf(() => verify(raw, headersFor(raw, undefined, ""), "")), "webhook-not-configured");
   });
 
   it("rejects a missing digest", () => {
-    assert.equal(codeOf(() => verifySumsubSignature(raw, {}, SECRET)), "signature-missing");
-    assert.equal(codeOf(() => verifySumsubSignature(raw, { "x-payload-digest": "  " }, SECRET)), "signature-missing");
+    assert.equal(codeOf(() => verify(raw, {}, SECRET)), "signature-missing");
+    assert.equal(codeOf(() => verify(raw, { "x-payload-digest": "  " }, SECRET)), "signature-missing");
   });
 
   it("rejects a non-hex digest", () => {
-    assert.equal(codeOf(() => verifySumsubSignature(raw, { "x-payload-digest": "not-hex!" }, SECRET)), "signature-malformed");
+    assert.equal(codeOf(() => verify(raw, { "x-payload-digest": "not-hex!" }, SECRET)), "signature-malformed");
   });
 
   it("rejects an algorithm we do not implement", () => {
     const h = { ...headersFor(raw), "x-payload-digest-alg": "HMAC_MD5_HEX" };
-    assert.equal(codeOf(() => verifySumsubSignature(raw, h, SECRET)), "signature-alg-unsupported");
+    assert.equal(codeOf(() => verify(raw, h, SECRET)), "signature-alg-unsupported");
   });
 
   it("rejects an algorithm other than the pinned one, even with a valid digest", () => {
     // Downgrade protection: a deployment that pinned SHA-512 must not accept SHA-1.
     const h = headersFor(raw, "HMAC_SHA1_HEX");
-    assert.equal(codeOf(() => verifySumsubSignature(raw, h, SECRET, { digestAlg: "HMAC_SHA512_HEX" })), "signature-alg-unexpected");
+    assert.equal(codeOf(() => verify(raw, h, SECRET, { digestAlg: "HMAC_SHA512_HEX" })), "signature-alg-unexpected");
   });
 
   it("rejects a digest computed over a different body", () => {
     const h = headersFor(body(reviewed({ applicantId: "someone-else" })));
-    assert.equal(codeOf(() => verifySumsubSignature(raw, h, SECRET)), "signature-invalid");
+    assert.equal(codeOf(() => verify(raw, h, SECRET)), "signature-invalid");
   });
 
   it("rejects a digest computed with a different secret", () => {
-    assert.equal(codeOf(() => verifySumsubSignature(raw, headersFor(raw, undefined, "other-secret"), SECRET)), "signature-invalid");
+    assert.equal(codeOf(() => verify(raw, headersFor(raw, undefined, "other-secret"), SECRET)), "signature-invalid");
   });
 
   it("rejects a truncated digest and a digest padded past the HMAC length", () => {
     const full = digest(raw);
-    assert.equal(codeOf(() => verifySumsubSignature(raw, { "x-payload-digest": full.slice(0, 32) }, SECRET)), "signature-invalid");
-    assert.equal(codeOf(() => verifySumsubSignature(raw, { "x-payload-digest": `${full}00` }, SECRET)), "signature-invalid");
+    assert.equal(codeOf(() => verify(raw, { "x-payload-digest": full.slice(0, 32) }, SECRET)), "signature-invalid");
+    assert.equal(codeOf(() => verify(raw, { "x-payload-digest": `${full}00` }, SECRET)), "signature-invalid");
   });
 
   it("rejects a valid digest over a body that is not JSON", () => {
     const notJson = "applicantReviewed GREEN";
-    assert.equal(codeOf(() => verifySumsubSignature(notJson, headersFor(notJson), SECRET)), "body-malformed");
+    assert.equal(codeOf(() => verify(notJson, headersFor(notJson), SECRET)), "body-malformed");
   });
 
   it("rejects a valid digest over JSON that is not a Sumsub event", () => {
     for (const odd of ["{}", "[]", "null", JSON.stringify({ type: 3 }), JSON.stringify({ applicantId: "x" })]) {
-      assert.equal(codeOf(() => verifySumsubSignature(odd, headersFor(odd), SECRET)), "body-malformed", odd);
+      assert.equal(codeOf(() => verify(odd, headersFor(odd), SECRET)), "body-malformed", odd);
     }
   });
 
@@ -128,13 +134,13 @@ describe("verifySumsubSignature: rejecting", () => {
     const header = headersFor(raw);
     for (let i = 0; i < raw.length; i++) {
       const flipped = raw.slice(0, i) + String.fromCharCode(raw.charCodeAt(i) ^ 1) + raw.slice(i + 1);
-      assert.equal(codeOf(() => verifySumsubSignature(flipped, header, SECRET)), "signature-invalid", `byte ${i}`);
+      assert.equal(codeOf(() => verify(flipped, header, SECRET)), "signature-invalid", `byte ${i}`);
     }
   });
 
   it("fails when the body is re-serialised with different whitespace", () => {
     const pretty = JSON.stringify(reviewed(), null, 2);
-    assert.equal(codeOf(() => verifySumsubSignature(pretty, headersFor(raw), SECRET)), "signature-invalid");
+    assert.equal(codeOf(() => verify(pretty, headersFor(raw), SECRET)), "signature-invalid");
   });
 });
 
@@ -251,6 +257,7 @@ describe("createSumsubKyc", () => {
     apiBase: "https://sumsub.test",
     levelName: "my level/with space",
     linkTtlSeconds: 900,
+    maxEventAgeSeconds: 600,
     digestAlg: "",
   };
   type Call = { url: string; init: RequestInit };
@@ -317,11 +324,88 @@ describe("createSumsubKyc", () => {
   });
 
   it("webhook() verifies with the webhook secret, not the API secret", async () => {
-    const kyc = createSumsubKyc(config);
+    const kyc = createSumsubKyc(config, { now: () => NOW });
     const raw = body();
     const event = await kyc.webhook(headersFor(raw), raw);
     assert.equal((event as { kind: string }).kind, "kyc.approved");
     const wrong = headersFor(raw, undefined, config.secretKey);
     await assert.rejects(async () => kyc.webhook(wrong, raw), { code: "signature-invalid" });
+  });
+});
+
+describe("webhook freshness", () => {
+  // Sumsub's digest has no timestamp, so this window is the only thing between a captured GREEN
+  // and a wallet that has since been revoked.
+  const CREATED = Date.UTC(2026, 9, 10, 10, 0, 0);
+  const at = (offsetSeconds: number) => ({ now: CREATED + offsetSeconds * 1000, maxAgeSeconds: 600 });
+  const raw = body();
+
+  it("accepts a fresh event", () => {
+    assert.equal(verifySumsubSignature(raw, headersFor(raw), SECRET, at(5)).type, "applicantReviewed");
+  });
+
+  it("accepts an event exactly at the boundary and refuses one second past it", () => {
+    assert.ok(verifySumsubSignature(raw, headersFor(raw), SECRET, at(600)));
+    assert.equal(codeOf(() => verifySumsubSignature(raw, headersFor(raw), SECRET, at(601))), "event-stale");
+  });
+
+  it("refuses a future-dated event, with the same boundary", () => {
+    assert.ok(verifySumsubSignature(raw, headersFor(raw), SECRET, at(-600)));
+    assert.equal(codeOf(() => verifySumsubSignature(raw, headersFor(raw), SECRET, at(-601))), "event-stale");
+  });
+
+  it("refuses a missing or unreadable createdAtMs instead of failing open", () => {
+    for (const createdAtMs of [undefined, "", "yesterday", "2026-13-45 99:99:99", null]) {
+      const stamped = JSON.stringify({ ...reviewed(), createdAtMs });
+      assert.equal(codeOf(() => verifySumsubSignature(stamped, headersFor(stamped), SECRET, at(0))), "event-stale", String(createdAtMs));
+    }
+  });
+
+  it("honours a custom window", () => {
+    assert.equal(codeOf(() => verifySumsubSignature(raw, headersFor(raw), SECRET, { now: CREATED + 61_000, maxAgeSeconds: 60 })), "event-stale");
+    assert.ok(verifySumsubSignature(raw, headersFor(raw), SECRET, { now: CREATED + 61_000, maxAgeSeconds: 120 }));
+  });
+
+  it("defaults the window to ten minutes", () => {
+    assert.ok(verifySumsubSignature(raw, headersFor(raw), SECRET, { now: CREATED + 600_000 }));
+    assert.equal(codeOf(() => verifySumsubSignature(raw, headersFor(raw), SECRET, { now: CREATED + 601_000 })), "event-stale");
+  });
+
+  it("reports a bad signature, not staleness, for a stale event with the wrong digest", () => {
+    // Staleness is checked after the signature so nobody can probe the window without the secret.
+    const bad = headersFor(raw, undefined, "other-secret");
+    assert.equal(codeOf(() => verifySumsubSignature(raw, bad, SECRET, at(10_000))), "signature-invalid");
+  });
+
+  it("is applied by createSumsubKyc with its configured window and injected clock", async () => {
+    const config: SumsubConfig = {
+      appToken: "t", secretKey: "k", webhookSecret: SECRET, apiBase: "https://sumsub.test", levelName: "l", linkTtlSeconds: 60, digestAlg: "", maxEventAgeSeconds: 60,
+    };
+    const fresh = createSumsubKyc(config, { now: () => CREATED + 30_000 });
+    const stale = createSumsubKyc(config, { now: () => CREATED + 90_000 });
+    assert.equal(((await fresh.webhook(headersFor(raw), raw)) as { kind: string }).kind, "kyc.approved");
+    await assert.rejects(async () => stale.webhook(headersFor(raw), raw), { code: "event-stale" });
+  });
+});
+
+describe("parseCreatedAtMs", () => {
+  it("reads Sumsub's UTC wall-clock string, with and without fractional seconds", () => {
+    assert.equal(parseCreatedAtMs("2020-02-21 13:23:19.321"), Date.UTC(2020, 1, 21, 13, 23, 19, 321));
+    assert.equal(parseCreatedAtMs("2020-02-21 13:23:19"), Date.UTC(2020, 1, 21, 13, 23, 19));
+  });
+
+  it("reads the string as UTC regardless of the process's time zone", () => {
+    assert.equal(parseCreatedAtMs("2026-10-10 10:00:00.000"), Date.UTC(2026, 9, 10, 10, 0, 0));
+  });
+
+  it("accepts an ISO string and an epoch number", () => {
+    assert.equal(parseCreatedAtMs("2020-02-21T13:23:19.321Z"), Date.UTC(2020, 1, 21, 13, 23, 19, 321));
+    assert.equal(parseCreatedAtMs(1_582_291_399_321), 1_582_291_399_321);
+  });
+
+  it("returns null for anything unreadable", () => {
+    for (const v of [undefined, null, "", "   ", "garbage", "2020-02-30x", Number.NaN, Number.POSITIVE_INFINITY, {}, []]) {
+      assert.equal(parseCreatedAtMs(v), null, String(v));
+    }
   });
 });

@@ -58,7 +58,11 @@ function fakeChain() {
   return { chain, calls };
 }
 
-function build(opts: { sumsub?: boolean } = {}) {
+// The Sumsub fixtures are stamped at this instant (UTC) and the service's clock is pinned to it.
+const NOW = Date.UTC(2026, 9, 10, 10, 0, 0);
+const CREATED_AT = "2026-10-10 10:00:00.000";
+
+function build(opts: { sumsub?: boolean; maxStarts?: number } = {}) {
   const { chain, calls } = fakeChain();
   const sumsub = {
     appToken: "tok",
@@ -68,11 +72,13 @@ function build(opts: { sumsub?: boolean } = {}) {
     levelName: "basic-kyc-level",
     linkTtlSeconds: 60,
     digestAlg: "",
+    maxEventAgeSeconds: 600,
   };
   const kyc = createKyc({
-    config: kycConfig(opts.sumsub ? { provider: "sumsub", sumsub } : {}),
+    config: kycConfig({ ...(opts.sumsub ? { provider: "sumsub" as const, sumsub } : {}), ...(opts.maxStarts === undefined ? {} : { maxStartsPerWalletPerHour: opts.maxStarts }) }),
     chain: async () => chain,
-    provider: opts.sumsub ? createSumsubKyc(sumsub, { fetch: (async () => Response.json({ url: "https://in.sumsub.test/l" })) as unknown as typeof fetch }) : undefined,
+    provider: opts.sumsub ? createSumsubKyc(sumsub, { now: () => NOW, fetch: (async () => Response.json({ url: "https://in.sumsub.test/l" })) as unknown as typeof fetch }) : undefined,
+    now: () => NOW,
     log: () => {},
   });
   const services = {
@@ -116,6 +122,15 @@ describe("session-required KYC routes", () => {
     assert.equal(out.simulated, true);
     assert.equal(kyc.session(out.session)?.wallet, WALLET);
     assert.equal((await json(await get(app, "/api/kyc/status", bearer(OTHER)))).pending, false);
+  });
+
+  it("start answers 429 rate-limited past the per-wallet limit, and only for that wallet", async () => {
+    const { app } = build({ maxStarts: 2 });
+    for (let i = 0; i < 2; i++) assert.equal((await post(app, "/api/kyc/start", {}, bearer(WALLET))).status, 200);
+    const res = await post(app, "/api/kyc/start", {}, bearer(WALLET));
+    assert.equal(res.status, 429);
+    assert.equal((await json(res)).code, "rate-limited");
+    assert.equal((await post(app, "/api/kyc/start", {}, bearer(OTHER))).status, 200);
   });
 
   it("status reports the session's wallet and is pending after a start", async () => {
@@ -162,7 +177,7 @@ describe("POST /api/webhooks/kyc (mock)", () => {
 describe("POST /api/webhooks/kyc (sumsub)", () => {
   const sign = (raw: string, secret = WEBHOOK_SECRET) => ({ "x-payload-digest": createHmac("sha256", secret).update(raw).digest("hex"), "x-payload-digest-alg": "HMAC_SHA256_HEX" });
   const reviewed = (patch: Record<string, unknown> = {}) =>
-    JSON.stringify({ type: "applicantReviewed", applicantId: "a1", correlationId: "c1", externalUserId: WALLET, reviewResult: { reviewAnswer: "GREEN" }, ...patch });
+    JSON.stringify({ type: "applicantReviewed", applicantId: "a1", correlationId: "c1", externalUserId: WALLET, reviewResult: { reviewAnswer: "GREEN" }, createdAtMs: CREATED_AT, ...patch });
 
   it("a signed GREEN attests the wallet named by externalUserId", async () => {
     const { app, calls } = build({ sumsub: true });
@@ -219,6 +234,15 @@ describe("POST /api/webhooks/kyc (sumsub)", () => {
     const res = await post(app, "/api/webhooks/kyc", raw, sign(raw));
     assert.equal(res.status, 400);
     assert.equal((await json(res)).code, "wallet-missing");
+  });
+
+  it("a stale but correctly signed delivery is 400 event-stale and writes nothing", async () => {
+    const { app, calls } = build({ sumsub: true });
+    const raw = reviewed({ createdAtMs: "2026-10-10 09:00:00.000" });
+    const res = await post(app, "/api/webhooks/kyc", raw, sign(raw));
+    assert.equal(res.status, 400);
+    assert.equal((await json(res)).code, "event-stale");
+    assert.equal(calls.attest.length, 0);
   });
 
   it("start returns the url Sumsub issued", async () => {
@@ -288,6 +312,8 @@ describe("assertEnvConsistent: identity rules", () => {
     const { kyc, ...rest } = patch;
     return { ...env, ...rest, kyc: { ...env.kyc, ...kyc } } as unknown as Env;
   };
+  const sumsubFull = { provider: "sumsub", sumsubAppToken: "t", sumsubSecretKey: "k", sumsubWebhookSecret: "w", sumsubLevelName: "lvl" } as const;
+  // Live mode refuses the mock verifier, so a valid live config is a Sumsub one.
   const liveBase = {
     mode: "live",
     authMode: "privy",
@@ -297,7 +323,7 @@ describe("assertEnvConsistent: identity rules", () => {
     rusdcMint: "mint",
     sessionSecret: "s",
     adminToken: "a",
-    kyc: { subjectSalt: "salt" },
+    kyc: { ...sumsubFull, subjectSalt: "salt" },
   };
   const message = (e: Env): string => {
     try {
@@ -313,7 +339,6 @@ describe("assertEnvConsistent: identity rules", () => {
     assert.equal(message(withEnv(liveBase)), "");
   });
 
-  const sumsubFull = { provider: "sumsub", sumsubAppToken: "t", sumsubSecretKey: "k", sumsubWebhookSecret: "w", sumsubLevelName: "lvl" } as const;
   it("accepts a fully configured Sumsub", () => {
     assert.equal(message(withEnv({ kyc: sumsubFull })), "");
   });
@@ -348,7 +373,33 @@ describe("assertEnvConsistent: identity rules", () => {
   });
 
   it("BACKEND_MODE=live without KYC_SUBJECT_SALT fails", () => {
-    assert.ok(message(withEnv({ ...liveBase, kyc: { subjectSalt: "" } })).includes("KYC_SUBJECT_SALT"));
+    assert.ok(message(withEnv({ ...liveBase, kyc: { ...liveBase.kyc, subjectSalt: "" } })).includes("KYC_SUBJECT_SALT"));
+  });
+
+  it("BACKEND_MODE=live refuses KYC_PROVIDER=mock", () => {
+    // The mock verifier's unsigned Approve button would otherwise write real attestations.
+    const msg = message(withEnv({ ...liveBase, kyc: { ...liveBase.kyc, provider: "mock" } }));
+    assert.ok(msg.includes("KYC_PROVIDER=mock is refused"), msg);
+    assert.equal(message(withEnv({ kyc: { provider: "mock" } })), "");
+  });
+
+  it("FEE_PAYER_KEYPAIR equal to ATTESTATION_ISSUER_KEYPAIR fails", () => {
+    const msg = message(withEnv({ feePayerKeypair: "same", attestationIssuerKeypair: "same" }));
+    assert.ok(msg.includes("FEE_PAYER_KEYPAIR") && msg.includes("ATTESTATION_ISSUER_KEYPAIR"), msg);
+  });
+
+  it("SUMSUB_WEBHOOK_MAX_AGE_SECONDS at or below zero (or not a number) fails", () => {
+    for (const sumsubMaxEventAgeSeconds of [0, -1, Number.NaN]) {
+      assert.ok(message(withEnv({ kyc: { sumsubMaxEventAgeSeconds } })).includes("SUMSUB_WEBHOOK_MAX_AGE_SECONDS"), String(sumsubMaxEventAgeSeconds));
+    }
+    assert.equal(message(withEnv({ kyc: { sumsubMaxEventAgeSeconds: 1 } })), "");
+  });
+
+  it("KYC_MAX_STARTS_PER_WALLET_PER_HOUR at or below zero (or not a number) fails", () => {
+    for (const maxStartsPerWalletPerHour of [0, -5, Number.NaN]) {
+      assert.ok(message(withEnv({ kyc: { maxStartsPerWalletPerHour } })).includes("KYC_MAX_STARTS_PER_WALLET_PER_HOUR"), String(maxStartsPerWalletPerHour));
+    }
+    assert.equal(message(withEnv({ kyc: { maxStartsPerWalletPerHour: 1 } })), "");
   });
 
   it("does not require the salt or issuer outside live mode", () => {
