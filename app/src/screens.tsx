@@ -69,7 +69,7 @@ function timing(l: LeaseView, now: number) {
     late: !allPaid && now > due + l.graceSecs,
     canDefault: !allPaid && now > due + l.graceSecs + l.periodSecs,
     canRelease: allPaid && now >= end,
-    canClaim: allPaid && now >= end + CLAIM_WINDOW_SECS,
+    canClaim: allPaid && now >= end + CLAIM_WINDOW_SECS + l.claimPauseSecs,
   };
 }
 
@@ -287,7 +287,7 @@ function TimeControls({ lease, now, h }: { lease: LeaseView; now: number; h: Han
     : t.allPaid
     ? [
       ["Term ends", t.end],
-      ["Landlord window over", t.end + CLAIM_WINDOW_SECS + 1],
+      ["Landlord window over", t.end + CLAIM_WINDOW_SECS + lease.claimPauseSecs + 1],
     ]
     : [
       ["Rent due", t.due],

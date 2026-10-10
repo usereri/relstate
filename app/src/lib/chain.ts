@@ -15,9 +15,6 @@ type PubKey = anchor.web3.PublicKey;
 export type { Role, WalletProvider };
 export type Status = "proposed" | "active" | "disputed" | "closed" | "defaulted";
 
-/** DISPUTE_WINDOW_SECS in the demo build of the program (constants.rs); the release build is 14 days. */
-export const DISPUTE_WINDOW_SECS = 30;
-
 export interface ListingView {
   address: string;
   id: string;
@@ -51,6 +48,8 @@ export interface LeaseView {
   proposedDeduction: number;
   /** unix seconds the dispute opened; 0 when not disputed */
   disputedAt: number;
+  /** seconds the lease spent disputed; pushes back when claim_deposit opens */
+  claimPauseSecs: number;
 }
 
 export interface ProfileView {
@@ -85,6 +84,8 @@ export interface Snapshot {
 const constant = (name: string) => Number(idl.constants.find((c) => c.name === name)!.value);
 export const DISCOUNT_PCT = constant("GOOD_STANDING_DISCOUNT_PCT");
 export const RENT_HEADROOM_PCT = constant("RENT_HEADROOM_PCT");
+/** How long a tenant has to answer a proposed deduction. Build-dependent (demo 30 s, release 14 days), so it comes from the IDL. */
+export const DISPUTE_WINDOW_SECS = constant("DISPUTE_WINDOW_SECS");
 
 // Previews of Profile::good_standing / typical_rent / deserves_discount in the program;
 // the program applies the real rule at propose_lease.
@@ -226,6 +227,7 @@ const leaseView = (address: PubKey, l: Acc<"lease">): LeaseView => ({
   status: Object.keys(l.status)[0] as Status,
   proposedDeduction: l.proposedDeduction.toNumber(),
   disputedAt: l.disputedAt.toNumber(),
+  claimPauseSecs: l.claimPauseSecs.toNumber(),
 });
 
 const profileView = (p: Acc<"profile"> | null): ProfileView | null =>
@@ -522,6 +524,33 @@ export async function acceptDeduction(me: Me, l: LeaseView) {
 /** The tenant rejects the proposed deduction: the deposit then returns in full through claim_deposit. */
 export function abandonDispute(me: Me, l: LeaseView) {
   return send(me, me.program.methods.abandonDispute().accountsPartial({ tenant: me.key, lease: new PublicKey(l.address) }));
+}
+
+/**
+ * A negotiated settlement needs BOTH the tenant's and the landlord's signature on one transaction.
+ * The app's single-session model cannot collect two, so there is deliberately no button for this:
+ * it is a script / multisig flow for now. This builds the unsigned transaction (fee payer = `me`),
+ * which the first party signs, passes to the second, and sends.
+ */
+export async function settleDisputeTx(me: Me, l: LeaseView, deduction: number) {
+  const lease = new PublicKey(l.address);
+  const [tenant, landlord] = [new PublicKey(l.tenant), new PublicKey(l.landlord)];
+  const [tokenProgramId, tenantAta, landlordAta] = await Promise.all([tokenProgram(), tokenAccountFor(tenant), tokenAccountFor(landlord)]);
+  return me.program.methods
+    .settleDispute(new BN(deduction))
+    .accountsPartial({
+      tenant,
+      landlord,
+      lease,
+      mint,
+      vault: vaultPda(lease),
+      tenantAta,
+      landlordAta,
+      tenantProfile: profilePda(tenant),
+      landlordProfile: profilePda(landlord),
+      tokenProgram: tokenProgramId,
+    })
+    .transaction();
 }
 
 /** The landlord closes a dispute the tenant left unanswered past the window. */
