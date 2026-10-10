@@ -53,6 +53,8 @@ export type SumsubConfig = {
    * that knows what it configured may as well say so.
    */
   digestAlg: string;
+  /** Events older (or newer) than this, by their own `createdAtMs`, are refused. */
+  maxEventAgeSeconds: number;
 };
 
 /** The three schemes Sumsub documents for `X-Payload-Digest`. */
@@ -63,6 +65,21 @@ const DIGEST_ALGORITHMS: Record<string, "sha1" | "sha256" | "sha512"> = {
 };
 
 export const DEFAULT_DIGEST_ALG = "HMAC_SHA256_HEX";
+export const DEFAULT_MAX_EVENT_AGE_SECONDS = 600;
+
+/**
+ * Sumsub's `createdAtMs` is a UTC wall-clock string like "2020-02-21 13:23:19.321" (it is not
+ * epoch milliseconds despite the name); an epoch number or ISO string is accepted as well.
+ * Returns epoch milliseconds, or null when it cannot be read — which callers treat as stale.
+ */
+export function parseCreatedAtMs(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string" || value.trim() === "") return null;
+  const text = value.trim();
+  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(text) ? `${text.replace(" ", "T")}Z` : text;
+  const at = Date.parse(iso);
+  return Number.isNaN(at) ? null : at;
+}
 
 /** The slice of an `applicantReviewed` payload this backend reads. */
 export type SumsubPayload = {
@@ -102,7 +119,7 @@ export function verifySumsubSignature(
   rawBody: string,
   headers: Record<string, string>,
   secret: string,
-  { digestAlg = "" }: { digestAlg?: string } = {},
+  { digestAlg = "", maxAgeSeconds = DEFAULT_MAX_EVENT_AGE_SECONDS, now = Date.now() }: { digestAlg?: string; maxAgeSeconds?: number; now?: number } = {},
 ): SumsubPayload {
   if (secret === "") throw new WebhookError("SUMSUB_WEBHOOK_SECRET is not configured; refusing to trust the webhook", "webhook-not-configured");
 
@@ -131,6 +148,16 @@ export function verifySumsubSignature(
   }
   const payload = parsed as SumsubPayload;
   if (typeof payload?.type !== "string") throw new WebhookError("webhook body is not a Sumsub event", "body-malformed");
+
+  // Freshness, after the signature so an attacker cannot probe the window without the secret. A
+  // missing or unreadable timestamp is stale, not "unknown": failing open here is exactly the
+  // replay this exists to stop.
+  const createdAt = parseCreatedAtMs(payload.createdAtMs);
+  if (createdAt === null) throw new WebhookError("webhook has no readable createdAtMs; refusing it as unverifiably old", "event-stale");
+  const ageSeconds = Math.abs(now - createdAt) / 1000;
+  if (ageSeconds > maxAgeSeconds) {
+    throw new WebhookError(`webhook is ${Math.round(ageSeconds)}s away from now, outside the ${maxAgeSeconds}s window`, "event-stale");
+  }
   return payload;
 }
 
@@ -216,7 +243,7 @@ export function signRequest(
   };
 }
 
-export function createSumsubKyc(config: SumsubConfig, deps: { fetch?: Fetch; log?: (...args: unknown[]) => void } = {}): SumsubKyc {
+export function createSumsubKyc(config: SumsubConfig, deps: { fetch?: Fetch; log?: (...args: unknown[]) => void; now?: () => number } = {}): SumsubKyc {
   const doFetch = deps.fetch ?? ((input, init) => retryingFetch(input as string, init as RequestInit));
   const log = deps.log ?? (() => {});
 
@@ -268,7 +295,11 @@ export function createSumsubKyc(config: SumsubConfig, deps: { fetch?: Fetch; log
     },
 
     parse(headers: Record<string, string>, rawBody: string) {
-      const payload = verifySumsubSignature(rawBody, headers, config.webhookSecret, { digestAlg: config.digestAlg });
+      const payload = verifySumsubSignature(rawBody, headers, config.webhookSecret, {
+        digestAlg: config.digestAlg,
+        maxAgeSeconds: config.maxEventAgeSeconds,
+        now: (deps.now ?? Date.now)(),
+      });
       return payloadToProviderEvent(payload);
     },
   };

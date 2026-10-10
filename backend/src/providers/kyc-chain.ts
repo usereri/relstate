@@ -156,8 +156,10 @@ export async function fetchKycPolicy(rpc: AttestationChainRpc): Promise<KycPolic
 }
 
 /** Mirrors `Attestation::is_valid` in the program, so the backend and the chain agree on "verified". */
-export function isValid(attestation: AttestationAccount | null, policy: KycPolicy | null, now = Math.floor(Date.now() / 1000)): boolean {
+export function isValid(attestation: AttestationAccount | null, policy: KycPolicy | null, now: number, wallet: Address): boolean {
   if (attestation === null) return false;
+  // The PDA seeds already bind the account to a wallet; compared anyway, as state.rs does.
+  if (attestation.wallet !== wallet) return false;
   // No readable Config means no known issuer to compare against, so nothing can be vouched for.
   if (policy === null || attestation.issuer !== policy.issuer) return false;
   return attestation.level >= 1 && !attestation.revoked && (attestation.expiresAt === 0 || attestation.expiresAt > now);

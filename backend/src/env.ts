@@ -159,6 +159,14 @@ export const env = {
     sumsubLinkTtlSeconds: num("SUMSUB_LINK_TTL_SECONDS", 1800),
     /** Pins the webhook digest algorithm; empty accepts whichever Sumsub's header names. */
     sumsubDigestAlg: str("SUMSUB_WEBHOOK_DIGEST_ALG"),
+    /**
+     * Sumsub's digest has no timestamp, so a captured delivery replays forever. Events whose own
+     * `createdAtMs` is further than this from now are refused, which stops a captured GREEN from
+     * re-attesting a revoked wallet after the in-memory dedupe store is lost on restart.
+     */
+    sumsubMaxEventAgeSeconds: num("SUMSUB_WEBHOOK_MAX_AGE_SECONDS", 600),
+    /** Verification links one wallet may start per hour; each one costs a vendor API call in sumsub mode. */
+    maxStartsPerWalletPerHour: num("KYC_MAX_STARTS_PER_WALLET_PER_HOUR", 10),
   },
 
   sponsor: {
@@ -200,6 +208,10 @@ export function assertEnvConsistent(e: Env = env): void {
     if (e.kyc.subjectSalt === "") problems.push("KYC_SUBJECT_SALT is required when BACKEND_MODE=live (any high-entropy string; keep it secret and stable)");
     if (e.rusdcMint === "") problems.push("RUSDC_MINT is required when BACKEND_MODE=live (run scripts/make-rusdc.ts)");
     if (e.authMode === "mock") problems.push("AUTH_MODE=mock is refused when BACKEND_MODE=live");
+    // Live mode forces a real issuer key into place, so the mock verifier's unsigned "Approve"
+    // button would write real attestations signed by it. KYC_PROVIDER defaults to mock, so this
+    // has to be refused by name rather than hoped for.
+    if (e.kyc.provider === "mock") problems.push("KYC_PROVIDER=mock is refused when BACKEND_MODE=live (set KYC_PROVIDER=sumsub)");
     if (e.sessionSecret === "") problems.push("SESSION_SECRET is required when BACKEND_MODE=live");
     if (e.adminToken === "") problems.push("ADMIN_TOKEN is required when BACKEND_MODE=live");
   }
@@ -226,6 +238,8 @@ export function assertEnvConsistent(e: Env = env): void {
     if (e.kyc.sumsubLevelName === "") problems.push("SUMSUB_LEVEL_NAME is required when KYC_PROVIDER=sumsub");
   }
   // The program refuses anything else, so catching it here saves a webhook that can never land.
+  if (!(e.kyc.sumsubMaxEventAgeSeconds > 0)) problems.push("SUMSUB_WEBHOOK_MAX_AGE_SECONDS must be greater than zero");
+  if (!(e.kyc.maxStartsPerWalletPerHour > 0)) problems.push("KYC_MAX_STARTS_PER_WALLET_PER_HOUR must be greater than zero");
   if (e.kyc.level !== 1 && e.kyc.level !== 2) problems.push(`KYC_LEVEL must be 1 (basic) or 2 (enhanced), not ${e.kyc.level}`);
   if (!Number.isInteger(e.kyc.validityDays) || e.kyc.validityDays < 0) problems.push("KYC_VALIDITY_DAYS must be a non-negative whole number of days (0 = never expires)");
   // The on-ramp is the one path that mints rUSDC without a user signature, so a

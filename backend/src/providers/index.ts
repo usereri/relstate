@@ -32,6 +32,7 @@ export function sumsubConfigFromEnv(): SumsubConfig {
     levelName: env.kyc.sumsubLevelName,
     linkTtlSeconds: env.kyc.sumsubLinkTtlSeconds,
     digestAlg: env.kyc.sumsubDigestAlg,
+    maxEventAgeSeconds: env.kyc.sumsubMaxEventAgeSeconds,
   };
 }
 
@@ -41,6 +42,7 @@ export function kycConfigFromEnv(backendUrl = `http://localhost:${env.port}`): K
     level: env.kyc.level,
     validityDays: env.kyc.validityDays,
     subjectSalt: env.kyc.subjectSalt,
+    maxStartsPerWalletPerHour: env.kyc.maxStartsPerWalletPerHour,
     backendUrl,
     appUrl: env.appUrl.replace(/\/$/, ""),
     sumsub: env.kyc.provider === "sumsub" ? sumsubConfigFromEnv() : undefined,

@@ -130,6 +130,8 @@ export type KycConfig = {
    * which anyone holding a list of applicant ids could confirm against the chain.
    */
   subjectSalt: string;
+  /** Verification links one wallet may start per hour. */
+  maxStartsPerWalletPerHour?: number;
   /** Absolute base URL of this backend, for the mock page. */
   backendUrl: string;
   /** Absolute base URL of the app, for the hosted page's return. */
@@ -198,6 +200,8 @@ export function createKyc(deps: KycDeps) {
   const records = new Map<string, KycRecord>();
   const lastByWallet = new Map<string, string>();
   const openSessionByWallet = new Map<string, string>();
+  const startsByWallet = new Map<string, number[]>();
+  const HOUR_MS = 3_600_000;
   /** In flight by ref: a provider that retries before we answer must not attest twice. */
   const inFlight = new Map<string, Promise<KycRecord>>();
 
@@ -215,10 +219,15 @@ export function createKyc(deps: KycDeps) {
           return generated;
         })();
 
+  // Never fail open to the click-to-approve provider: a config that says sumsub and carries no
+  // Sumsub block is a bug, and the identity provider is the one place a fallback is wrong.
+  if (deps.provider === undefined && config.provider === "sumsub" && config.sumsub === undefined) {
+    throw new Error("KycConfig names the sumsub provider but has no sumsub settings; refusing to fall back to the mock verifier");
+  }
   const provider: Provider =
     deps.provider ??
     (config.provider === "sumsub" && config.sumsub !== undefined
-      ? createSumsubKyc(config.sumsub, { log })
+      ? createSumsubKyc(config.sumsub, { log, now })
       : createMockKyc({ session: (id) => sessions.get(id), backendUrl: config.backendUrl }));
 
   /** `sha256(applicantId || salt)`: the only link between a wallet on chain and a person at the vendor. */
@@ -236,6 +245,16 @@ export function createKyc(deps: KycDeps) {
   async function start({ wallet }: { wallet: string }): Promise<KycStart> {
     if (!isAddress(wallet)) throw new KycError(`${wallet} is not a valid wallet address`, "malformed-wallet");
 
+    // Each start costs a vendor API call in sumsub mode, so one session cannot burn the quota.
+    const limit = config.maxStartsPerWalletPerHour ?? 10;
+    const recent = (startsByWallet.get(wallet) ?? []).filter((t) => now() - t < HOUR_MS);
+    if (recent.length >= limit) {
+      startsByWallet.set(wallet, recent);
+      throw new KycError(`at most ${limit} verification starts per hour for one wallet`, "rate-limited", 429);
+    }
+    // Sessions are only useful while a check is in flight; drop the stale ones.
+    for (const [id, s] of sessions) if (now() - s.createdAt > 24 * HOUR_MS) sessions.delete(id);
+
     const session: KycSession = { id: randomUUID(), wallet, provider: config.provider, createdAt: now() };
     // The app is a hash router, so the return path lives inside the fragment.
     const returnBase = `${config.appUrl}/#/app?tab=identity&kyc=`;
@@ -247,6 +266,7 @@ export function createKyc(deps: KycDeps) {
     });
     if (url === undefined || url === "") throw new KycError("the KYC provider returned no verification URL", "provider-no-url", 503);
 
+    startsByWallet.set(wallet, [...recent, now()]);
     sessions.set(session.id, session);
     openSessionByWallet.set(wallet, session.id);
     log(`kyc: session ${session.id} started for ${wallet} (${config.provider})`);
@@ -376,7 +396,7 @@ export function createKyc(deps: KycDeps) {
     const [attestation, policy] = await Promise.all([chain.read(wallet as Address), chain.policy()]);
     return {
       wallet,
-      verified: isValid(attestation, policy, Math.floor(now() / 1000)),
+      verified: isValid(attestation, policy, Math.floor(now() / 1000), wallet as Address),
       requireKyc: policy?.requireKyc ?? false,
       issuer: policy === null ? null : policy.issuer,
       attestation: attestation === null ? null : asView(attestation),
