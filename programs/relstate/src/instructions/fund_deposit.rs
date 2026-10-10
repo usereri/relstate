@@ -16,20 +16,20 @@ pub struct FundDeposit<'info> {
         seeds = [LEASE_SEED, lease.landlord.as_ref(), &lease.lease_id.to_le_bytes()],
         bump = lease.bump
     )]
-    pub lease: Account<'info, Lease>,
-    pub mint: InterfaceAccount<'info, Mint>,
+    pub lease: Box<Account<'info, Lease>>,
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
     #[account(
         mut, 
         seeds = [VAULT_SEED, lease.key().as_ref()], 
         bump
     )]
-    pub vault: InterfaceAccount<'info, TokenAccount>,
+    pub vault: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(
         mut,
         token::mint = mint,
         token::authority = tenant
     )]
-    pub tenant_ata: InterfaceAccount<'info, TokenAccount>,
+    pub tenant_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(
         init_if_needed,
         payer = tenant,
@@ -37,9 +37,9 @@ pub struct FundDeposit<'info> {
         seeds = [PROFILE_SEED, tenant.key().as_ref()],
         bump
     )]
-    pub tenant_profile: Account<'info, Profile>,
+    pub tenant_profile: Box<Account<'info, Profile>>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
-    pub config: Account<'info, Config>,
+    pub config: Box<Account<'info, Config>>,
     /// CHECK: the tenant's attestation PDA, forced by the seeds. Read by hand in the handler
     /// because an unverified wallet has no account here (see `apply`).
     #[account(seeds = [ATTESTATION_SEED, tenant.key().as_ref()], bump)]
