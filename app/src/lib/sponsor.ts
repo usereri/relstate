@@ -39,6 +39,37 @@ export function setSessionTokenSource(source: SessionTokenSource | null): void {
 }
 
 let discovering: Promise<string> | null = null;
+let health: Promise<BackendInfo> | null = null;
+
+/** The subset of `GET /health` the app needs. Every field here is a public key or a public flag. */
+export interface BackendInfo {
+  treasury: string;
+  rusdcMint: string | null;
+  auditorConfigured: boolean;
+}
+
+/**
+ * Asks the backend who it is. Public and unauthenticated, because the answer is public keys.
+ *
+ * The treasury address matters to the client: a first-use confidential-account setup must name the
+ * treasury as its fee payer, since that route checks the fee payer is the key it is about to
+ * co-sign with. The app cannot guess it, and unlike the sponsor's fee payer there is no VITE_
+ * override to fall back on.
+ */
+export function backendInfo(): Promise<BackendInfo> {
+  if (!API) return Promise.reject(new Error("No backend configured (VITE_API), so there is nothing to ask."));
+  health ??= (async () => {
+    const res = await fetch(`${API}/health`);
+    if (!res.ok) return fail(res, "backend health");
+    const body = (await res.json()) as { treasury?: string; rusdcMint?: string | null; auditorConfigured?: boolean };
+    if (!body.treasury) throw new Error(`${API}/health did not report a treasury address.`);
+    return { treasury: body.treasury, rusdcMint: body.rusdcMint ?? null, auditorConfigured: body.auditorConfigured === true };
+  })().catch((e) => {
+    health = null;
+    throw e;
+  });
+  return health;
+}
 
 /**
  * The address that pays for everything: fees, and the rent for the proof context-state accounts
@@ -63,21 +94,34 @@ export function sponsorFeePayer(): Promise<string> {
   return discovering;
 }
 
-/** Posts a user-signed, fee-payer-unsigned transaction. Returns the submitted signature. */
-export async function postSponsored(txBase64: string): Promise<string> {
+/** Posts a user-signed transaction to a co-signing route and returns the submitted signature. */
+async function postForCosigning(path: string, txBase64: string, what: string): Promise<string> {
   if (!API) throw new Error("No backend configured (VITE_API), so there is nobody to pay the fee.");
   if (!sessionToken)
     throw new Error("No session layer is registered, so this transaction cannot be authenticated to the sponsor. This is a bug: report it.");
   const token = await sessionToken();
-  const res = await fetch(`${API}/api/sponsor`, {
+  const res = await fetch(`${API}${path}`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
     body: JSON.stringify({ txBase64 }),
   });
-  if (!res.ok) return fail(res, "sponsor");
+  if (!res.ok) return fail(res, what);
   // The backend simulates before co-signing and reports simulation failures as { error },
   // so a 200 without a signature is still a failure.
   const body = (await res.json()) as { signature?: string; error?: string };
-  if (!body.signature) throw new Error(body.error ?? "sponsor returned no signature");
+  if (!body.signature) throw new Error(body.error ?? `${what} returned no signature`);
   return body.signature;
 }
+
+/** Posts a user-signed, fee-payer-unsigned transaction. Returns the submitted signature. */
+export const postSponsored = (txBase64: string): Promise<string> => postForCosigning("/api/sponsor", txBase64, "sponsor");
+
+/**
+ * The one flow that cannot go through `/api/sponsor`: creating a wallet's confidential token
+ * account. Somebody has to fund the account's rent, and the sponsor refuses outright any
+ * transaction that references the fee payer inside an instruction — a rule with no exception
+ * carved into it. So first-use setup is co-signed by the **treasury** key instead, under its own
+ * narrower bounds (docs/contracts/treasury.md, "Why the setup path uses the treasury key").
+ */
+export const postConfidentialAccountSetup = (txBase64: string): Promise<string> =>
+  postForCosigning("/api/treasury/confidential-account", txBase64, "confidential account setup");
