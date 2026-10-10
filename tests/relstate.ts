@@ -265,7 +265,7 @@ describe("relstate", () => {
           .fundDeposit(hash)
           .accountsPartial({
             tenant: tenant.publicKey, lease, mint, vault, tenantAta, tenantProfile,
-            tokenProgram,
+            tokenProgram, config: configPda, attestation: attestationPda(tenant.publicKey),
           })
           .signers([tenant])
           .rpc(),
@@ -964,12 +964,29 @@ describe("relstate", () => {
       const env = await setup();
       await expectFail(env.propose(), "KycRequired");
 
-      // Only the landlord is attested; the tenant is not. That is deliberate: the tenant is
-      // checked when they apply, and a lease can be proposed to someone who never applied.
+      // Only the landlord is attested; the tenant is not. propose_lease deliberately does not
+      // ask about the tenant: a lease can be proposed to someone who never applied, and the
+      // binding tenant gate is fund_deposit (next test).
       await attest(env.landlord.publicKey);
       expect(await connection.getAccountInfo(attestationPda(env.tenant.publicKey))).to.equal(null);
       await env.propose();
       await program.account.lease.fetch(env.lease);
+    });
+  });
+
+  it("with the gate on, an unverified tenant cannot fund_deposit; a verified one can", async () => {
+    await withKycRequired(async () => {
+      const env = await setup();
+      await attest(env.landlord.publicKey);
+      await env.propose();
+
+      // A verified landlord proposed to a tenant who never applied and was never verified.
+      await expectFail(env.fund(), "KycRequired");
+      expect((await program.account.lease.fetch(env.lease)).status).to.have.property("proposed");
+
+      await attest(env.tenant.publicKey);
+      await env.fund();
+      expect((await program.account.lease.fetch(env.lease)).status).to.have.property("active");
     });
   });
 
