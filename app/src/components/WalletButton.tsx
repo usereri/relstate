@@ -47,17 +47,26 @@ export const useLocalWallet = () => useContext(LocalContext);
  * keys from it; without it an extension wallet cannot pay rent privately. It stays optional —
  * not every adapter offers it.
  */
-export function useMe(): chain.Me | null {
+export function useSigner(): chain.Me | null {
   const local = useContext(LocalContext);
   const embedded = useEmbeddedWallet();
   const { publicKey, signTransaction, signAllTransactions, signMessage } = useWallet();
-  const me = useMemo(() => {
+  return useMemo(() => {
     if (embedded?.wallet) return chain.makeMe(embedded.wallet);
     if (local.on) return chain.makeMe(chain.localWallet(local.role));
     return publicKey && signTransaction && signAllTransactions
       ? chain.makeMe({ publicKey, signTransaction, signAllTransactions, signMessage })
       : null;
   }, [embedded?.wallet, local.on, local.role, publicKey, signTransaction, signAllTransactions, signMessage]);
+}
+
+/**
+ * The same signer, plus the sponsor session registration. Call this **once per tree** — the shell
+ * does — and {@link useSigner} everywhere else: the registration is process-wide and its cleanup
+ * clears it, so a second caller unmounting would log the first one out of the sponsor.
+ */
+export function useMe(): chain.Me | null {
+  const me = useSigner();
   // The one place that knows which wallet is live, so the one place that can authenticate it to
   // the sponsor. Covers all three kinds.
   useSponsorSession(me?.key.toBase58() ?? null);

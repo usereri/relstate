@@ -1,4 +1,5 @@
 import "./noenv.ts";
+import { env } from "../src/env.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
@@ -28,7 +29,16 @@ describe("server (mock mode, no secrets)", () => {
 
   it("/health never leaks a secret", async () => {
     const text = await (await app.request("/health")).text();
-    assert.doesNotMatch(text, /api-key|secret|ikm/i);
+    // Match the NAMES of secret-bearing fields, and the configured secret VALUES. Not substrings of
+    // the text: /health is full of random base58 addresses, and "ikm" turns up in one about once a
+    // thousand runs, which made this test flaky for a reason that had nothing to do with secrets.
+    const body = JSON.parse(text) as Record<string, unknown>;
+    const names = Object.keys(body).filter((k) => /secret|ikm|api[-_]?key|private|token|password|keypair/i.test(k));
+    assert.deepEqual(names, [], `/health exposes secret-looking fields: ${names.join(", ")}`);
+    for (const value of [env.feePayerKeypair, env.treasuryKeypair, env.attestationIssuerKeypair, env.rusdcAuditorIkm, env.sessionSecret, env.adminToken]) {
+      if (value.length >= 12) assert.ok(!text.includes(value), "/health contains a configured secret");
+    }
+    assert.ok(!/api-key=(?!<redacted>)/i.test(text), "an RPC api-key is not redacted");
   });
 
   it("POST /api/sponsor without a token is 401", async () => {

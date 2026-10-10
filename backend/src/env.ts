@@ -182,6 +182,39 @@ export const env = {
     maxLamportsPerWalletPerDay: bigintOf("SPONSOR_MAX_LAMPORTS_PER_WALLET_PER_DAY", 2_000_000n),
     maxLamportsGlobalPerDay: bigintOf("SPONSOR_MAX_LAMPORTS_GLOBAL_PER_DAY", 50_000_000n),
   },
+
+  /**
+   * POST /api/treasury/rent-payment: the treasury funds the proof context-state accounts of a
+   * confidential rent payment (docs/contracts/pay.md). The rent comes back when the plan closes
+   * them, so these bound the float and the grief, not the cost.
+   */
+  rentPayment: {
+    /**
+     * Per context-state account. The three a real plan creates fund 1_468_120 (161 B), 2_606_040
+     * (385 B) and 2_159_000 (297 B) lamports on devnet, so 3M is the largest legitimate one with a
+     * little headroom, not a round number.
+     */
+    maxContextLamports: bigintOf("RENT_PAYMENT_MAX_CONTEXT_LAMPORTS", 3_000_000n),
+    maxContextSpace: bigintOf("RENT_PAYMENT_MAX_CONTEXT_SPACE", 400n),
+    /** The plan creates one per transaction. */
+    maxCreateAccounts: num("RENT_PAYMENT_MAX_CREATE_ACCOUNTS", 1),
+    /** Most the treasury may be down on ONE transaction, by simulation. */
+    maxSpendLamports: bigintOf("RENT_PAYMENT_MAX_SPEND_LAMPORTS", 4_000_000n),
+    maxPerWalletPerHour: num("RENT_PAYMENT_MAX_PER_WALLET_PER_HOUR", 30),
+    maxGlobalPerHour: num("RENT_PAYMENT_MAX_GLOBAL_PER_HOUR", 300),
+    /** A legitimate payment books about 6.3M (its three creates); this allows about four a day. */
+    maxLamportsPerWalletPerDay: bigintOf("RENT_PAYMENT_MAX_LAMPORTS_PER_WALLET_PER_DAY", 30_000_000n),
+    maxLamportsGlobalPerDay: bigintOf("RENT_PAYMENT_MAX_LAMPORTS_GLOBAL_PER_DAY", 100_000_000n),
+  },
+
+  /**
+   * POST /api/treasury/rent-dust: the platform provisions the rent a wallet's Application and
+   * Profile accounts cost, so that nobody ever holds or acquires SOL. Once per wallet.
+   */
+  rentDust: {
+    maxGlobalPerHour: num("RENT_DUST_MAX_GLOBAL_PER_HOUR", 60),
+    maxLamportsGlobalPerDay: bigintOf("RENT_DUST_MAX_LAMPORTS_GLOBAL_PER_DAY", 100_000_000n),
+  },
 } as const;
 
 export type Env = typeof env;

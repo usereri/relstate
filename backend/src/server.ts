@@ -1,12 +1,14 @@
 // Phase 1, step 9: the backend skeleton. Hono, one health route, the hardened
 // sponsor endpoint, and the treasury operations. No providers yet — workstream C
 // adds the webhook routes on top of this.
-import { isAddress } from "@solana/kit";
+import { isAddress, type Address, type Signature } from "@solana/kit";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { AuthError, assertAdmin, createSessionToken, sessionFromAuthorizationHeader } from "./auth.ts";
-import type { HealthResponse, SponsorInfoResponse, SponsorRequest, TreasuryInvariantView } from "./contracts.ts";
+import { verifyRentPayment } from "./confidential.ts";
+import { RELSTATE_PROGRAM, type HealthResponse, type SponsorInfoResponse, type SponsorRequest, type TreasuryInvariantView } from "./contracts.ts";
 import { env, redactedRpcUrl } from "./env.ts";
+import { LeaseDecodeError, LeaseNotFound, fetchLease, type DecodedLease } from "./lease.ts";
 import { LimitError } from "./limits.ts";
 import { KycError, mockVerificationPage } from "./providers/kyc.ts";
 import { SumsubApiError } from "./providers/kyc-sumsub.ts";
@@ -48,6 +50,9 @@ function problem(error: unknown): { status: 400 | 401 | 403 | 404 | 409 | 429 | 
     };
   }
   if (error instanceof ServiceUnavailable) return { status: 503, body: { error: error.message, code: "unavailable" } };
+  // Our bug, not the caller's, but a silent "internal error" would hide the one thing worth
+  // knowing: this backend's hand-written Lease layout no longer matches the deployed program.
+  if (error instanceof LeaseDecodeError) return { status: 500, body: { error: error.message, code: "lease-layout" } };
   // Anything else is a bug or an upstream failure: log it, return nothing specific.
   console.error("unhandled error:", error);
   return { status: 500, body: { error: "internal error", code: "internal" } };
@@ -191,6 +196,113 @@ export function createApp(services: Services = createServices()) {
     }
     const treasury = await services.treasury();
     return c.json(await treasury.sponsorConfidentialAccountSetup({ txBase64, wallet: session.wallet }));
+  });
+
+  /**
+   * One transaction of a confidential rent payment, co-signed by the TREASURY.
+   *
+   * Not `/api/sponsor`, whose rule (the fee payer never appears inside an instruction) stays
+   * absolute: the proof plan funds its context-state accounts from the payer, so every transaction
+   * of it would be refused there. The treasury is confined to the few positions that are harmless
+   * (`rentshape.ts`), the session wallet must be the paying tenant, and the route has its own
+   * limiter and replay guard.
+   */
+  app.post("/api/treasury/rent-payment", async (c) => {
+    const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
+    const { txBase64 } = await readJson<{ txBase64?: string }>(c);
+    if (typeof txBase64 !== "string" || txBase64 === "") {
+      throw new RejectedTransaction("txBase64 is required", "malformed-body");
+    }
+    const treasury = await services.treasury();
+    return c.json(await treasury.sponsorRentPayment({ txBase64, wallet: session.wallet }));
+  });
+
+  /**
+   * The platform provisions the rent a tenant's Application and Profile cost, so nobody ever holds or
+   * acquires SOL. Bound to the session wallet (a body that names another wallet is refused, not
+   * obeyed), once per wallet, never to a wallet that already holds enough.
+   */
+  app.post("/api/treasury/rent-dust", async (c) => {
+    const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
+    const body = ((await c.req.json().catch(() => null)) ?? {}) as { wallet?: unknown };
+    if (body.wallet !== undefined && body.wallet !== session.wallet) {
+      throw new RejectedTransaction("rent dust can only be requested for the session's own wallet", "wallet-mismatch");
+    }
+    const sponsor = await services.sponsor();
+    if (session.wallet === sponsor.feePayer) {
+      throw new RejectedTransaction("the fee payer does not need rent dust", "wallet-is-sponsor");
+    }
+    const treasury = await services.treasury();
+    return c.json(await treasury.grantRentDust({ wallet: session.wallet }));
+  });
+
+  /**
+   * The after-the-fact amount check — the mechanism the auditor key exists for.
+   *
+   * `pay_rent` credits `lease.rent_amount` whatever was actually sent, because the amount is
+   * encrypted and the program cannot see it (docs/privacy.md, "What pay_rent can and cannot
+   * enforce"). This route closes that gap: it pairs the confidential `Transfer` directly before the
+   * `pay_rent` instruction — the program's own layout rule, so exactly one transfer answers for
+   * exactly one recorded payment — decrypts it with the auditor key, and compares against the rent
+   * the program itself wrote on the lease.
+   *
+   * Three deliberate choices:
+   *
+   * - **The expected amount is read from the chain**, never from the request. A body that could
+   *   name its own `expectedAmount` would make this endpoint a rubber stamp.
+   * - **Only the two parties may ask.** The answer is a rent amount, which is the one thing
+   *   `docs/privacy.md` promises to keep private, so the session wallet must be the lease's tenant
+   *   or its landlord. A stranger gets 404 and learns nothing, not even that the lease exists.
+   * - **A mismatch is a 200, not an error.** "This payment settled the wrong amount" is a
+   *   successful audit with a negative result; it is `ok: false` in the body, for the caller to act
+   *   on. Only a failure to *perform* the check is an error status.
+   */
+  app.post("/api/rent/verify", async (c) => {
+    const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
+    const body = await readJson<{ signature?: string; lease?: string }>(c);
+    if (typeof body.signature !== "string" || body.signature === "") {
+      throw new RejectedTransaction("signature is required", "malformed-body");
+    }
+    if (typeof body.lease !== "string" || !isAddress(body.lease)) {
+      throw new RejectedTransaction("lease must be the lease account's address", "malformed-body");
+    }
+    const auditor = services.auditor();
+    const rpc = services.client().rpc;
+
+    let lease: DecodedLease;
+    try {
+      lease = await fetchLease(rpc, body.lease as Address, RELSTATE_PROGRAM as Address);
+    } catch (error) {
+      if (error instanceof LeaseNotFound) return c.json({ error: `no lease ${body.lease}`, code: "lease-unknown" }, 404);
+      throw error;
+    }
+    if (session.wallet !== lease.tenant && session.wallet !== lease.landlord) {
+      // Same shape as the unknown-lease answer on purpose: the amount is private, and so is who
+      // the parties are to someone who is neither.
+      return c.json({ error: `no lease ${body.lease}`, code: "lease-unknown" }, 404);
+    }
+
+    const check = await verifyRentPayment(rpc, body.signature as Signature, {
+      relstateProgram: RELSTATE_PROGRAM as Address,
+      expectedAmount: lease.rentAmount,
+      auditorSecret: auditor.keys.elgamal.secret(),
+      // Authorisation above is per LEASE; decryption is per TRANSACTION. Without this the caller is
+      // cleared for one lease and handed the plaintext of any payment on the platform. A mismatch is
+      // refused before anything is decrypted, and answers exactly like an unknown lease.
+      expectedLease: body.lease as Address,
+    });
+    if (check.leaseMismatch) return c.json({ error: `no lease ${body.lease}`, code: "lease-unknown" }, 404);
+    return c.json({
+      ok: check.ok,
+      lease: body.lease,
+      signature: body.signature,
+      expectedAmount: check.expectedAmount.toString(),
+      settledAmount: check.settledAmount?.toString() ?? null,
+      reason: check.reason ?? null,
+      mint: lease.mint,
+      paidCount: lease.paidCount,
+      transfer: check.transfer === undefined ? null : { instructionIndex: check.transfer.instructionIndex, mint: check.transfer.mint },
+    });
   });
 
   app.get("/api/treasury/invariant", async (c) => {

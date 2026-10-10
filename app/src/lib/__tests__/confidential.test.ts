@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as kit from "@solana/kit";
-import { fromWeb3Instruction, spliceAfterTransfer, TOKEN_2022_PROGRAM, type PlannedMessage } from "../confidential";
+import { findTransfer, fromWeb3Instruction, spliceAfterTransfer, TOKEN_2022_PROGRAM, transferMessageIndex, type PlannedMessage } from "../confidential";
 
 // spliceAfterTransfer only touches `kit`; passing the real kit keeps the zk-sdk wasm unloaded.
 const libs = { kit } as unknown as Parameters<typeof spliceAfterTransfer>[2];
@@ -48,6 +48,41 @@ describe("spliceAfterTransfer", () => {
   it("throws rather than guessing when there is no transfer", () => {
     expect(() => spliceAfterTransfer([msg(proof), msg(...close)], [payRent], libs)).toThrow(/No ConfidentialTransfer/);
     expect(() => spliceAfterTransfer([], [payRent], libs)).toThrow(/No ConfidentialTransfer/);
+  });
+});
+
+describe("findTransfer and transferMessageIndex", () => {
+  const proof = ix(OTHER, 1);
+  const lookalikes = [ix(TOKEN_2022_PROGRAM as kit.Address, 27, 8), ix(OTHER, 27, 7)];
+
+  it("locates the transfer as [message, instruction]", () => {
+    const messages = [msg(proof), msg(proof, proof, transfer(), proof)];
+    expect(findTransfer(messages)).toEqual([1, 2]);
+    expect(transferMessageIndex(messages)).toBe(1);
+  });
+
+  // The planner puts the transfer last; an earlier message that merely looks similar must not win.
+  it("takes the last message when several carry a transfer", () => {
+    const messages = [msg(transfer()), msg(proof, transfer()), msg(proof)];
+    expect(findTransfer(messages)).toEqual([1, 1]);
+    expect(transferMessageIndex(messages)).toBe(1);
+  });
+
+  it("returns null from findTransfer, and throws from transferMessageIndex, when there is no transfer", () => {
+    for (const messages of [[], [msg(proof), msg(proof)]]) {
+      expect(findTransfer(messages)).toBeNull();
+      expect(() => transferMessageIndex(messages)).toThrow(/No ConfidentialTransfer/);
+    }
+  });
+
+  it("does not mistake [27, 8] on Token-2022 or [27, 7] on another program for the transfer", () => {
+    const messages = [msg(...lookalikes)];
+    expect(findTransfer(messages)).toBeNull();
+    expect(() => transferMessageIndex(messages)).toThrow(/No ConfidentialTransfer/);
+  });
+
+  it("finds the real transfer among lookalikes", () => {
+    expect(findTransfer([msg(...lookalikes, transfer())])).toEqual([0, 2]);
   });
 });
 

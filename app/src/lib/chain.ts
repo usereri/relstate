@@ -33,6 +33,13 @@ export interface LeaseView {
   id: string;
   landlord: string;
   tenant: string;
+  /**
+   * The mint this lease is settled in, from the lease account itself. The program pins it with
+   * `has_one = mint`, and it is what decides whether rent moves publicly or confidentially
+   * (docs/contracts/program-interface.md §3) — so the confidential path reads it from here rather
+   * than assuming the app-wide {@link MINT}.
+   */
+  mint: string;
   rent: number;
   deposit: number;
   startTs: number;
@@ -140,23 +147,41 @@ export interface Me {
  * raised to the caller, which fails the flow with a message naming the mint instead of sending a
  * transaction built against the wrong token program.
  */
-let resolving: Promise<PubKey> | undefined;
-export const tokenProgram = (): Promise<PubKey> =>
-  (resolving ??= connection
-    .getAccountInfo(mint)
+const resolving = new Map<string, Promise<PubKey>>();
+
+/**
+ * Which token program owns `which` mint. Keyed per mint, because a lease carries its own mint
+ * (`LeaseView.mint`) and the confidential rent path has to derive that mint's ATAs, not the
+ * app-wide one's.
+ */
+export function tokenProgramOf(which: PubKey | string): Promise<PubKey> {
+  const key = typeof which === "string" ? which : which.toBase58();
+  const held = resolving.get(key);
+  if (held) return held;
+  const pending = connection
+    .getAccountInfo(new PublicKey(key))
     .then((info) => {
-      if (!info) throw new Error(`The lease mint ${MINT} does not exist on ${RPC}.`);
+      if (!info) throw new Error(`The lease mint ${key} does not exist on ${RPC}.`);
       return info.owner.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
     })
     .catch((e) => {
-      resolving = undefined;
+      resolving.delete(key);
       throw e;
-    }));
+    });
+  resolving.set(key, pending);
+  return pending;
+}
+
+export const tokenProgram = (): Promise<PubKey> => tokenProgramOf(MINT);
 
 const ataWith = (wallet: PubKey, program: PubKey) => getAssociatedTokenAddressSync(mint, wallet, false, program);
 
 /** The lease mint's associated token account for a wallet, on whichever token program owns it. */
 export const tokenAccountFor = async (wallet: PubKey) => ataWith(wallet, await tokenProgram());
+
+/** The same, for an arbitrary mint: the accounts a confidential transfer on a lease mint names. */
+export const tokenAccountOn = async (which: PubKey | string, wallet: PubKey) =>
+  getAssociatedTokenAddressSync(new PublicKey(which), wallet, false, await tokenProgramOf(which));
 
 export function makeMe(w: WalletProvider | AdapterWallet): Me {
   const wallet = asWalletProvider(w);
@@ -202,6 +227,7 @@ const leaseView = (address: PubKey, l: Acc<"lease">): LeaseView => ({
   id: l.leaseId.toString(),
   landlord: l.landlord.toBase58(),
   tenant: l.tenant.toBase58(),
+  mint: l.mint.toBase58(),
   rent: l.rentAmount.toNumber(),
   deposit: l.depositAmount.toNumber(),
   startTs: l.startTs.toNumber(),
@@ -425,6 +451,35 @@ export async function payRent(me: Me, l: LeaseView) {
       tenantProfile: profilePda(me.key),
       tokenProgram: tokenProgramId,
     }));
+}
+
+/**
+ * `pay_rent` as a bare instruction, built against the lease's own mint.
+ *
+ * The confidential path cannot use {@link payRent}: the program matches the Token-2022 transfer by
+ * POSITION — it must be the instruction directly before this one — so `pay_rent` has to be spliced
+ * into a transaction the confidential planner built, not sent on its own
+ * (docs/contracts/program-interface.md §3). `lib/pay.ts` does the splicing.
+ */
+export async function payRentInstruction(me: Me, l: LeaseView): Promise<anchor.web3.TransactionInstruction> {
+  const leaseMint = new PublicKey(l.mint);
+  const [tokenProgramId, tenantAta, landlordAta] = await Promise.all([
+    tokenProgramOf(leaseMint),
+    tokenAccountOn(leaseMint, me.key),
+    tokenAccountOn(leaseMint, new PublicKey(l.landlord)),
+  ]);
+  return me.program.methods
+    .payRent()
+    .accountsPartial({
+      tenant: me.key,
+      lease: new PublicKey(l.address),
+      mint: leaseMint,
+      tenantAta,
+      landlordAta,
+      tenantProfile: profilePda(me.key),
+      tokenProgram: tokenProgramId,
+    })
+    .instruction();
 }
 
 export async function releaseDeposit(me: Me, l: LeaseView, deduction: number) {

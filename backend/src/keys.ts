@@ -1,6 +1,6 @@
 // Key loading. Three Solana keys with three different jobs, plus the auditor's
 // ElGamal/AES pair. Nothing here ever logs a secret.
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { webcrypto } from "node:crypto";
 import { createKeyPairSignerFromBytes, getBase58Encoder, getBase58Decoder, type KeyPairSigner } from "@solana/kit";
 import { AeKey, ConfidentialKeys, ElGamalKeypair } from "@solana/zk-sdk";
@@ -14,16 +14,59 @@ export type LoadedKey = {
   ephemeral: boolean;
 };
 
-/** 64 raw bytes: 32-byte seed followed by the 32-byte public key, as the Solana CLI writes them. */
-export function parseKeyPairBytes(spec: string): Uint8Array {
-  const trimmed = spec.trim();
-  const raw = trimmed.startsWith("[") ? trimmed : readFileSync(trimmed, "utf8").trim();
-  if (raw.startsWith("[")) {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) throw new Error("keypair JSON is not an array");
-    return new Uint8Array(parsed as number[]);
+/**
+ * Thrown for any unreadable key spec. Its message and cause name WHAT was wrong, never the spec or
+ * the file's contents: a spec is either a path or the secret itself, and an error message cannot
+ * tell which until it is too late.
+ */
+export class KeySpecError extends Error {
+  constructor(message: string) {
+    super(message); // deliberately no `cause`: Node's inspector prints cause chains
+    this.name = "KeySpecError";
   }
-  return new Uint8Array(getBase58Encoder().encode(raw));
+}
+
+const decodeSecret = (text: string): Uint8Array | null => {
+  const t = text.trim();
+  if (t.startsWith("[")) {
+    try {
+      const parsed: unknown = JSON.parse(t);
+      return Array.isArray(parsed) ? new Uint8Array(parsed as number[]) : null;
+    } catch {
+      return null; // JSON.parse's message can quote the input
+    }
+  }
+  try {
+    return new Uint8Array(getBase58Encoder().encode(t));
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * 64 raw bytes: 32-byte seed followed by the 32-byte public key, as the Solana CLI writes them.
+ *
+ * What `spec` is gets decided WITHOUT touching the filesystem first: an inline JSON array or a
+ * base58 string that decodes to 64 bytes is the key itself. Only anything else is treated as a path,
+ * and only if a file exists there. The old order (anything not starting with `[` is a path) handed a
+ * base58 secret to `readFileSync`, whose ENOENT error quotes it.
+ */
+export function parseKeyPairBytes(spec: string): Uint8Array {
+  const inline = decodeSecret(spec);
+  if (inline !== null && inline.length === 64) return inline;
+  const trimmed = spec.trim();
+  if (trimmed.startsWith("[") || !existsSync(trimmed)) {
+    throw new KeySpecError("not an inline keypair (a 64-byte JSON array or base58 secret) and no file exists at that path");
+  }
+  let raw: string;
+  try {
+    raw = readFileSync(trimmed, "utf8");
+  } catch {
+    throw new KeySpecError("the keypair file exists but could not be read");
+  }
+  const fromFile = decodeSecret(raw);
+  if (fromFile === null) throw new KeySpecError("the keypair file is neither a JSON byte array nor a base58 secret");
+  return fromFile;
 }
 
 /** Accepts a path to a CLI keypair file, an inline JSON byte array, or a base58 secret key. */
@@ -31,13 +74,27 @@ export async function loadKeyPairSigner(spec: string, label: string): Promise<Ke
   let bytes: Uint8Array;
   try {
     bytes = parseKeyPairBytes(spec);
-  } catch (cause) {
-    // Never echo `spec` itself: it may be the secret rather than a path.
-    throw new Error(`${label}: could not read the keypair (expected a file path, a JSON byte array, or a base58 secret key)`, { cause });
+  } catch (e) {
+    // The cause is dropped on purpose, and the message never echoes `spec`: it may be the secret.
+    throw new KeySpecError(`${label}: could not read the keypair (${e instanceof KeySpecError ? e.message : "expected a file path, a JSON byte array, or a base58 secret key"})`);
   }
-  if (bytes.length !== 64) throw new Error(`${label}: expected 64 keypair bytes, got ${bytes.length}`);
+  if (bytes.length !== 64) throw new KeySpecError(`${label}: expected 64 keypair bytes, got ${bytes.length}`);
   return createKeyPairSignerFromBytes(bytes);
 }
+
+/**
+ * Replaces every configured secret with `<redacted>`, for the one place that prints an arbitrary
+ * error: a script's top-level catch. Defence in depth behind the sanitised errors above, since a
+ * future failure path will not necessarily have been written with this in mind.
+ */
+export function redactSecrets(text: string, secrets: readonly string[] = secretValues()): string {
+  let out = text;
+  for (const secret of secrets) if (secret.length >= 12) out = out.split(secret).join("<redacted>");
+  return out;
+}
+const secretValues = (): string[] =>
+  [env.feePayerKeypair, env.treasuryKeypair, env.attestationIssuerKeypair, env.rusdcAuditorIkm, env.onramp.stripeSecretKey, env.onramp.stripeWebhookSecret, env.sessionSecret, env.adminToken]
+    .filter((v) => v !== "");
 
 /** Ed25519 keypair bytes in CLI layout, via WebCrypto — same approach as `spikes/ct`. */
 export async function generateKeyPairBytes(): Promise<Uint8Array> {

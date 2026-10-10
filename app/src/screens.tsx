@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { DocPicker } from "@/components/DocPicker";
 import { ProfileCard } from "@/components/ProfileCard";
 import { Terms, termRows } from "@/components/Terms";
+import { PaySection, useConfidentialRent } from "@/screens/Pay";
 import { Doc } from "@/lib/hash";
 import * as chain from "@/lib/chain";
 import { ApplicationView, DISCOUNT_PCT, LeaseView, ListingView, NewListing, Role, Snapshot, Status, isWallet, maxDiscountRent, qualifiesForDiscount } from "@/lib/chain";
@@ -308,6 +309,9 @@ function TimeControls({ lease, now, h }: { lease: LeaseView; now: number; h: Han
 
 export function ActiveLease({ lease, now, role, h }: { lease: LeaseView; now: number; role: Role; h: Handlers }) {
   const [deduction, setDeduction] = useState("0");
+  // On a confidential mint `pay_rent` moves nothing by itself: the transfer has to be composed
+  // around it, which is workstream F's Pay section below. The public button stands down.
+  const privateRent = useConfidentialRent(lease);
   const t = timing(lease, now);
   const dueIn = t.due - now;
   const deductionBase = Math.round((Number(deduction) || 0) * USDC);
@@ -376,11 +380,14 @@ export function ActiveLease({ lease, now, role, h }: { lease: LeaseView; now: nu
           </Card>
         )}
 
+        {/* workstream F: the private rent payment, and the landlord's own view of what arrived */}
+        <PaySection lease={lease} role={role} canPay={t.canPay} />
+
         <TimeControls lease={lease} now={now} h={h} />
       </div>
 
       <StickyAction>
-        {role === "tenant" && !t.allPaid && (
+        {role === "tenant" && !t.allPaid && !privateRent && (
           <Button size="lg" disabled={!t.canPay || !!h.busy} onClick={() => h.pay(lease)}>
             <HandCoins /> {h.busy ?? (t.canPay ? `Pay ${usdc(lease.rent)} USDC rent` : `Next rent opens in ${duration(dueIn)}`)}
           </Button>
