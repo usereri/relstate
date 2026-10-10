@@ -106,6 +106,9 @@ const h: Handlers = {
   release: no,
   markDefault: no,
   claim: no,
+  acceptDeduction: no,
+  abandonDispute: no,
+  finalizeDeduction: no,
   jump: no,
 };
 

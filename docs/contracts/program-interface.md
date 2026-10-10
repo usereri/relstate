@@ -213,12 +213,112 @@ Step 3 is idempotent, so running it again is harmless.
 and allows its own mints. `scripts/setup-demo.ts` still uses the file for the app's mint and still
 needs its own `solana-keygen` step.
 
-## 5. Known gaps
+## 5. Deposit exits and the dispute state machine (D1)
+
+> **BREAKING: requires a fresh deploy.** `Profile` grew 88 → 94 B, `Lease` 193 → 218 B, and there is
+> no `realloc` or migration instruction. An in-place upgrade of the program id over existing
+> accounts makes them undeserializable (`AccountDidNotDeserialize`), which also strands any deposit
+> escrowed under them, because only the lease PDA can sign the vault and no instruction can load
+> the lease. Deploy to a network with no old leases/profiles (devnet: wipe or use a new program id).
+> The demo build must be the deployed one: the client reads `CLAIM_WINDOW_SECS` and
+> `DISPUTE_WINDOW_SECS` from the IDL (`#[constant]`), so build the IDL and the deploy from the same
+> feature set.
+
+`release_deposit` with a deduction no longer pays anything. It moves the lease to `Disputed` and
+records `proposed_deduction` and `disputed_at`. Constants (`constants.rs`, demo / release):
+`DISPUTE_WINDOW_SECS` = 30 s / 14 days, `CLAIM_WINDOW_SECS` = 10 s / 14 days.
+
+New / changed instructions (all take the lease mint's `token_program`; the Anchor client fills PDAs):
+
+| Instruction | Signers | Accounts beyond lease |
+|---|---|---|
+| `release_deposit(deduction)` | landlord | unchanged (vault, both ATAs, both profiles) |
+| `accept_deduction()` | tenant | mint, vault, tenant_ata, landlord_ata, tenant_profile, landlord_profile |
+| `abandon_dispute()` | tenant | none (moves no money) |
+| `finalize_deduction()` | landlord | same as `release_deposit` |
+| `settle_dispute(deduction)` | tenant **and** landlord | mint, vault, both ATAs, both profiles |
+| `mark_default()` | landlord | **new account:** `landlord_profile` (A1) |
+
+`Lease` gained `proposed_deduction: u64`, `disputed_at: i64`, `claim_pause_secs: i64`,
+`dispute_rejected: bool`. `Status` gained `Disputed` (last variant, so existing values are unchanged).
+
+### Transition table
+
+`end` = `start + term*period`. `D` = `disputed_at`. Every row names who can act and what moves.
+
+| State | Action (signer) | Condition | Result | Money |
+|---|---|---|---|---|
+| Active, all paid | `release_deposit(0)` (landlord) | `now >= end` | Closed | full deposit to tenant |
+| Active, all paid | `release_deposit(d>0)` (landlord) | `now >= end`, `d <= deposit`, not previously rejected | **Disputed** | none |
+| Active, all paid | `release_deposit(d>0)` (landlord) | tenant already rejected once | error `DisputeAlreadyRejected` | none |
+| Active, all paid | `claim_deposit` (tenant) | `now >= end + CLAIM_WINDOW + claim_pause_secs` | Closed | full deposit to tenant |
+| Active, unpaid | `mark_default` (landlord) | overdue past period + grace | Defaulted | owed rent (capped) to landlord, rest to tenant |
+| Disputed | `accept_deduction` (tenant) | any time | Closed | `deposit - proposed` to tenant, `proposed` to landlord |
+| Disputed | `settle_dispute(d)` (tenant + landlord) | any time, `d <= deposit` | Closed | `deposit - d` to tenant, `d` to landlord |
+| Disputed | `abandon_dispute` (tenant) | `now < D + DISPUTE_WINDOW` | Active (`dispute_rejected = true`, proposal void, `claim_pause_secs += now - D`) | none |
+| Disputed | `abandon_dispute` (tenant) | `now >= D + DISPUTE_WINDOW` | error `DisputeWindowClosed` | none |
+| Disputed | `finalize_deduction` (landlord) | `now >= D + DISPUTE_WINDOW` | Closed | `deposit - proposed` to tenant, `proposed` to landlord |
+| Disputed | `finalize_deduction` (landlord) | `now < D + DISPUTE_WINDOW` | error `DisputeWindowOpen` | none |
+| Disputed | `claim_deposit`, `mark_default`, `release_deposit` | | error `WrongStatus` (the claim clock is paused) | none |
+| Closed / Defaulted | anything | | error `WrongStatus` | none |
+
+Why nothing is stuck: from `Disputed` the tenant can always end it (`accept_deduction`, or
+`abandon_dispute` inside the window) and the landlord can always end it after the window
+(`finalize_deduction`). The two exits are independent. `accept_deduction` deliberately has **no
+deadline**: it pays exactly what the landlord proposed, so it can never hurt the landlord, and if it
+expired with the window a landlord who proposed and vanished would leave only `finalize_deduction`
+(theirs) to move the deposit. A landlord who never proposes anything is covered by `claim_deposit`.
+`settle_dispute` is the only path with a free amount, because it is the only one both parties sign.
+
+### Claim clock
+
+`claim_deposit` is allowed at `end + CLAIM_WINDOW_SECS + claim_pause_secs`. While `Disputed` the status
+check blocks it. `abandon_dispute` adds the seconds spent disputing to `claim_pause_secs`, so the
+tenant waits exactly as long as they would have without the proposal: neither reset nor skipped, and a
+landlord gains no extra delay by disputing.
+
+### Trade-off (read this before presenting D1)
+
+A tenant who explicitly rejects gets the **whole deposit** back through `claim_deposit`, even if there
+was real damage. That is the price of no unilateral deduction without an oracle: the program cannot
+know who is right. The landlord's remedies are `mark_default` (unpaid rent during the term), the
+permanent rejection on the public record, a negotiated `settle_dispute`, and the roadmap appraiser
+flow (D2, not built). `dispute_rejected` stops a landlord re-disputing every time the claim comes due
+(which would keep the deposit out of reach forever); `release_deposit(0)` stays available so a
+landlord can still choose a full return.
+
+Roadmap, not built: **D2** (appraiser arbitration) and a **tenant bond** variant, where rejecting
+a deduction requires a small bond that the landlord keeps if damage is later upheld. The bond is
+the safer middle ground between "tenant can always reject for free" and "landlord decides", at the
+cost of a second fund-moving path, so it waits for D2.
+
+Also new in this version: `propose_lease` rejects a zero deposit (`ZeroDeposit`, checked after the
+good-standing discount, which can round a tiny deposit to 0) and a term above `MAX_LEASE_SECS`
+(`TermTooLong`: 5 years in a release build, 100 in the demo build). `record_deposit_outcome` uses
+saturating counters, so bookkeeping can never fail a payout. `settle_dispute` needs two signatures
+on one transaction, so the app only has a transaction builder for it (`settleDisputeTx`), no button.
+
+### Reputation fields (A1/A2)
+
+`Profile` gained `last_deposit_return_bps: u16` (0-10000) and `deposit_events: u32`. All exits that
+move the deposit (`release_deposit(0)`, `accept_deduction`, `finalize_deduction`, `settle_dispute`,
+`claim_deposit`, `mark_default`) update both profiles' `deposit_total`, `deducted_total`, rate and
+event count, except `mark_default`, which updates the **landlord's** only (the seizure used to be
+missing there, which let a landlord who always defaults tenants show a perfect return rate).
+`claim_deposit` records 10000 bps but bumps `deposits_claimed`, not `deposits_returned_full`.
+bps = `(deposit - deduction) * 10000 / deposit` in u128, rounded down, and a zero deposit is 10000.
+
+Account sizes (for the backend's rent-dust sizing, `8 + INIT_SPACE`, pinned by a Rust test):
+`Application` **104 B** (unchanged), `Profile` **94 B** (was 88); the backend's rent-dust sizing for a new wallet must use these. `Lease` is now **218 B** (was 193); the
+landlord pays it and the backend does not size it.
+
+## 6. Known gaps
 
 | Gap | Where |
 |---|---|
 | The settled confidential amount is unverified on chain | by design, `docs/privacy.md` |
-| The deposit stays public: `fund_deposit` moves a public amount into the vault, and `release_deposit` / `claim_deposit` / `mark_default` pay out publicly | settled, `docs/privacy.md`. The vault is a PDA-owned token account and a PDA cannot hold ElGamal keys, so its balance cannot be confidential. Only rent is private |
+| The deposit-return % is a published record, not a guarantee: leases between wallets one person controls inflate it (the landlord picks the deposit size), so its only sybil resistance is the KYC issuer. Not fixable on chain without an oracle | disclosed; D2 roadmap |
+| Deposit amount and deduction are public by design (the return-% reputation depends on it):  `fund_deposit` moves a public amount into the vault, and `release_deposit` / `claim_deposit` / `mark_default` pay out publicly | settled, `docs/privacy.md`. The vault is a PDA-owned token account and a PDA cannot hold ElGamal keys, so its balance cannot be confidential. Only rent is private |
 | `init_config` is first-caller-wins | acceptable for a demo; `set_admin` is the recovery path |
 | The confidential **accept** path is not covered on chain by `make test-demo` | a confidential `Transfer` needs real ZK proofs, which the local suite cannot produce: with a dummy payload the transfer fails inside Token-2022 *before* `pay_rent` runs, so any assertion about `pay_rent`'s behaviour would pass for the wrong reason. Covered instead by 10 Rust unit tests over the matcher in `programs/relstate/src/instructions/pay_rent.rs`, and end to end by the Phase 1 exit-gate devnet run |
 

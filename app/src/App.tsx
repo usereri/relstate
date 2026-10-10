@@ -256,6 +256,9 @@ function Shell({
     release: (l, deduction) => run("Releasing deposit…", (m) => chain.releaseDeposit(m, l, deduction)),
     markDefault: (l) => run("Declaring default…", (m) => chain.markDefault(m, l)),
     claim: (l) => run("Claiming deposit…", (m) => chain.claimDeposit(m, l)),
+    acceptDeduction: (l) => run("Accepting deduction…", (m) => chain.acceptDeduction(m, l)),
+    abandonDispute: (l) => run("Rejecting deduction…", (m) => chain.abandonDispute(m, l)),
+    finalizeDeduction: (l) => run("Finalizing deduction…", (m) => chain.finalizeDeduction(m, l)),
     jump: (secs) => run("Moving the clock…", () => chain.fastForward(secs)),
   };
 

@@ -32,6 +32,11 @@ pub const KYC_LEVEL_ENHANCED: u8 = 2;
 #[constant]
 pub const GOOD_STANDING_DISCOUNT_PCT: u8 = 50;
 
+// Denominator of every deposit-return rate on a Profile: 10000 bps means the tenant got all of
+// the deposit back.
+#[constant]
+pub const BPS_FULL: u16 = 10_000;
+
 // listing text limits, in bytes (the app mirrors them as MAX_TEXT in lib/config.ts)
 pub const MAX_TITLE: usize = 60;
 pub const MAX_CITY: usize = 40;
@@ -55,9 +60,34 @@ pub const MIN_PERIOD_SECS: i64 = if cfg!(feature = "demo") {
     28 * 24 * 60 * 60
 };
 
-// 14 days for releasing deposit by landlord before tenant may claim it. Shortened in the demo
-pub const CLAIM_WINDOW_SECS: i64 = if cfg!(feature = "demo") {
-    10
-} else {
-    14 * 24 * 60 * 60
-};
+// 14 days for releasing deposit by landlord before tenant may claim it. Shortened in the demo.
+//
+// These two are `#[constant]` so they land in the IDL and the app and tests read the value of the
+// build they run against instead of mirroring it. The release value is spelled as a literal
+// (14 * 24 * 60 * 60) because the IDL stores the expression's text, which the client must parse
+// as a number.
+#[cfg(feature = "demo")]
+#[constant]
+pub const CLAIM_WINDOW_SECS: i64 = 10;
+#[cfg(not(feature = "demo"))]
+#[constant]
+pub const CLAIM_WINDOW_SECS: i64 = 1_209_600;
+
+// How long the tenant has to answer a proposed deduction (accept it or reject it) before the
+// landlord may finalize it unanswered. Same 14 days as CLAIM_WINDOW_SECS in a real deployment,
+// and short enough in the demo build to be shown on stage without waiting.
+#[cfg(feature = "demo")]
+#[constant]
+pub const DISPUTE_WINDOW_SECS: i64 = 30;
+#[cfg(not(feature = "demo"))]
+#[constant]
+pub const DISPUTE_WINDOW_SECS: i64 = 1_209_600;
+
+// Upper bound on term_periods * period_secs. Nothing else bounds a lease from above, and a term
+// near i64::MAX would leave a funded deposit unreachable forever (release is "not ended", claim is
+// "too early"). Five years in a real deployment; the demo build is generous so local clock jumps
+// never trip it.
+#[cfg(feature = "demo")]
+pub const MAX_LEASE_SECS: i64 = 100 * 365 * 24 * 60 * 60;
+#[cfg(not(feature = "demo"))]
+pub const MAX_LEASE_SECS: i64 = 5 * 365 * 24 * 60 * 60;

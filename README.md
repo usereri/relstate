@@ -64,7 +64,9 @@ flowchart LR
 
 A profile (one per wallet, seen as tenant and as landlord) keeps counters that only the program writes:
 
-`leases_completed` · `paid_on_time` · `paid_late` · `defaults` · `deposits_returned_full` · `deposits_claimed` · `deposit_total` · `deducted_total` · `rent_paid_total`
+`leases_completed` · `paid_on_time` · `paid_late` · `defaults` · `deposits_returned_full` · `deposits_claimed` · `deposit_total` · `deducted_total` · `rent_paid_total` · `last_deposit_return_bps` · `deposit_events`
+
+The last two are the landlord's public deposit-return record: the share of the most recent deposit that went back (10000 = all of it) and how many leases it is based on. Deposit amounts and deductions are public by design; only rent payments are confidential (`docs/privacy.md`). It is a published record, **not a guarantee or a deterrent on its own**: a landlord can inflate it with leases between wallets they control, so it relies on the KYC issuer (`require_kyc`) for sybil resistance.
 
 The **typical rent** of a tenant is `rent_paid_total / payments made`.
 
@@ -96,8 +98,12 @@ The third rule closes the cheap trick of finishing a tiny lease to earn a discou
 | `fund_deposit` | tenant | Accept: checks the contract hash, locks the deposit, starts the lease. |
 | `pay_rent` | tenant | Pay one period straight to the landlord. On time within the grace period, late after it. No prepaying. |
 | `mark_default` | landlord | When rent is overdue by more than a period plus grace: takes the owed rent (up to the deposit), returns the rest. |
-| `release_deposit` | landlord | After the term: returns the deposit minus an optional deduction. Both records show it. |
-| `claim_deposit` | tenant | If the landlord does not release within the claim window, the tenant takes it back and the landlord's record shows it. |
+| `release_deposit` | landlord | After the term. A deduction of 0 returns the deposit at once. A deduction above 0 is only a **proposal**: the lease becomes `Disputed`, nothing is paid and the claim clock pauses. |
+| `accept_deduction` | tenant | Agrees to the proposed deduction; the deposit is split and the lease closes. |
+| `abandon_dispute` | tenant | Rejects the proposal inside the dispute window; the claim clock resumes and `claim_deposit` returns the whole deposit. |
+| `finalize_deduction` | landlord | After the dispute window, if the tenant stayed silent: the proposal stands. |
+| `settle_dispute` | tenant **and** landlord | Both sign a final deduction (any amount up to the deposit); the deposit is split and the lease closes. |
+| `claim_deposit` | tenant | If the landlord does not release within the claim window (paused while a dispute is open), the tenant takes it all back and the landlord's record shows it. |
 
 Program ID: `G4iMjveQKXztnGoxigAeWPrb5evT9yt6qaLkgQEp2dXm`
 
@@ -176,7 +182,9 @@ In each, open **Connect wallet** and pick the built-in **Test wallet**. It is a 
 
 ## Devnet
 
-1. Build and deploy the demo build: `anchor build -- --features demo`, then `anchor deploy --provider.cluster devnet`.
+1. Build and deploy the demo build: `anchor build -- --features demo`, then `anchor deploy --provider.cluster devnet`. **The demo build must be the deployed one** (the app reads the claim and dispute windows from the IDL it is built against, so build the app from the same `anchor build -- --features demo` output you deployed).
+
+   > **Fresh network state required.** `Profile` (88 → 94 B) and `Lease` (193 → 218 B) grew with the deposit-dispute work and there is **no migration**. Upgrading this program id in place over accounts created by the earlier layout makes every one of them undeserializable, and any deposit escrowed in their vaults unreachable. Deploy to a network (or a new program id) that holds no old leases or profiles; on devnet that means wiping or switching before deploying this version.
 2. Point the app at devnet in `app/.env.local`: `VITE_RPC=https://api.devnet.solana.com`
 3. Create the mint and fund your wallets: `RPC=https://api.devnet.solana.com make demo-setup WALLETS="<landlord> <tenant>"`
 4. `npm run app`, then open the two roles in **separate browser profiles or browsers**, each with its own wallet account.

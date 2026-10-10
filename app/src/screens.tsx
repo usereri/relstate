@@ -37,6 +37,9 @@ export interface Handlers {
   release: (l: LeaseView, deduction: number) => Promise<boolean>;
   markDefault: (l: LeaseView) => Promise<boolean>;
   claim: (l: LeaseView) => Promise<boolean>;
+  acceptDeduction: (l: LeaseView) => Promise<boolean>;
+  abandonDispute: (l: LeaseView) => Promise<boolean>;
+  finalizeDeduction: (l: LeaseView) => Promise<boolean>;
   jump: (secs: number) => Promise<boolean>;
 }
 
@@ -49,6 +52,7 @@ export const statusBadge = (s: Status) =>
   ({
     proposed: <Badge variant="warning">Proposed</Badge>,
     active: <Badge variant="success">Active</Badge>,
+    disputed: <Badge variant="warning">Deduction proposed</Badge>,
     closed: <Badge variant="outline">Completed</Badge>,
     defaulted: <Badge variant="danger">Defaulted</Badge>,
   })[s];
@@ -66,7 +70,7 @@ function timing(l: LeaseView, now: number) {
     late: !allPaid && now > due + l.graceSecs,
     canDefault: !allPaid && now > due + l.graceSecs + l.periodSecs,
     canRelease: allPaid && now >= end,
-    canClaim: allPaid && now >= end + CLAIM_WINDOW_SECS,
+    canClaim: allPaid && now >= end + CLAIM_WINDOW_SECS + l.claimPauseSecs,
   };
 }
 
@@ -279,10 +283,12 @@ function Periods({ lease }: { lease: LeaseView }) {
 function TimeControls({ lease, now, h }: { lease: LeaseView; now: number; h: Handlers }) {
   if (!CAN_FAST_FORWARD) return null;
   const t = timing(lease, now);
-  const steps: [string, number][] = t.allPaid
+  const steps: [string, number][] = lease.status === "disputed"
+    ? [["Answer window over", lease.disputedAt + chain.DISPUTE_WINDOW_SECS + 1]]
+    : t.allPaid
     ? [
       ["Term ends", t.end],
-      ["Landlord window over", t.end + CLAIM_WINDOW_SECS + 1],
+      ["Landlord window over", t.end + CLAIM_WINDOW_SECS + lease.claimPauseSecs + 1],
     ]
     : [
       ["Rent due", t.due],
@@ -373,8 +379,7 @@ export function ActiveLease({ lease, now, role, h }: { lease: LeaseView; now: nu
               </label>
               <Input id="deduction" inputMode="decimal" value={deduction} onChange={(e) => setDeduction(e.target.value)} aria-invalid={badDeduction} />
               <p className="text-xs text-muted-foreground">
-                The tenant gets {usdc(Math.max(0, lease.deposit - deductionBase))} USDC back. Leave at 0 to return it in full; deductions are visible on both
-                records.
+                The tenant gets {usdc(Math.max(0, lease.deposit - deductionBase))} USDC back. Leave at 0 to return it in full. A deduction is only a proposal: the tenant can accept or reject it, and it is visible on both records.
               </p>
             </CardContent>
           </Card>
@@ -400,7 +405,7 @@ export function ActiveLease({ lease, now, role, h }: { lease: LeaseView; now: nu
         )}
         {role === "landlord" && t.allPaid && (
           <Button size="lg" disabled={!t.canRelease || badDeduction || !!h.busy} onClick={() => h.release(lease, deductionBase)}>
-            <KeyRound /> {h.busy ?? (t.canRelease ? "Release deposit" : `Release opens in ${duration(t.end - now)}`)}
+            <KeyRound /> {h.busy ?? (t.canRelease ? (deductionBase > 0 ? "Propose deduction" : "Release deposit") : `Release opens in ${duration(t.end - now)}`)}
           </Button>
         )}
         {role === "landlord" && !t.allPaid && (
@@ -414,6 +419,63 @@ export function ActiveLease({ lease, now, role, h }: { lease: LeaseView; now: nu
               </p>
             )}
           </>
+        )}
+      </StickyAction>
+    </>
+  );
+}
+
+// ---- a proposed deduction waiting for the tenant ----------------------------------------
+
+export function DisputedLease({ lease, now, role, h }: { lease: LeaseView; now: number; role: Role; h: Handlers }) {
+  const answerBy = lease.disputedAt + chain.DISPUTE_WINDOW_SECS;
+  const open = now < answerBy;
+  const kept = lease.proposedDeduction;
+  const returned = lease.deposit - kept;
+  const copy =
+    role === "landlord"
+      ? open
+        ? `Waiting for the tenant, who has ${duration(answerBy - now)} to accept or reject. Nothing has been paid yet.`
+        : "The tenant did not answer in time, so you can finalize your proposed deduction."
+      : open
+        ? `Your landlord wants to keep ${usdc(kept)} USDC and return ${usdc(returned)} USDC. You have ${duration(answerBy - now)} to accept or reject.`
+        : "The answer window has passed. You can still accept; the landlord can now finalize.";
+  return (
+    <>
+      <div className="rise flex flex-col gap-4">
+        <Waiting title="Deduction proposed, waiting for tenant" text={copy}>
+          <Terms
+            rows={[
+              ["Deposit in vault", `${usdc(lease.deposit)} USDC`],
+              ["Proposed deduction", `${usdc(kept)} USDC`],
+              ["Back to the tenant", `${usdc(returned)} USDC`],
+            ]}
+          />
+          {role === "tenant" && (
+            <p className="mt-3 text-xs text-muted-foreground">
+              Rejecting returns the whole deposit to you after the usual claim wait; the landlord's proposal is void and the rejection stays on the record.
+            </p>
+          )}
+        </Waiting>
+        <TimeControls lease={lease} now={now} h={h} />
+      </div>
+      <StickyAction>
+        {role === "tenant" && (
+          <>
+            <Button size="lg" disabled={!!h.busy} onClick={() => h.acceptDeduction(lease)}>
+              <KeyRound /> {h.busy ?? `Accept: get ${usdc(returned)} USDC back`}
+            </Button>
+            {open && (
+              <Button size="lg" variant="outline" disabled={!!h.busy} onClick={() => h.abandonDispute(lease)}>
+                <X /> Reject the deduction
+              </Button>
+            )}
+          </>
+        )}
+        {role === "landlord" && (
+          <Button size="lg" disabled={open || !!h.busy} onClick={() => h.finalizeDeduction(lease)}>
+            <Gavel /> {h.busy ?? (open ? `Finalize opens in ${duration(answerBy - now)}` : "Finalize deduction")}
+          </Button>
         )}
       </StickyAction>
     </>
@@ -495,7 +557,7 @@ export function LeaseTab({
   const records = useRecords(unique(applicants.map((a) => a.tenant)));
 
   const list = leases ?? [];
-  const open = list.find((l) => l.status === "proposed" || l.status === "active");
+  const open = list.find((l) => l.status === "proposed" || l.status === "active" || l.status === "disputed");
   const current = sel ?? open?.address ?? list[0]?.address ?? (role === "landlord" ? "new" : "");
   const lease = list.find((l) => l.address === current) ?? null;
 
@@ -530,6 +592,7 @@ export function LeaseTab({
   else if (!snap) main = <Waiting title="Loading" text="Reading both records from the network." />;
   else if (lease.status === "proposed") main = role === "tenant" ? <AcceptLease lease={lease} h={h} /> : <ProposedWaiting lease={lease} />;
   else if (lease.status === "active") main = <ActiveLease lease={lease} now={now} role={role} h={h} />;
+  else if (lease.status === "disputed") main = <DisputedLease lease={lease} now={now} role={role} h={h} />;
   else main = <Finished lease={lease} snap={snap} onNew={role === "landlord" ? () => setSel("new") : undefined} />;
 
   return (

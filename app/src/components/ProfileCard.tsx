@@ -104,9 +104,24 @@ export function ProfileCard({ role, address, profile, countries, verified }: Pro
             {p ? usdc(p.deductedTotal) : 0} <span className="text-base font-normal text-muted-foreground">of {p ? usdc(p.depositTotal) : 0} USDC deducted</span>
           </dd>
           <dt className="text-xs text-muted-foreground">
-            {deducted === null ? "No closed deposits yet" : `${deducted}% of deposits kept by the landlord`}
+            {deducted === null ? "No closed deposits yet" : role === "landlord" ? "Deposit amounts and deductions are public on chain" : `${deducted}% of deposits kept by the landlord`}
           </dt>
         </div>
+        {role === "landlord" && p && (p.depositEvents ?? 0) > 0 && deducted !== null && (
+          <div className="col-span-2 bg-card px-5 py-3">
+            <dd className="font-serif text-2xl font-semibold">
+              Returns {100 - deducted}%{" "}
+              <span className="text-base font-normal text-muted-foreground">
+                of deposits over {p.depositEvents} {p.depositEvents === 1 ? "lease" : "leases"}
+              </span>
+            </dd>
+            <dt className="text-xs text-muted-foreground">
+              Lifetime, by amount
+              {p.lastDepositReturnBps !== undefined && ` · most recent lease: ${Math.round(p.lastDepositReturnBps / 100)}%`}. A published record, not a
+              guarantee: it can be inflated by leases between accounts one person controls, so weigh it with the Verified badge.
+            </dt>
+          </div>
+        )}
         {countries && countries.length > 0 && (
           <div className="col-span-2 bg-card px-5 py-3">
             <dd className="flex flex-wrap gap-1.5">

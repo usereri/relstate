@@ -28,7 +28,6 @@ const RENT = 1_000;
 const DEPOSIT = 2_000;
 const PERIOD = 100;
 const GRACE = 10;
-const CLAIM_WINDOW = 10; // CLAIM_WINDOW_SECS in the demo build
 const TERM = 3;
 const START_BALANCE = 10_000;
 const LEASE_HASH = Array(32).fill(7);
@@ -130,6 +129,17 @@ describe("relstate", () => {
   const provider = anchor.getProvider() as anchor.AnchorProvider;
   const { connection } = provider;
   const program = anchor.workspace.relstate as Program<Relstate>;
+
+  // The build-dependent windows come from the IDL of the build under test, never mirrored here.
+  // the Anchor client camel-cases constant names (the raw IDL file keeps SCREAMING_SNAKE)
+  const idlConst = (name: string) => {
+    const camel = name.toLowerCase().replace(/_(\w)/g, (_, ch) => ch.toUpperCase());
+    const c = program.idl.constants?.find((x) => x.name === name || x.name === camel);
+    if (!c) throw new Error(`no ${name} in IDL: ${JSON.stringify(program.idl.constants?.map((x) => x.name))}`);
+    return Number(c.value);
+  };
+  const CLAIM_WINDOW = idlConst("CLAIM_WINDOW_SECS");
+  const DISPUTE_WINDOW = idlConst("DISPUTE_WINDOW_SECS");
 
   // Unique per test, so lease PDAs never collide on a shared validator.
   let nextLeaseId = Date.now();
@@ -245,10 +255,10 @@ describe("relstate", () => {
       landlordProfile, tenantProfile, tokenProgram,
 
       // overrides let tests try invalid lease terms
-      propose: (o: { rent?: number; term?: number; grace?: number; region?: number[]; tenant?: anchor.web3.PublicKey; tenantProfile?: anchor.web3.PublicKey } = {}) =>
+      propose: (o: { rent?: number; deposit?: number; term?: number; grace?: number; region?: number[]; tenant?: anchor.web3.PublicKey; tenantProfile?: anchor.web3.PublicKey } = {}) =>
         program.methods
           .proposeLease(
-            new BN(leaseId), new BN(o.rent ?? RENT), new BN(DEPOSIT), new BN(periodSecs),
+            new BN(leaseId), new BN(o.rent ?? RENT), new BN(o.deposit ?? DEPOSIT), new BN(periodSecs),
             new BN(o.grace ?? GRACE), o.term ?? TERM, LEASE_HASH, o.region ?? REGION
           )
           .accountsPartial({
@@ -295,7 +305,7 @@ describe("relstate", () => {
           .markDefault()
           .accountsPartial({
             landlord: signer.publicKey, lease, mint, vault,
-            tenantAta, landlordAta, tenantProfile, tokenProgram,
+            tenantAta, landlordAta, tenantProfile, landlordProfile, tokenProgram,
           })
           .signers([signer])
           .rpc(),
@@ -304,6 +314,44 @@ describe("relstate", () => {
       release: (deduction: number, signer = landlord) =>
         program.methods
           .releaseDeposit(new BN(deduction))
+          .accountsPartial({
+            landlord: signer.publicKey, lease, mint, vault,
+            tenantAta, landlordAta, tenantProfile, landlordProfile, tokenProgram,
+          })
+          .signers([signer])
+          .rpc(),
+
+      // both parties sign; `signers` lets a test leave one out or swap in a stranger
+      settle: (deduction: number, signers: anchor.web3.Keypair[] = [tenant, landlord]) =>
+        program.methods
+          .settleDispute(new BN(deduction))
+          .accountsPartial({
+            tenant: tenant.publicKey, landlord: landlord.publicKey, lease, mint, vault,
+            tenantAta, landlordAta, tenantProfile, landlordProfile, tokenProgram,
+          })
+          .signers(signers)
+          .rpc(),
+
+      accept: (signer = tenant) =>
+        program.methods
+          .acceptDeduction()
+          .accountsPartial({
+            tenant: signer.publicKey, lease, mint, vault,
+            tenantAta, landlordAta, tenantProfile, landlordProfile, tokenProgram,
+          })
+          .signers([signer])
+          .rpc(),
+
+      abandon: (signer = tenant) =>
+        program.methods
+          .abandonDispute()
+          .accountsPartial({ tenant: signer.publicKey, lease })
+          .signers([signer])
+          .rpc(),
+
+      finalize: (signer = landlord) =>
+        program.methods
+          .finalizeDeduction()
           .accountsPartial({
             landlord: signer.publicKey, lease, mint, vault,
             tenantAta, landlordAta, tenantProfile, landlordProfile, tokenProgram,
@@ -379,7 +427,9 @@ describe("relstate", () => {
 
   it("pays a deduction to the landlord and records it", async () => {
     const env = await fullyPaid();
-    await env.release(500);
+    await env.release(500); // only a proposal now
+    await timeTravel(DISPUTE_WINDOW + 5);
+    await env.finalize();
 
     expect(await balance(env.tenantAta)).to.equal(START_BALANCE - 3 * RENT - 500);
     expect(await balance(env.landlordAta)).to.equal(3 * RENT + 500);
@@ -389,6 +439,9 @@ describe("relstate", () => {
     // the landlord's Profile carries the same facts
     const l = await program.account.profile.fetch(env.landlordProfile);
     expect([l.depositTotal.toNumber(), l.deductedTotal.toNumber()]).to.deep.equal([DEPOSIT, 500]);
+    // A2: 1500 of 2000 came back = 7500 bps, on both records
+    expect([t.lastDepositReturnBps, t.depositEvents, l.lastDepositReturnBps, l.depositEvents])
+      .to.deep.equal([7500, 1, 7500, 1]);
   });
 
   it("counts a late payment", async () => {
@@ -529,6 +582,25 @@ describe("relstate", () => {
   it("rejects a period below the minimum", async () => {
     const env = await setup(0);
     await expectFail(env.propose(), "PeriodTooShort");
+  });
+
+  it("rejects a lease with no deposit, including one a discount rounds to nothing", async () => {
+    // a free "full return" would inflate the landlord's deposit_events at zero capital cost
+    const env = await setup();
+    await expectFail(env.propose({ deposit: 0 }), "ZeroDeposit");
+
+    const first = await active();
+    await finishLease(first); // earns the 50% discount
+    const second = await setup(PERIOD, USDC, first);
+    await expectFail(second.propose({ deposit: 1 }), "ZeroDeposit"); // 1 * 50% rounds down to 0
+  });
+
+  it("rejects an absurdly long term", async () => {
+    // would leave a funded deposit unreleasable and unclaimable forever
+    const env = await setup(2 ** 40); // x3 periods is ~10^5 years
+    await expectFail(env.propose(), "TermTooLong");
+    const huge = await setup(Number.MAX_SAFE_INTEGER);
+    await expectFail(huge.propose(), "TermTooLong");
   });
 
   it("rejects a region that is not two uppercase letters", async () => {
@@ -1102,6 +1174,256 @@ describe("relstate", () => {
     await timeTravel(CLAIM_WINDOW + 10);
     await expectFail(env.claim(env.landlord));
     expect(await balance(env.vault)).to.equal(DEPOSIT);
+  });
+
+  // ---- A1/A2: deposit-return reputation ----
+
+  it("default seizure is recorded on the landlord's profile (A1)", async () => {
+    const env = await active();
+    await env.pay();
+    await timeTravel(PERIOD);
+    await env.pay();
+    await timeTravel(215);
+    await env.markDefault(); // seizes one period of rent: 1000 of 2000
+
+    const l = await program.account.profile.fetch(env.landlordProfile);
+    expect([l.depositTotal.toNumber(), l.deductedTotal.toNumber()]).to.deep.equal([DEPOSIT, RENT]);
+    expect([l.lastDepositReturnBps, l.depositEvents]).to.deep.equal([5000, 1]);
+    // a default is not a completed lease and not a voluntary full return
+    expect([l.leasesCompleted, l.depositsReturnedFull]).to.deep.equal([0, 0]);
+    // the tenant's own deposit record is untouched by a default
+    const t = await program.account.profile.fetch(env.tenantProfile);
+    expect([t.depositEvents, t.depositTotal.toNumber()]).to.deep.equal([0, 0]);
+  });
+
+  it("a seizure of the whole deposit reads as a 0% return", async () => {
+    const env = await active();
+    await timeTravel(215); // 3*RENT owed, capped at the deposit
+    await env.markDefault();
+    const l = await program.account.profile.fetch(env.landlordProfile);
+    expect([l.deductedTotal.toNumber(), l.lastDepositReturnBps]).to.deep.equal([DEPOSIT, 0]);
+  });
+
+  it("an instant full release records 10000 bps on both profiles (A2)", async () => {
+    const env = await fullyPaid();
+    await env.release(0);
+    for (const profile of [env.tenantProfile, env.landlordProfile]) {
+      const p = await program.account.profile.fetch(profile);
+      expect([p.lastDepositReturnBps, p.depositEvents, p.depositsReturnedFull]).to.deep.equal([10000, 1, 1]);
+    }
+  });
+
+  it("a claimed deposit is 10000 bps but still counts against the landlord (A2)", async () => {
+    const env = await fullyPaid();
+    await timeTravel(CLAIM_WINDOW + 10);
+    await env.claim();
+    const l = await program.account.profile.fetch(env.landlordProfile);
+    expect([l.lastDepositReturnBps, l.depositEvents, l.depositsClaimed, l.depositsReturnedFull])
+      .to.deep.equal([10000, 1, 1, 0]);
+    const t = await program.account.profile.fetch(env.tenantProfile);
+    expect([t.lastDepositReturnBps, t.depositEvents, t.depositTotal.toNumber(), t.deductedTotal.toNumber()])
+      .to.deep.equal([10000, 1, DEPOSIT, 0]);
+  });
+
+  // ---- D1: Disputed and settlement ----
+
+  // vault + both wallets always add up: nothing is created or lost by any exit
+  async function expectConserved(env: Env, tenantGets: number, landlordGets: number) {
+    expect(await balance(env.vault)).to.equal(0);
+    expect(await balance(env.tenantAta)).to.equal(START_BALANCE - 3 * RENT - DEPOSIT + tenantGets);
+    expect(await balance(env.landlordAta)).to.equal(3 * RENT + landlordGets);
+    expect(tenantGets + landlordGets).to.equal(DEPOSIT);
+  }
+
+  async function disputed(deduction = 500) {
+    const env = await fullyPaid();
+    await env.release(deduction);
+    return env;
+  }
+
+  it("a deduction opens a dispute and pays nothing", async () => {
+    const env = await disputed(500);
+    const lease = await program.account.lease.fetch(env.lease);
+    expect(lease.status).to.have.property("disputed");
+    expect(lease.proposedDeduction.toNumber()).to.equal(500);
+    expect(lease.disputedAt.toNumber()).to.be.greaterThan(0);
+    expect(await balance(env.vault)).to.equal(DEPOSIT);
+    expect(await balance(env.tenantAta)).to.equal(START_BALANCE - 3 * RENT - DEPOSIT);
+    expect(await balance(env.landlordAta)).to.equal(3 * RENT);
+    // no reputation moves until money does
+    const l = await program.account.profile.fetch(env.landlordProfile);
+    expect([l.depositEvents, l.depositTotal.toNumber(), l.leasesCompleted]).to.deep.equal([0, 0, 0]);
+  });
+
+  it("a zero deduction still releases instantly", async () => {
+    const env = await fullyPaid();
+    await env.release(0);
+    expect((await program.account.lease.fetch(env.lease)).status).to.have.property("closed");
+    await expectConserved(env, DEPOSIT, 0);
+  });
+
+  it("a dispute cannot be opened twice or released over", async () => {
+    const env = await disputed(500);
+    await expectFail(env.release(300), "WrongStatus");
+    await expectFail(env.release(0), "WrongStatus");
+    expect((await program.account.lease.fetch(env.lease)).proposedDeduction.toNumber()).to.equal(500);
+  });
+
+  it("no one can default a disputed lease or claim while it is disputed", async () => {
+    const env = await disputed(500);
+    await expectFail(env.markDefault(), "WrongStatus");
+    // even long after the claim window would have lapsed: the clock is paused, not running out
+    await timeTravel(CLAIM_WINDOW + DISPUTE_WINDOW + 50);
+    await expectFail(env.claim(), "WrongStatus");
+    expect(await balance(env.vault)).to.equal(DEPOSIT);
+  });
+
+  it("both signatures settle at any amount up to the deposit", async () => {
+    const env = await disputed(500);
+    await env.settle(1200); // neither side's number: the negotiated middle
+    await expectConserved(env, DEPOSIT - 1200, 1200);
+    expect((await program.account.lease.fetch(env.lease)).status).to.have.property("closed");
+    const l = await program.account.profile.fetch(env.landlordProfile);
+    const t = await program.account.profile.fetch(env.tenantProfile);
+    for (const p of [l, t]) {
+      expect([p.depositTotal.toNumber(), p.deductedTotal.toNumber(), p.lastDepositReturnBps, p.depositEvents, p.leasesCompleted])
+        .to.deep.equal([DEPOSIT, 1200, 4000, 1, 1]);
+      expect(p.depositsReturnedFull).to.equal(0);
+    }
+  });
+
+  it("settling at zero credits a full return", async () => {
+    const env = await disputed(500);
+    await env.settle(0);
+    await expectConserved(env, DEPOSIT, 0);
+    expect((await program.account.profile.fetch(env.landlordProfile)).depositsReturnedFull).to.equal(1);
+  });
+
+  it("settle_dispute needs both signatures", async () => {
+    const env = await disputed(500);
+    await expectFail(env.settle(500, [env.tenant]));
+    await expectFail(env.settle(500, [env.landlord]));
+    const stranger = Keypair.generate();
+    await airdrop(stranger);
+    await expectFail(env.settle(500, [env.landlord, stranger]));
+    expect(await balance(env.vault)).to.equal(DEPOSIT);
+    expect((await program.account.lease.fetch(env.lease)).status).to.have.property("disputed");
+  });
+
+  it("settle_dispute refuses more than the deposit", async () => {
+    const env = await disputed(500);
+    await expectFail(env.settle(DEPOSIT + 1), "DeductionTooLarge");
+    expect(await balance(env.vault)).to.equal(DEPOSIT);
+  });
+
+  it("settle_dispute only works on a disputed lease", async () => {
+    const active = await fullyPaid();
+    await expectFail(active.settle(0), "WrongStatus");
+
+    const closed = await disputed(500);
+    await closed.settle(500);
+    await expectFail(closed.settle(500), "WrongStatus");
+    await expectFail(closed.accept(), "WrongStatus");
+    await expectFail(closed.abandon(), "WrongStatus");
+    await expectFail(closed.finalize(), "WrongStatus");
+  });
+
+  it("the tenant accepts the proposal as it stands, and only the tenant can", async () => {
+    const env = await disputed(500);
+    await expectFail(env.accept(env.landlord), "ConstraintHasOne");
+    await env.accept();
+    await expectConserved(env, DEPOSIT - 500, 500);
+    const l = await program.account.profile.fetch(env.landlordProfile);
+    expect([l.deductedTotal.toNumber(), l.lastDepositReturnBps]).to.deep.equal([500, 7500]);
+    await expectFail(env.accept(), "WrongStatus");
+  });
+
+  it("accept still works after the window: it equals the landlord's own proposal", async () => {
+    // If accept expired with the window, a landlord who proposed and vanished would strand the
+    // deposit; instead both exits stay open and neither needs the other party.
+    const env = await disputed(500);
+    await timeTravel(DISPUTE_WINDOW + 20);
+    await env.accept();
+    await expectConserved(env, DEPOSIT - 500, 500);
+  });
+
+  it("the tenant rejects: the proposal is void and the deposit returns in full by claim", async () => {
+    const env = await disputed(800);
+    await env.abandon();
+    const lease = await program.account.lease.fetch(env.lease);
+    expect(lease.status).to.have.property("active");
+    expect([lease.proposedDeduction.toNumber(), lease.disputedAt.toNumber(), lease.disputeRejected])
+      .to.deep.equal([0, 0, true]);
+    expect(lease.claimPauseSecs.toNumber()).to.be.at.most(DISPUTE_WINDOW);
+    expect(await balance(env.vault)).to.equal(DEPOSIT);
+
+    await timeTravel(CLAIM_WINDOW + 10);
+    await env.claim();
+    await expectConserved(env, DEPOSIT, 0);
+  });
+
+  it("rejecting resumes the claim clock rather than restarting or skipping it", async () => {
+    const env = await fullyPaid();
+    await timeTravel(CLAIM_WINDOW + 5); // the claim window has already lapsed
+    await env.release(800);
+    await expectFail(env.claim(), "WrongStatus"); // paused while disputed
+    await timeTravel(5);
+    await env.abandon();
+    // the time spent disputed was added back, so the tenant waits no longer than before the
+    // proposal and no shorter than the paused seconds allow
+    const lease = await program.account.lease.fetch(env.lease);
+    expect(lease.claimPauseSecs.toNumber()).to.be.at.least(5);
+    await timeTravel(lease.claimPauseSecs.toNumber() + CLAIM_WINDOW);
+    await env.claim();
+    await expectConserved(env, DEPOSIT, 0);
+  });
+
+  it("a rejected dispute cannot be reopened, but a full release still works", async () => {
+    const env = await disputed(800);
+    await env.abandon();
+    await expectFail(env.release(100), "DisputeAlreadyRejected");
+    await env.release(0);
+    await expectConserved(env, DEPOSIT, 0);
+  });
+
+  it("only the tenant can reject, and only inside the window", async () => {
+    const env = await disputed(800);
+    await expectFail(env.abandon(env.landlord), "ConstraintHasOne");
+
+    await timeTravel(DISPUTE_WINDOW + 5);
+    await expectFail(env.abandon(), "DisputeWindowClosed");
+    expect((await program.account.lease.fetch(env.lease)).status).to.have.property("disputed");
+
+    const active = await fullyPaid();
+    await expectFail(active.abandon(), "WrongStatus");
+  });
+
+  it("the landlord cannot finalize while the tenant's window is open", async () => {
+    const env = await disputed(500);
+    await expectFail(env.finalize(), "DisputeWindowOpen");
+    expect(await balance(env.vault)).to.equal(DEPOSIT);
+  });
+
+  it("a silent tenant lets the proposal stand: the landlord finalizes, once", async () => {
+    const env = await disputed(500);
+    await timeTravel(DISPUTE_WINDOW + 5);
+    await env.finalize();
+    await expectConserved(env, DEPOSIT - 500, 500);
+    await expectFail(env.finalize(), "WrongStatus");
+    await expectFail(env.claim(), "WrongStatus");
+  });
+
+  it("only the landlord can finalize", async () => {
+    const env = await disputed(500);
+    await timeTravel(DISPUTE_WINDOW + 5);
+    await expectFail(env.finalize(env.tenant), "ConstraintSeeds"); // lease PDA is derived from the signer
+    expect(await balance(env.vault)).to.equal(DEPOSIT);
+  });
+
+  it("an active lease cannot be finalized or accepted", async () => {
+    const env = await fullyPaid();
+    await expectFail(env.finalize(), "WrongStatus");
+    await expectFail(env.accept(), "WrongStatus");
   });
 
   // ---- confidential rent ----

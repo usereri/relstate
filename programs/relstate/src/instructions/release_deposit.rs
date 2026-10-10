@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
-use super::payout::pay_out_vault;
+use super::payout::close_with_deduction;
 
 use crate::{constants::*, error::ErrorCode, state::*};
 
@@ -50,6 +50,14 @@ pub struct ReleaseDeposit<'info> {
     pub token_program: Interface<'info, TokenInterface>,
 }
 
+/// Ends a fully paid lease. `deduction == 0` returns the deposit on the spot; anything more is a
+/// *proposal* that the tenant has to answer.
+///
+/// The asymmetry is the whole point: before this, the landlord alone decided what to keep and the
+/// tenant's only protection was the landlord doing nothing (`claim_deposit`). Now a deduction
+/// moves no money at all — the lease enters `Disputed` and the money stays in the vault until the
+/// tenant accepts, the tenant's window runs out, or both sides sign a number. See
+/// `settle_dispute.rs` and the transition table in `docs/contracts/program-interface.md`.
 pub fn handle_release_deposit(ctx: Context<ReleaseDeposit>, deduction: u64) -> Result<()> {
     let lease = &ctx.accounts.lease;
     require!(
@@ -57,47 +65,44 @@ pub fn handle_release_deposit(ctx: Context<ReleaseDeposit>, deduction: u64) -> R
     ErrorCode::WrongStatus
 );
     require!(
-        lease.paid_count == lease.term_periods, 
+        lease.paid_count == lease.term_periods,
         ErrorCode::TermIncomplete
     );
-    let end = lease.start_ts + lease.term_periods as i64 * lease.period_secs;
+    let now = Clock::get()?.unix_timestamp;
+    require!(now >= lease.end_ts(), ErrorCode::LeaseNotEnded);
     require!(
-        Clock::get()?.unix_timestamp >= end,
-        ErrorCode::LeaseNotEnded
-    );
-    require!(
-        deduction <= lease.deposit_amount, 
+        deduction <= lease.deposit_amount,
         ErrorCode::DeductionTooLarge
     );
 
-    pay_out_vault(
-        &ctx.accounts.token_program,
-        &ctx.accounts.lease,
-        &ctx.accounts.mint,
-        &ctx.accounts.vault,
-        &ctx.accounts.tenant_ata,
-        &ctx.accounts.landlord_ata,
-        lease.deposit_amount - deduction,
-        deduction,
-    )?;
-
-    let tenant = &mut ctx.accounts.tenant_profile;
-    tenant.leases_completed += 1;
-    let landlord = &mut ctx.accounts.landlord_profile;
-    landlord.leases_completed += 1;
-    for profile in [tenant, landlord] {
-        profile.deposit_total += lease.deposit_amount;
-        profile.deducted_total += deduction;
-        if deduction == 0 {
-            profile.deposits_returned_full += 1;
-        }
+    // Nobody disputes getting everything back, so a full return still finalizes immediately —
+    // which also keeps it the landlord's way out of a lease whose deduction the tenant rejected.
+    if deduction == 0 {
+        return close_with_deduction(
+            &ctx.accounts.token_program,
+            &mut ctx.accounts.lease,
+            &ctx.accounts.mint,
+            &ctx.accounts.vault,
+            &ctx.accounts.tenant_ata,
+            &ctx.accounts.landlord_ata,
+            &mut ctx.accounts.tenant_profile,
+            &mut ctx.accounts.landlord_profile,
+            0,
+        );
     }
 
+    // One dispute per lease. A landlord who could re-open one would simply do it again whenever
+    // the resumed claim clock came due, and the deposit would never be reachable.
+    require!(!lease.dispute_rejected, ErrorCode::DisputeAlreadyRejected);
+
     let lease = &mut ctx.accounts.lease;
-    lease.status = Status::Closed;
-    emit!(LeaseClosed {
+    lease.status = Status::Disputed;
+    lease.proposed_deduction = deduction;
+    lease.disputed_at = now;
+    emit!(DepositDisputed {
         lease: lease.key(),
-        deduction,
+        proposed_deduction: deduction,
+        answer_by: lease.dispute_deadline(),
     });
     Ok(())
 }

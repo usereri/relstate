@@ -65,12 +65,19 @@ pub fn handle_propose_lease(
     let landlord = ctx.accounts.landlord.key();
     require_keys_neq!(landlord, ctx.accounts.tenant.key(), ErrorCode::SelfLease);
     require!(rent_amount > 0, ErrorCode::ZeroRent);
+    require!(standard_deposit > 0, ErrorCode::ZeroDeposit);
     require!(term_periods > 0, ErrorCode::ZeroTerm);
     require!(period_secs >= MIN_PERIOD_SECS, ErrorCode::PeriodTooShort);
     require!(
         (0..=period_secs).contains(&grace_secs),
         ErrorCode::InvalidGrace
     );
+    // Bounds the whole lease from above, so every later `start + k * period` is far from
+    // overflowing and a funded deposit can always become releasable or claimable.
+    let term_secs = (term_periods as i64)
+        .checked_mul(period_secs)
+        .ok_or_else(|| error!(ErrorCode::TermTooLong))?;
+    require!(term_secs <= MAX_LEASE_SECS, ErrorCode::TermTooLong);
 
     require!(region.iter().all(u8::is_ascii_uppercase), ErrorCode::InvalidRegion);
 
@@ -91,6 +98,9 @@ pub fn handle_propose_lease(
         0
     };
     let deposit_amount = (standard_deposit as u128 * (100 - discount_pct as u128) / 100) as u64;
+    // A discount on a tiny standard deposit can round to nothing; a lease with no deposit has no
+    // outcome to record and would only inflate the return-rate denominator.
+    require!(deposit_amount > 0, ErrorCode::ZeroDeposit);
 
     let lease = &mut ctx.accounts.lease;
     lease.landlord = landlord;
@@ -109,6 +119,12 @@ pub fn handle_propose_lease(
     lease.discount_pct = discount_pct;
     lease.status = Status::Proposed;
     lease.bump = ctx.bumps.lease;
+    // Set explicitly rather than left to the zeroed account, so the dispute state of a fresh
+    // lease is a statement in the code and not an accident of `init`.
+    lease.proposed_deduction = 0;
+    lease.disputed_at = 0;
+    lease.claim_pause_secs = 0;
+    lease.dispute_rejected = false;
 
     ctx.accounts.landlord_profile.wallet = landlord;
     Ok(())
