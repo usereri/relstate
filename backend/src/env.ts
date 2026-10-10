@@ -131,6 +131,36 @@ export const env = {
     maxUsdcPerWalletPerDay: str("OFFRAMP_MAX_USDC_PER_WALLET_PER_DAY", "2000"),
   },
 
+  /**
+   * Identity (workstream D, docs/contracts/attestation.md). `mock` is the no-secrets default: the
+   * verification page is served by this backend and decides instantly, through the same webhook
+   * path Sumsub would use. `sumsub` is the real client and refuses to boot without its keys.
+   */
+  kyc: {
+    provider: (str("KYC_PROVIDER", "mock") === "sumsub" ? "sumsub" : "mock") as "mock" | "sumsub",
+    /** What an approved check writes on chain: 1 basic, 2 enhanced. */
+    level: num("KYC_LEVEL", 1),
+    /** Attestation lifetime. 0 writes one that never expires; the demo uses a year. */
+    validityDays: num("KYC_VALIDITY_DAYS", 365),
+    /**
+     * Secret salt for `subject_hash = sha256(applicantId || salt)`. Backend secret, never shipped
+     * to the app and never on chain: without it the hash would be confirmable by anyone holding a
+     * list of applicant ids.
+     */
+    subjectSalt: str("KYC_SUBJECT_SALT"),
+    /** Signs our outgoing Sumsub API calls (`X-App-Access-Sig`). */
+    sumsubAppToken: str("SUMSUB_APP_TOKEN"),
+    sumsubSecretKey: str("SUMSUB_SECRET_KEY"),
+    /** Verifies incoming Sumsub webhooks (`X-Payload-Digest`). A different secret from the above. */
+    sumsubWebhookSecret: str("SUMSUB_WEBHOOK_SECRET"),
+    sumsubApiBase: str("SUMSUB_API_BASE", "https://api.sumsub.com"),
+    /** The verification level configured in the Sumsub dashboard. */
+    sumsubLevelName: str("SUMSUB_LEVEL_NAME", "basic-kyc-level"),
+    sumsubLinkTtlSeconds: num("SUMSUB_LINK_TTL_SECONDS", 1800),
+    /** Pins the webhook digest algorithm; empty accepts whichever Sumsub's header names. */
+    sumsubDigestAlg: str("SUMSUB_WEBHOOK_DIGEST_ALG"),
+  },
+
   sponsor: {
     maxTxBytes: num("SPONSOR_MAX_TX_BYTES", 1232),
     maxInstructions: num("SPONSOR_MAX_INSTRUCTIONS", 16),
@@ -163,6 +193,11 @@ export function assertEnvConsistent(e: Env = env): void {
   if (e.mode === "live") {
     if (e.feePayerKeypair === "") problems.push("FEE_PAYER_KEYPAIR is required when BACKEND_MODE=live");
     if (e.treasuryKeypair === "") problems.push("TREASURY_KEYPAIR is required when BACKEND_MODE=live");
+    // Without these two, a live backend would take identity decisions it cannot record: no key to
+    // sign the attestation, and no stable salt, so the same applicant would hash differently
+    // after every restart and the chain would hold hashes nothing can be checked against.
+    if (e.attestationIssuerKeypair === "") problems.push("ATTESTATION_ISSUER_KEYPAIR is required when BACKEND_MODE=live");
+    if (e.kyc.subjectSalt === "") problems.push("KYC_SUBJECT_SALT is required when BACKEND_MODE=live (any high-entropy string; keep it secret and stable)");
     if (e.rusdcMint === "") problems.push("RUSDC_MINT is required when BACKEND_MODE=live (run scripts/make-rusdc.ts)");
     if (e.authMode === "mock") problems.push("AUTH_MODE=mock is refused when BACKEND_MODE=live");
     if (e.sessionSecret === "") problems.push("SESSION_SECRET is required when BACKEND_MODE=live");
@@ -176,6 +211,23 @@ export function assertEnvConsistent(e: Env = env): void {
   if (e.feePayerKeypair !== "" && e.feePayerKeypair === e.treasuryKeypair) {
     problems.push("FEE_PAYER_KEYPAIR and TREASURY_KEYPAIR must be different keys");
   }
+  // The treasury mints money; the issuer vouches for people. Sharing one key means a compromise of
+  // either is a compromise of both, and the on-chain issuer check would no longer mean anything
+  // beyond "the backend's main key".
+  if (e.treasuryKeypair !== "" && e.treasuryKeypair === e.attestationIssuerKeypair) {
+    problems.push("TREASURY_KEYPAIR and ATTESTATION_ISSUER_KEYPAIR must be different keys");
+  }
+  // A half-configured Sumsub is worse than no Sumsub: a verification the webhook can never verify
+  // would send a user through a real document check and attest nobody.
+  if (e.kyc.provider === "sumsub") {
+    if (e.kyc.sumsubAppToken === "") problems.push("SUMSUB_APP_TOKEN is required when KYC_PROVIDER=sumsub");
+    if (e.kyc.sumsubSecretKey === "") problems.push("SUMSUB_SECRET_KEY is required when KYC_PROVIDER=sumsub");
+    if (e.kyc.sumsubWebhookSecret === "") problems.push("SUMSUB_WEBHOOK_SECRET is required when KYC_PROVIDER=sumsub (it is set separately from SUMSUB_SECRET_KEY in the dashboard)");
+    if (e.kyc.sumsubLevelName === "") problems.push("SUMSUB_LEVEL_NAME is required when KYC_PROVIDER=sumsub");
+  }
+  // The program refuses anything else, so catching it here saves a webhook that can never land.
+  if (e.kyc.level !== 1 && e.kyc.level !== 2) problems.push(`KYC_LEVEL must be 1 (basic) or 2 (enhanced), not ${e.kyc.level}`);
+  if (!Number.isInteger(e.kyc.validityDays) || e.kyc.validityDays < 0) problems.push("KYC_VALIDITY_DAYS must be a non-negative whole number of days (0 = never expires)");
   // The on-ramp is the one path that mints rUSDC without a user signature, so a
   // half-configured Stripe is worse than no Stripe: a checkout the webhook can
   // never verify would take (test) money and credit nobody.
