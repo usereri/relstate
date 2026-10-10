@@ -528,11 +528,16 @@ export function createTreasury(deps: TreasuryDeps) {
     const simulated = simulation.value.accounts?.[0];
     if (simulated == null) throw new RejectedTransaction("simulation did not return the treasury account state", "simulation-incomplete");
     // `balanceBefore` was read in a different round trip from the simulation, so they may describe
-    // different bank states. On this route's own traffic the treasury is CREDITED in between (every
-    // closing transaction returns rent), which made `spent` too small, or negative, and booked
-    // almost nothing against the daily cap. The simulation reports only the post-state, so the
-    // pre-state is bracketed by a read on each side and the larger of the two is used: that can only
-    // over-count a debit, never under-count it.
+    // different bank states. The treasury is CREDITED in between on this route's own traffic (every
+    // closing transaction returns rent), which made `spent` too small, or negative, and booked almost
+    // nothing against the daily cap. The simulation reports only the post-state, so the pre-state is
+    // bracketed by a read on each side and the larger one is used.
+    //
+    // The guarantee is for the MONOTONIC case only: if the balance moved in one direction between
+    // the reads (credits only, the normal case here), the larger reading is at least the true
+    // pre-state and `spent` cannot be under-counted. If it moved both ways (a debit then a credit),
+    // the true pre-state can fall outside the bracket and the figure is a best estimate. That is
+    // acceptable because the shape filter independently bounds what one transaction can take.
     const balanceAfter = (await deps.rpc.getBalance(deps.treasury.address, { commitment: "confirmed" }).send()).value;
     const reference = balanceBefore > balanceAfter ? balanceBefore : balanceAfter;
     const spent = reference - simulated.lamports;

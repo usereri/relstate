@@ -67,17 +67,18 @@ export function computeLayout(idl: Idl, account: string): Layout {
  */
 export const FALLBACK_LAYOUTS: Readonly<Record<string, Layout>> = {
   Lease: {
-    size: 193,
+    size: 218,
     offsets: {
       landlord: 8, tenant: 40, mint: 72, lease_id: 104, rent_amount: 112, deposit_amount: 120, start_ts: 128,
       term_periods: 136, paid_count: 138, lease_hash: 140, status: 172, bump: 173, period_secs: 174, grace_secs: 182, region: 190, discount_pct: 192,
+      proposed_deduction: 193, disputed_at: 201, claim_pause_secs: 209, dispute_rejected: 217,
     },
   },
   Profile: {
-    size: 88,
+    size: 94,
     offsets: {
       wallet: 8, leases_completed: 40, paid_on_time: 44, paid_late: 48, deposits_returned_full: 52, deposit_total: 56,
-      deducted_total: 64, defaults: 72, deposits_claimed: 76, rent_paid_total: 80,
+      deducted_total: 64, defaults: 72, deposits_claimed: 76, rent_paid_total: 80, last_deposit_return_bps: 88, deposit_events: 90,
     },
   },
   Application: { size: 104, offsets: { listing: 8, landlord: 40, tenant: 72 } },

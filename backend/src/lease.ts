@@ -7,6 +7,7 @@
 //
 // `decodeLease` still refuses any account that is not exactly the size the layout says, so a struct
 // that changed under an old IDL fails loudly at the first request, naming the account.
+import { createHash } from "node:crypto";
 import { getAddressDecoder, getBase64Encoder, type Address, type GetAccountInfoApi, type Rpc } from "@solana/kit";
 import { FALLBACK_LAYOUTS, accountLayout, fieldOffset, type Layout } from "./layout.ts";
 
@@ -14,7 +15,11 @@ export const leaseLayout = (): Layout => accountLayout("Lease");
 /** The snapshot size, for tests that build a buffer by hand. The live figure is `leaseLayout().size`. */
 export const LEASE_ACCOUNT_SIZE = FALLBACK_LAYOUTS.Lease!.size;
 
-export const LEASE_STATUS = ["proposed", "active", "closed", "defaulted"] as const;
+/** Anchor's account discriminator: the first 8 bytes of sha256("account:Lease"). */
+export const LEASE_DISCRIMINATOR = new Uint8Array(createHash("sha256").update("account:Lease").digest().subarray(0, 8));
+
+// In the order of the program's `Status` enum (the IDL lists them); Disputed was added with the dispute flow.
+export const LEASE_STATUS = ["proposed", "active", "closed", "defaulted", "disputed"] as const;
 export type LeaseStatus = (typeof LEASE_STATUS)[number];
 
 export type DecodedLease = {
@@ -40,6 +45,11 @@ export function decodeLease(data: Uint8Array, layout: Layout = leaseLayout()): D
       `expected a ${layout.size}-byte lease account, got ${data.length} bytes. ` +
         "The Lease struct changed: rebuild the program (target/idl) or update FALLBACK_LAYOUTS in backend/src/layout.ts.",
     );
+  }
+  // Size alone is not identity: any other relstate account of the same length (the program has
+  // several, and one will eventually be 218 bytes) would decode into a plausible wrong rent figure.
+  if (!LEASE_DISCRIMINATOR.every((b, i) => data[i] === b)) {
+    throw new LeaseDecodeError("this account is not a Lease: its 8-byte Anchor discriminator does not match");
   }
   const at = (field: string) => fieldOffset(layout, "Lease", field);
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);

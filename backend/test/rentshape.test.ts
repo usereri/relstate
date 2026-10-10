@@ -5,6 +5,7 @@ import { type Address, type Instruction } from "@solana/kit";
 import { ASSOCIATED_TOKEN_PROGRAM, MEMO_PROGRAM } from "../src/contracts.ts";
 import { PAY_RENT_DISCRIMINATOR, RANGE_PROOF_CONTEXT_SPACE, RENT_PAYMENT_ALLOWLIST, assertRentPaymentShape, type RentPaymentRules } from "../src/rentshape.ts";
 import { RejectedTransaction, inspectTransaction } from "../src/txinspect.ts";
+const BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111" as Address;
 import { REAL_CONTEXTS, RELSTATE, SYSTEM, TOKEN22, W, R, WS, RS, ZK, acct, build, cast, createAccountData, ix, plan, tx1, tx5, type Cast } from "./rentfixtures.ts";
 
 async function check(c: Cast, instructions: Instruction[], rules: RentPaymentRules = c.rules) {
@@ -448,5 +449,29 @@ describe("the real plan, with the real sizes measured on devnet", () => {
     await accepted(c, [p.createContext(c.ctxC, { lamports: REAL_CONTEXTS.range.lamports, space: REAL_CONTEXTS.range.space })]);
     await accepted(c, [p.verify(c.ctxC, REAL_CONTEXTS.range.verifyTag)]);
     await accepted(c, tx5(c));
+  });
+});
+
+// Review R1. assertComputeBudgetWithinPolicy reads only the data of ComputeBudget instructions and the
+// positional rules above skip the program entirely, so a ComputeBudget instruction that NAMED accounts
+// was a place to put one (the treasury, say) that no rule looked at. Its real instructions take none.
+describe("a ComputeBudget instruction must carry no accounts", () => {
+  it("accepts the real ones, which carry none", async () => {
+    const c = await cast();
+    const p = plan(c);
+    await accepted(c, [p.computeLimit(), p.computePrice(5n), ...tx1(c)]);
+  });
+
+  it("refuses one that names the treasury, whatever its data", async () => {
+    const c = await cast();
+    const t = c.treasury.address;
+    for (const data of [[2, 1, 0, 0, 0], [3, 1, 0, 0, 0, 0, 0, 0, 0], [0], []]) {
+      await denied(c, [ix(BUDGET_PROGRAM, data, [acct(t, WS)]), ...tx1(c)], "compute-budget-accounts");
+    }
+  });
+
+  it("refuses one that names any account at all, readonly included", async () => {
+    const c = await cast();
+    await denied(c, [ix(BUDGET_PROGRAM, [2, 1, 0, 0, 0], [acct(c.other.address, R)]), ...tx1(c)], "compute-budget-accounts");
   });
 });

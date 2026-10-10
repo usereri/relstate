@@ -2,7 +2,7 @@ import "./noenv.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { getAddressEncoder, getBase64Decoder, type Address, type GetAccountInfoApi, type Rpc } from "@solana/kit";
-import { LEASE_ACCOUNT_SIZE, LEASE_STATUS, LeaseDecodeError, LeaseNotFound, decodeLease, fetchLease } from "../src/lease.ts";
+import { LEASE_ACCOUNT_SIZE, LEASE_DISCRIMINATOR, LEASE_STATUS, LeaseDecodeError, LeaseNotFound, decodeLease, fetchLease } from "../src/lease.ts";
 
 const PROGRAM = "G4iMjveQKXztnGoxigAeWPrb5evT9yt6qaLkgQEp2dXm" as Address;
 const LANDLORD = "EBMibFLTvr5GDpgxNqt5Gqp9B1xLMr32aNwGDJV2oGJ6" as Address;
@@ -14,6 +14,7 @@ function leaseBytes(status = 1, size = LEASE_ACCOUNT_SIZE): Uint8Array {
   const data = new Uint8Array(size);
   const view = new DataView(data.buffer);
   const put = (offset: number, address: Address) => data.set(getAddressEncoder().encode(address), offset);
+  data.set(LEASE_DISCRIMINATOR, 0);
   put(8, LANDLORD);
   put(40, TENANT);
   put(72, MINT);
@@ -63,7 +64,7 @@ describe("decodeLease", () => {
   });
 
   it("names the expected and actual size so a layout change is diagnosable", () => {
-    assert.throws(() => decodeLease(new Uint8Array(200)), /193-byte.*200 bytes/s);
+    assert.throws(() => decodeLease(new Uint8Array(200)), new RegExp(`${LEASE_ACCOUNT_SIZE}-byte.*200 bytes`, "s"));
   });
 
   for (const [byte, name] of LEASE_STATUS.entries()) {
@@ -73,7 +74,41 @@ describe("decodeLease", () => {
   }
 
   it("rejects a status byte outside the known set", () => {
-    assert.throws(() => decodeLease(leaseBytes(4)), LeaseDecodeError);
+    assert.throws(() => decodeLease(leaseBytes(LEASE_STATUS.length)), LeaseDecodeError);
+  });
+
+  it("knows the Disputed status the dispute flow added", () => {
+    assert.equal(decodeLease(leaseBytes(4)).status, "disputed");
+  });
+
+  // Review R2. Size is not identity: a different relstate account of the same length (the program has
+  // several, and one will eventually be exactly as long) would otherwise decode into a plausible
+  // wrong rent figure, which is the figure a compliance answer is compared against.
+  describe("the Anchor discriminator", () => {
+    it("is sha256('account:Lease')[0..8]", async () => {
+      const { createHash } = await import("node:crypto");
+      assert.deepEqual([...LEASE_DISCRIMINATOR], [...createHash("sha256").update("account:Lease").digest().subarray(0, 8)]);
+    });
+
+    it("rejects an account of exactly the right size that is not a Lease", () => {
+      const imposter = leaseBytes(1);
+      imposter.fill(0, 0, 8); // another account type's discriminator, here all zero
+      assert.throws(() => decodeLease(imposter), (e) => e instanceof LeaseDecodeError && /not a Lease/.test(e.message));
+    });
+
+    it("rejects a discriminator that is wrong in only one byte, in any position", () => {
+      for (let i = 0; i < 8; i++) {
+        const almost = leaseBytes(1);
+        almost[i] = (almost[i]! + 1) & 0xff;
+        assert.throws(() => decodeLease(almost), LeaseDecodeError, `byte ${i}`);
+      }
+    });
+
+    it("lets fetchLease refuse a program-owned account of the right size with another type's discriminator", async () => {
+      const imposter = leaseBytes(1);
+      imposter.fill(7, 0, 8);
+      await assert.rejects(fetchLease(rpcReturning(account(imposter)), TENANT, PROGRAM), LeaseDecodeError);
+    });
   });
 });
 
