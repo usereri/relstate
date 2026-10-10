@@ -197,8 +197,56 @@ describe("rent payment shape: ZK proof program", () => {
   it("rejects the treasury at any index of a verify beyond the authority slot", async () => {
     const c = await cast();
     const t = c.treasury.address;
-    await denied(c, [ix(ZK, [3, 1], [acct(c.ctxA.address, W), acct(c.other.address, R), acct(t, R)])], /may be only the context-state authority/);
-    await denied(c, [ix(ZK, [3, 1], [acct(c.ctxA.address, W), acct(t, R), acct(c.other.address, R), acct(t, R)])], /may be only the context-state authority/);
+    await denied(c, [ix(ZK, [3, 1], [acct(c.ctxA.address, W), acct(c.other.address, R), acct(t, R)])], /must record the treasury as its context-state authority/);
+    await denied(c, [ix(ZK, [3, 1], [acct(c.ctxA.address, W), acct(t, R), acct(c.other.address, R), acct(t, R)])], /must record the treasury as its context-state authority/);
+  });
+
+  // The direction the suite did not cover. Rejecting the treasury everywhere BUT slot 1 is not the
+  // same as requiring it IN slot 1: the authority is only recorded at verify time (it is not a
+  // signer), so a client who names themselves keeps the power to close the context we funded, to
+  // themselves, in a transaction of their own, outside any route.
+  describe("the context-state authority must be the treasury", () => {
+    it("refuses a verify that records the attacker's wallet as authority (tx 1 shape)", async () => {
+      const c = await cast();
+      const p = plan(c);
+      await denied(c, [p.createContext(c.ctxA), ix(ZK, [3, 1, 2, 3], [acct(c.ctxA.address, W), acct(c.wallet, R)])], "wrong-context-authority");
+    });
+
+    it("refuses it at the maximum cost: two max-size contexts, both naming the attacker", async () => {
+      const c = await cast();
+      const big = { lamports: c.rules.maxContextLamports, space: c.rules.maxContextSpace };
+      await denied(
+        c,
+        [
+          ix(SYSTEM, createAccountData(big.lamports, big.space, ZK), [acct(c.treasury.address, WS), acct(c.ctxA.address, WS)]),
+          ix(SYSTEM, createAccountData(big.lamports, big.space, ZK), [acct(c.treasury.address, WS), acct(c.ctxB.address, WS)]),
+          ix(ZK, [3, 1], [acct(c.ctxA.address, W), acct(c.wallet, R)]),
+          ix(ZK, [7, 1], [acct(c.ctxB.address, W), acct(c.wallet, R)]),
+        ],
+        "wrong-context-authority",
+      );
+    });
+
+    it("refuses any other pubkey as the authority", async () => {
+      const c = await cast();
+      await denied(c, [ix(ZK, [3, 1], [acct(c.ctxA.address, W), acct(c.other.address, R)])], "wrong-context-authority");
+    });
+
+    it("refuses a verify with only the context account, and one with a third account", async () => {
+      const c = await cast();
+      await denied(c, [ix(ZK, [3, 1], [acct(c.ctxA.address, W)])], "wrong-context-authority");
+      await denied(c, [ix(ZK, [3, 1], [acct(c.ctxA.address, W), acct(c.treasury.address, R), acct(c.other.address, R)])], "wrong-context-authority");
+    });
+
+    it("refuses an inline-proof verify with no accounts at all", async () => {
+      const c = await cast();
+      await denied(c, [ix(ZK, [3, 1], [])], "wrong-context-authority");
+    });
+
+    it("still accepts the legitimate authority", async () => {
+      const c = await cast();
+      await accepted(c, tx1(c));
+    });
   });
 
   it("rejects ZK tags 13 and 255 and an empty instruction", async () => {

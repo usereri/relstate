@@ -20,9 +20,12 @@
 //
 //   - System `createAccount`, as the funder, into an account owned by the ZK proof program, with a
 //     lamport and size cap. No other System instruction exists in this route, so no transfer.
-//   - ZK proof program, as the context-state AUTHORITY only. That authority can close a context
-//     state and nothing else. Keeping it ours is what stops a client who created a context account
-//     with our rent from closing it to themselves: only we sign closes.
+//   - ZK proof program, as the context-state AUTHORITY, which is REQUIRED (account 1 of every proof
+//     instruction, exactly two accounts). The authority is recorded when the proof is verified and
+//     decides who may close the context state later. It is not a signer there, so the client picks
+//     it freely unless the filter insists: a proof that named the CLIENT as authority would let them
+//     close an account we funded straight to themselves, outside any route. Requiring it is what
+//     keeps closes ours.
 //   - ZK `CloseContextState`, as lamport destination and authority, so the rent comes back to us.
 //     A close that named anyone else as destination would let a client spend OUR authority to move
 //     OUR rent, so the destination is pinned.
@@ -31,6 +34,17 @@
 // token account or the mint), not in `pay_rent`, not at account 0 of a ZK instruction (the account
 // being written or closed). The wallet being paid for must be the confidential transfer's authority
 // and the owner of its source account, and the mint must be rUSDC.
+//
+// RESIDUAL, stated plainly because an earlier version of this comment claimed the opposite: this is
+// bounded theft, not "nobody can move that rent". The plan itself puts a createAccount in a
+// transaction with NO verify (tx 3: the range-proof context is too large to create and verify in
+// one transaction), so a client can have the treasury fund a ZK-owned context and then, in their own
+// transaction outside any route, verify a proof into it naming THEMSELVES as authority and close it
+// to themselves. Requiring the treasury as authority closes the other route to the same end (a
+// verify inside a cosigned transaction); it cannot close this one without a transaction big enough
+// to create and verify in one go. The loss per cosigned transaction is capped by maxContextLamports
+// x maxCreateAccounts (0.01 SOL by default), per wallet per day and globally per day by the
+// limiter. Tighten those, not this filter, to tighten the bound.
 import { createHash } from "node:crypto";
 import { getAddressDecoder, type Address } from "@solana/kit";
 import { RELSTATE_PROGRAM, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, ZK_ELGAMAL_PROOF_PROGRAM } from "./contracts.ts";
@@ -114,8 +128,16 @@ export function assertRentPaymentShape(tx: InspectedTransaction, rules: RentPaym
           if (ix.accounts.length !== 3 || at(1) !== rules.treasury || at(2) !== rules.treasury) {
             deny(ix.index, "CloseContextState must return the rent to the treasury, under the treasury's authority", "close-destination");
           }
-        } else if (treasuryAt.some((p) => p > 1)) {
-          deny(ix.index, "the treasury may be only the context-state authority of a proof instruction");
+        } else {
+          // The authority is not a signer at verify time: it is merely RECORDED in the context state,
+          // and later decides who may close it. So the client chooses it freely unless we insist, and
+          // an attacker-chosen authority could close an account WE funded straight to themselves,
+          // outside any route. Rejecting the treasury elsewhere is not enough; it has to be required
+          // here. Exactly two accounts: [context state, authority]. A proof with no context account
+          // is not something the plan produces and would need no rent, so it has no business here.
+          if (ix.accounts.length !== 2 || at(1) !== rules.treasury) {
+            deny(ix.index, "a proof instruction must record the treasury as its context-state authority", "wrong-context-authority");
+          }
         }
         break;
       }
