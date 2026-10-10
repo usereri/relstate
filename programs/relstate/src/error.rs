@@ -52,4 +52,18 @@ pub enum ErrorCode {
     DisallowedMintExtension,
     #[msg("The new admin must not be the default (all-zero) pubkey")]
     InvalidNewAdmin,
+    #[msg("This wallet needs a valid identity attestation (level 1 or higher, not revoked, not expired)")]
+    KycRequired,
+    #[msg("Only the issuer key in the program config can write or revoke an attestation")]
+    NotIssuer,
+    #[msg("No attestation issuer is set in the program config")]
+    IssuerNotSet,
+    #[msg("The issuer must not be the default (all-zero) pubkey")]
+    InvalidIssuer,
+    #[msg("An attestation must be level 1 (basic) or 2 (enhanced)")]
+    InvalidAttestationLevel,
+    #[msg("An attestation's expiry must be in the future, or zero for never")]
+    AttestationExpiryInPast,
+    #[msg("An attestation needs a non-zero subject hash")]
+    InvalidSubjectHash,
 }

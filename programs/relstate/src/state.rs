@@ -1,7 +1,8 @@
 use anchor_lang::prelude::*;
 
 use crate::constants::{
-    MAX_ALLOWED_MINTS, MAX_BLURB, MAX_CITY, MAX_PHOTO, MAX_TITLE, RENT_HEADROOM_PCT,
+    KYC_LEVEL_BASIC, MAX_ALLOWED_MINTS, MAX_BLURB, MAX_CITY, MAX_PHOTO, MAX_TITLE,
+    RENT_HEADROOM_PCT,
 };
 
 /// Program-wide settings, one account at seeds `[CONFIG_SEED]`. Holds the mints a lease may be
@@ -13,11 +14,54 @@ pub struct Config {
     pub bump: u8,
     #[max_len(MAX_ALLOWED_MINTS)]
     pub mints: Vec<Pubkey>,
+    /// The only key `attest` and `revoke` accept as a signer. Deliberately **not** the fee payer
+    /// key: a leaked sponsor key must not be able to mint identity (docs/contracts/attestation.md).
+    /// All-zero means no issuer has been set, and `require_kyc` cannot be turned on without one.
+    pub issuer: Pubkey,
+    /// Whether `apply` and `propose_lease` demand a valid attestation from the acting wallet.
+    /// False by default, which is what keeps a fresh network (and the test suite) usable before
+    /// any KYC exists; the devnet demo deploy turns it on.
+    pub require_kyc: bool,
 }
 
 impl Config {
     pub fn allows(&self, mint: &Pubkey) -> bool {
         self.mints.contains(mint)
+    }
+}
+
+/// One wallet's KYC result, written only by the issuer key. Seeds `[ATTESTATION_SEED, wallet]`.
+///
+/// No personal data lives here and none ever should: the only link back to the applicant is
+/// `subject_hash`, which the backend computes as `sha256(applicant_id || salt)` with a salt it
+/// never publishes (docs/privacy.md). The chain therefore proves *that* a wallet passed a check
+/// at a point in time, and nothing about who it belongs to.
+#[account]
+#[derive(InitSpace)]
+pub struct Attestation {
+    pub wallet: Pubkey,
+    /// The issuer at the time of signing. Compared against `Config::issuer` on every check, so
+    /// rotating the issuer invalidates everything the old key vouched for.
+    pub issuer: Pubkey,
+    /// 0 none (never stored), 1 basic, 2 enhanced.
+    pub level: u8,
+    pub verified_at: i64,
+    /// Unix seconds; 0 means it never expires. The demo issues one year.
+    pub expires_at: i64,
+    pub revoked: bool,
+    pub subject_hash: [u8; 32],
+    pub bump: u8,
+}
+
+impl Attestation {
+    /// Whether this record clears the gate: the right subject, a current issuer, at least basic
+    /// level, not revoked, not expired.
+    pub fn is_valid(&self, wallet: &Pubkey, issuer: &Pubkey, now: i64) -> bool {
+        self.wallet == *wallet
+            && self.issuer == *issuer
+            && self.level >= KYC_LEVEL_BASIC
+            && !self.revoked
+            && (self.expires_at == 0 || self.expires_at > now)
     }
 }
 
@@ -123,6 +167,18 @@ pub struct RentPaid {
     pub on_time: bool,
     // the amount moved in a Token-2022 confidential transfer, so it is not public
     pub confidential: bool,
+}
+
+#[event]
+pub struct Attested {
+    pub wallet: Pubkey,
+    pub level: u8,
+    pub expires_at: i64,
+}
+
+#[event]
+pub struct AttestationRevoked {
+    pub wallet: Pubkey,
 }
 
 #[event]

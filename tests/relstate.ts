@@ -182,6 +182,8 @@ describe("relstate", () => {
   }
 
   const configPda = pda(Buffer.from("config"));
+  const attestationPda = (wallet: anchor.web3.PublicKey) =>
+    pda(Buffer.from("attestation"), wallet.toBuffer());
 
   // Adds or removes a mint from the Config allowlist, as `admin` (the provider wallet is the
   // admin because it claimed the Config in before()). The mint is passed as an account so the
@@ -252,6 +254,7 @@ describe("relstate", () => {
           .accountsPartial({
             landlord: landlord.publicKey, tenant: o.tenant ?? tenant.publicKey,
             mint, lease, vault, landlordProfile, tokenProgram,
+            config: configPda, attestation: attestationPda(landlord.publicKey),
             tenantProfile: o.tenantProfile ?? (o.tenant ? pda(Buffer.from("profile"), o.tenant.toBuffer()) : tenantProfile),
           })
           .signers([landlord])
@@ -597,6 +600,7 @@ describe("relstate", () => {
         .accountsPartial({
           tenant: who.publicKey, listing: l.address,
           application: pda(Buffer.from("application"), l.address.toBuffer(), who.publicKey.toBuffer()),
+          config: configPda, attestation: attestationPda(who.publicKey),
         })
         .signers([who]).rpc();
     const close = (signer: anchor.web3.Keypair) =>
@@ -735,6 +739,248 @@ describe("relstate", () => {
     );
     expect((await program.account.config.fetch(configPda)).admin.toBase58())
       .to.equal(provider.wallet.publicKey.toBase58());
+  });
+
+  // ---- KYC attestation ----
+  //
+  // The Config PDA is shared by the whole suite, so every test that turns `require_kyc` on goes
+  // through withKycRequired(), which turns it off again in a `finally` even when an assertion
+  // fails. Nothing below relies on test order except the first test, which needs a Config that
+  // has never had an issuer.
+
+  const issuer = Keypair.generate();
+  let issuerFunded = false;
+  const payerKp = () => (provider.wallet as anchor.Wallet).payer;
+  const DAY = 86_400;
+  const SUBJECT = Array(32).fill(9);
+
+  const setIssuer = (key: anchor.web3.PublicKey, admin?: anchor.web3.Keypair) => {
+    const call = program.methods
+      .setIssuer(key)
+      .accountsPartial({ admin: admin?.publicKey ?? provider.wallet.publicKey, config: configPda });
+    return (admin ? call.signers([admin]) : call).rpc();
+  };
+  const setRequireKyc = (on: boolean, admin?: anchor.web3.Keypair) => {
+    const call = program.methods
+      .setRequireKyc(on)
+      .accountsPartial({ admin: admin?.publicKey ?? provider.wallet.publicKey, config: configPda });
+    return (admin ? call.signers([admin]) : call).rpc();
+  };
+
+  // Idempotent, so tests do not depend on which one ran first (or on a previous test having
+  // rotated the issuer away).
+  async function ensureIssuer() {
+    if (!issuerFunded) {
+      await airdrop(issuer);
+      issuerFunded = true;
+    }
+    const cfg = await program.account.config.fetch(configPda);
+    if (cfg.issuer.toBase58() !== issuer.publicKey.toBase58()) await setIssuer(issuer.publicKey);
+  }
+
+  async function attest(
+    wallet: anchor.web3.PublicKey,
+    o: {
+      level?: number; expiresAt?: number; subjectHash?: number[];
+      issuer?: anchor.web3.Keypair; payer?: anchor.web3.Keypair; omitIssuerSignature?: boolean;
+    } = {},
+  ) {
+    await ensureIssuer();
+    const signer = o.issuer ?? issuer;
+    const signers: anchor.web3.Keypair[] = [];
+    if (!o.omitIssuerSignature) signers.push(signer);
+    if (o.payer) signers.push(o.payer);
+    return program.methods
+      .attest(o.level ?? 1, new BN(o.expiresAt ?? (await chainNow()) + DAY), o.subjectHash ?? SUBJECT)
+      .accountsPartial({
+        payer: o.payer?.publicKey ?? provider.wallet.publicKey,
+        config: configPda, issuer: signer.publicKey, wallet, attestation: attestationPda(wallet),
+      })
+      .signers(signers)
+      .rpc();
+  }
+
+  const revoke = (wallet: anchor.web3.PublicKey, signer = issuer) =>
+    program.methods
+      .revoke()
+      .accountsPartial({ config: configPda, issuer: signer.publicKey, wallet, attestation: attestationPda(wallet) })
+      .signers([signer])
+      .rpc();
+
+  // Runs `body` with the gate on and the suite's issuer configured, and always leaves the gate
+  // off and the issuer restored, because the rest of the suite shares this Config.
+  async function withKycRequired(body: () => Promise<void>) {
+    await ensureIssuer();
+    await setRequireKyc(true);
+    try {
+      await body();
+    } finally {
+      await setRequireKyc(false);
+      await ensureIssuer();
+    }
+  }
+
+  // Must stay the first KYC test: `before()` leaves no issuer, and once any later test has called
+  // set_issuer there is no way back to the zero key (set_issuer refuses it), so this case can
+  // only be asserted against a Config that has never had one. A reused validator that already
+  // has an issuer would make it unprovable, so then it is skipped rather than weakened.
+  it("set_require_kyc(true) is refused while no issuer is set", async function () {
+    const cfg = await program.account.config.fetch(configPda);
+    if (cfg.issuer.toBase58() !== PublicKey.default.toBase58()) return this.skip();
+    await expectFail(setRequireKyc(true), "IssuerNotSet");
+    expect((await program.account.config.fetch(configPda)).requireKyc).to.equal(false);
+  });
+
+  it("set_issuer rejects the zero key, and only the admin can call it", async () => {
+    const stranger = Keypair.generate();
+    await airdrop(stranger);
+    await expectFail(setIssuer(PublicKey.default), "InvalidIssuer");
+    await expectFail(setIssuer(issuer.publicKey, stranger), "NotAdmin");
+    await expectFail(setRequireKyc(true, stranger), "NotAdmin");
+    expect((await program.account.config.fetch(configPda)).requireKyc).to.equal(false);
+    await ensureIssuer();
+    expect((await program.account.config.fetch(configPda)).issuer.toBase58())
+      .to.equal(issuer.publicKey.toBase58());
+  });
+
+  it("attest writes the attestation under the wallet's PDA", async () => {
+    const wallet = Keypair.generate().publicKey;
+    const expiresAt = (await chainNow()) + DAY;
+    await attest(wallet, { level: 1, expiresAt });
+
+    const address = attestationPda(wallet);
+    const info = await connection.getAccountInfo(address);
+    expect(info!.owner.toBase58()).to.equal(program.programId.toBase58());
+    const got = await program.account.attestation.fetch(address);
+    expect(got.wallet.toBase58()).to.equal(wallet.toBase58());
+    expect(got.issuer.toBase58()).to.equal(issuer.publicKey.toBase58());
+    expect(got.level).to.equal(1);
+    expect(got.expiresAt.toNumber()).to.equal(expiresAt);
+    expect(Math.abs(got.verifiedAt.toNumber() - (await chainNow()))).to.be.lessThan(120);
+    expect(got.revoked).to.equal(false);
+    expect(Array.from(got.subjectHash)).to.deep.equal(SUBJECT);
+  });
+
+  it("attest overwrites an earlier attestation and clears a revocation", async () => {
+    const wallet = Keypair.generate().publicKey;
+    const first = (await chainNow()) + DAY;
+    await attest(wallet, { level: 1, expiresAt: first });
+    await revoke(wallet);
+    expect((await program.account.attestation.fetch(attestationPda(wallet))).revoked).to.equal(true);
+
+    // a comeback after a revocation is the same instruction as the first verification
+    const second = first + DAY;
+    const hash = Array(32).fill(5);
+    await attest(wallet, { level: 2, expiresAt: second, subjectHash: hash });
+    const got = await program.account.attestation.fetch(attestationPda(wallet));
+    expect([got.level, got.expiresAt.toNumber(), got.revoked]).to.deep.equal([2, second, false]);
+    expect(Array.from(got.subjectHash)).to.deep.equal(hash);
+  });
+
+  it("attest signed by a key that is not the configured issuer fails", async () => {
+    await ensureIssuer();
+    const impostor = Keypair.generate();
+    const wallet = Keypair.generate().publicKey;
+    // the fee payer is the provider wallet, so this is "a valid payer, wrong authoriser"
+    await expectFail(attest(wallet, { issuer: impostor }), "NotIssuer");
+    expect(await connection.getAccountInfo(attestationPda(wallet))).to.equal(null);
+  });
+
+  it("attest rejects a bad level, an empty subject hash and an expiry in the past", async () => {
+    const wallet = Keypair.generate().publicKey;
+    await expectFail(attest(wallet, { level: 0 }), "InvalidAttestationLevel");
+    await expectFail(attest(wallet, { level: 3 }), "InvalidAttestationLevel");
+    await expectFail(attest(wallet, { subjectHash: Array(32).fill(0) }), "InvalidSubjectHash");
+    await expectFail(attest(wallet, { expiresAt: (await chainNow()) - 10 }), "AttestationExpiryInPast");
+    expect(await connection.getAccountInfo(attestationPda(wallet))).to.equal(null);
+  });
+
+  it("revoke marks the attestation revoked, is idempotent and is issuer-only", async () => {
+    const wallet = Keypair.generate().publicKey;
+    await attest(wallet);
+    await expectFail(revoke(wallet, Keypair.generate()), "NotIssuer");
+    expect((await program.account.attestation.fetch(attestationPda(wallet))).revoked).to.equal(false);
+
+    await revoke(wallet);
+    // a repeated vendor "rejected" event must be harmless
+    await revoke(wallet);
+    expect((await program.account.attestation.fetch(attestationPda(wallet))).revoked).to.equal(true);
+  });
+
+  it("the fee payer pays the rent but cannot attest without the issuer's signature", async () => {
+    await ensureIssuer();
+    const sponsor = Keypair.generate();
+    await airdrop(sponsor);
+    const wallet = Keypair.generate().publicKey;
+
+    // the sponsor key signing alone must not be able to vouch for anyone
+    await expectFail(attest(wallet, { payer: sponsor, omitIssuerSignature: true }));
+    expect(await connection.getAccountInfo(attestationPda(wallet))).to.equal(null);
+
+    const before = await connection.getBalance(sponsor.publicKey);
+    const issuerBefore = await connection.getBalance(issuer.publicKey);
+    await attest(wallet, { payer: sponsor });
+    const size = (await connection.getAccountInfo(attestationPda(wallet)))!.data.length;
+    const rent = await connection.getMinimumBalanceForRentExemption(size);
+    expect(before - (await connection.getBalance(sponsor.publicKey))).to.be.at.least(rent);
+    expect(await connection.getBalance(issuer.publicKey)).to.equal(issuerBefore);
+  });
+
+  it("with the gate on, apply needs a current attestation from the current issuer", async () => {
+    await withKycRequired(async () => {
+      // unverified
+      const unverified = await applicant();
+      await expectFail(unverified.apply(), "KycRequired");
+
+      // verified
+      const verified = await applicant();
+      await attest(verified.tenant.publicKey);
+      await verified.apply();
+      await program.account.application.fetch(verified.application);
+
+      // revoked
+      const revoked = await applicant();
+      await attest(revoked.tenant.publicKey);
+      await revoke(revoked.tenant.publicKey);
+      await expectFail(revoked.apply(), "KycRequired");
+
+      // expired: the instant has to pass on the chain's own clock
+      const expired = await applicant();
+      await attest(expired.tenant.publicKey, { expiresAt: (await chainNow()) + 30 });
+      await timeTravel(60);
+      await expectFail(expired.apply(), "KycRequired");
+
+      // attested by an issuer that has since been rotated out
+      const rotated = await applicant();
+      await attest(rotated.tenant.publicKey);
+      await setIssuer(Keypair.generate().publicKey);
+      await expectFail(rotated.apply(), "KycRequired");
+    });
+    expect((await program.account.config.fetch(configPda)).requireKyc).to.equal(false);
+  });
+
+  it("with the gate on, propose_lease verifies the landlord and not the tenant", async () => {
+    await withKycRequired(async () => {
+      const env = await setup();
+      await expectFail(env.propose(), "KycRequired");
+
+      // Only the landlord is attested; the tenant is not. That is deliberate: the tenant is
+      // checked when they apply, and a lease can be proposed to someone who never applied.
+      await attest(env.landlord.publicKey);
+      expect(await connection.getAccountInfo(attestationPda(env.tenant.publicKey))).to.equal(null);
+      await env.propose();
+      await program.account.lease.fetch(env.lease);
+    });
+  });
+
+  it("with the gate off, apply and propose_lease work without any attestation", async () => {
+    expect((await program.account.config.fetch(configPda)).requireKyc).to.equal(false);
+    const a = await applicant();
+    await a.apply();
+    const env = await setup();
+    await env.propose();
+    expect(await connection.getAccountInfo(attestationPda(a.tenant.publicKey))).to.equal(null);
+    expect(await connection.getAccountInfo(attestationPda(env.landlord.publicKey))).to.equal(null);
   });
 
   it("a Token-2022 mint backs a lease and funds the vault", async () => {

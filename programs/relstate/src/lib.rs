@@ -27,6 +27,27 @@ pub mod relstate {
         crate::instructions::config::handle_set_admin(ctx, new_admin)
     }
 
+    pub fn set_issuer(ctx: Context<SetKycConfig>, issuer: Pubkey) -> Result<()> {
+        crate::instructions::config::handle_set_issuer(ctx, issuer)
+    }
+
+    pub fn set_require_kyc(ctx: Context<SetKycConfig>, required: bool) -> Result<()> {
+        crate::instructions::config::handle_set_require_kyc(ctx, required)
+    }
+
+    pub fn attest(
+        ctx: Context<Attest>,
+        level: u8,
+        expires_at: i64,
+        subject_hash: [u8; 32],
+    ) -> Result<()> {
+        crate::instructions::attest::handle_attest(ctx, level, expires_at, subject_hash)
+    }
+
+    pub fn revoke(ctx: Context<Revoke>) -> Result<()> {
+        crate::instructions::attest::handle_revoke(ctx)
+    }
+
     pub fn create_listing(
         ctx: Context<CreateListing>,
         listing_id: u64,

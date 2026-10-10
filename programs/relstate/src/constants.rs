@@ -19,6 +19,17 @@ pub const PROFILE_SEED: &[u8] = b"profile";
 pub const CONFIG_SEED: &[u8] = b"config";
 
 #[constant]
+pub const ATTESTATION_SEED: &[u8] = b"attestation";
+
+// KYC levels on an Attestation. 0 is "none" and is never stored: an unverified wallet has no
+// account at all, so `attest` refuses level 0 rather than writing a useless record.
+#[constant]
+pub const KYC_LEVEL_BASIC: u8 = 1;
+
+#[constant]
+pub const KYC_LEVEL_ENHANCED: u8 = 2;
+
+#[constant]
 pub const GOOD_STANDING_DISCOUNT_PCT: u8 = 50;
 
 // listing text limits, in bytes (the app mirrors them as MAX_TEXT in lib/config.ts)

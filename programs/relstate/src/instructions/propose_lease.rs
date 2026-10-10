@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
-use crate::{constants::*, error::ErrorCode, state::*};
+use crate::{constants::*, error::ErrorCode, instructions::attest::enforce_kyc, state::*};
 
 #[derive(Accounts)]
 #[instruction(lease_id: u64)]
@@ -16,6 +16,10 @@ pub struct ProposeLease<'info> {
     pub tenant_profile: UncheckedAccount<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, Config>,
+    /// CHECK: the landlord's attestation PDA, forced by the seeds. Read by hand in the handler
+    /// because an unverified wallet has no account here (see `apply`).
+    #[account(seeds = [ATTESTATION_SEED, landlord.key().as_ref()], bump)]
+    pub attestation: UncheckedAccount<'info>,
     #[account(constraint = config.allows(&mint.key()) @ ErrorCode::MintNotAllowed)]
     pub mint: InterfaceAccount<'info, Mint>,
     #[account(
@@ -69,6 +73,15 @@ pub fn handle_propose_lease(
     );
 
     require!(region.iter().all(u8::is_ascii_uppercase), ErrorCode::InvalidRegion);
+
+    // The landlord is the acting wallet here, so the landlord is who the gate asks about — the
+    // tenant is vetted when they apply. Inert while `Config::require_kyc` is false.
+    enforce_kyc(
+        &ctx.accounts.config,
+        &ctx.accounts.attestation.to_account_info(),
+        &landlord,
+        Clock::get()?.unix_timestamp,
+    )?;
 
     let record = &ctx.accounts.tenant_profile;
     let discount_pct = if record.owner == &crate::ID && !record.data_is_empty() {
