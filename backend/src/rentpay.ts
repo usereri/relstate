@@ -18,6 +18,7 @@ import {
   appendTransactionMessageInstructions,
   assertIsSendableTransaction,
   assertIsTransactionWithBlockhashLifetime,
+  getBase64EncodedWireTransaction,
   pipe,
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
@@ -52,19 +53,25 @@ export type ForeignInstruction = {
   data: Uint8Array;
 };
 
-export function toKitInstruction(ix: ForeignInstruction): Instruction {
+/**
+ * `signers` attaches a signer object to the matching signer accounts. Without it a rider such as
+ * `pay_rent` names the tenant as a signer but nothing can produce the signature, and
+ * `signTransactionMessageWithSigners` leaves the slot empty.
+ */
+export function toKitInstruction(ix: ForeignInstruction, signers: readonly TransactionSigner[] = []): Instruction {
   return {
     programAddress: ix.programId as Address,
-    accounts: ix.keys.map((k) => ({
-      address: k.pubkey as Address,
-      role: k.isSigner
+    accounts: ix.keys.map((k) => {
+      const role = k.isSigner
         ? k.isWritable
           ? AccountRole.WRITABLE_SIGNER
           : AccountRole.READONLY_SIGNER
         : k.isWritable
           ? AccountRole.WRITABLE
-          : AccountRole.READONLY,
-    })),
+          : AccountRole.READONLY;
+      const signer = k.isSigner ? signers.find((x) => x.address === k.pubkey) : undefined;
+      return signer ? { address: k.pubkey as Address, role, signer } : { address: k.pubkey as Address, role };
+    }),
     data: new Uint8Array(ix.data),
   };
 }
@@ -117,15 +124,7 @@ export type SentPlan = {
   shape: { instructions: number; bytes: number }[];
 };
 
-/**
- * Builds the transfer plan, splices `rider` in behind the transfer, and sends every transaction in
- * order under one fee payer.
- *
- * Strictly sequential and deliberately polled rather than confirmed over a websocket: the public
- * devnet endpoint drops that socket partway through a proof plan and takes the rest of the plan
- * with it, which is how Phase 0 found this (`rpc.ts`, `sendAndConfirmByPolling`).
- */
-export async function payRentConfidentially(options: {
+export type RentPaymentOptions = {
   client: SolanaClient;
   payer: TransactionSigner;
   authority: TransactionSigner;
@@ -137,8 +136,14 @@ export async function payRentConfidentially(options: {
   sourceKeys: ConfidentialKeyPair;
   rider: ForeignInstruction[];
   log?: (...args: unknown[]) => void;
-}): Promise<SentPlan> {
-  const log = options.log ?? (() => {});
+};
+
+/**
+ * Builds the transfer plan and splices `rider` in directly behind the transfer, without sending
+ * anything. Separate from {@link payRentConfidentially} so a caller can measure and inspect the
+ * transactions first: the exit-gate script does, to check each one against the sponsor's policy.
+ */
+export async function planRentPayment(options: RentPaymentOptions): Promise<{ messages: PlannedMessage[]; carriesTransfer: number }> {
   const rpc = options.client.rpc as unknown as ConfidentialRpc;
   const [source, destination] = await Promise.all([
     fetchToken(rpc, options.sourceToken),
@@ -166,22 +171,44 @@ export async function payRentConfidentially(options: {
     }),
   );
 
-  const messages = spliceAfterTransfer(flatten(planned), options.rider.map(toKitInstruction));
+  // The tenant signs both the transfer and pay_rent, so the rider is handed the authority signer.
+  const messages = spliceAfterTransfer(
+    flatten(planned),
+    options.rider.map((ix) => toKitInstruction(ix, [options.authority])),
+  );
   const carriesTransfer = messages.findIndex((m) =>
     (m as unknown as WithInstructions).instructions.some((ix) => isConfidentialTransferInstruction(ix)),
   );
+  return { messages, carriesTransfer };
+}
 
+/** Signs a planned message under a fresh blockhash and returns it with its wire size. */
+export async function signPlanned(client: SolanaClient, message: PlannedMessage) {
+  const { value: blockhash } = await client.rpc.getLatestBlockhash().send();
+  const transaction = await signTransactionMessageWithSigners(setTransactionMessageLifetimeUsingBlockhash(blockhash, message));
+  assertIsSendableTransaction(transaction);
+  assertIsTransactionWithBlockhashLifetime(transaction);
+  const wire = getBase64EncodedWireTransaction(transaction);
+  return { transaction, blockhash, wire, bytes: Buffer.from(wire, "base64").length };
+}
+
+/**
+ * Plans, then sends every transaction in order under one fee payer.
+ *
+ * Strictly sequential and deliberately polled rather than confirmed over a websocket: the public
+ * devnet endpoint drops that socket partway through a proof plan and takes the rest of the plan
+ * with it, which is how Phase 0 found this (`rpc.ts`, `sendAndConfirmByPolling`).
+ */
+export async function payRentConfidentially(options: RentPaymentOptions): Promise<SentPlan> {
+  const log = options.log ?? (() => {});
+  const { messages, carriesTransfer } = await planRentPayment(options);
   const signatures: Signature[] = [];
   const shape: SentPlan["shape"] = [];
   for (const [index, message] of messages.entries()) {
-    const { value: blockhash } = await options.client.rpc.getLatestBlockhash().send();
-    const transaction = await signTransactionMessageWithSigners(setTransactionMessageLifetimeUsingBlockhash(blockhash, message));
-    assertIsSendableTransaction(transaction);
-    assertIsTransactionWithBlockhashLifetime(transaction);
+    const { transaction, blockhash, bytes } = await signPlanned(options.client, message);
     const instructions = (message as unknown as WithInstructions).instructions.length;
-    const bytes = transaction.messageBytes.length + 1 + 64 * Object.keys(transaction.signatures).length;
     shape.push({ instructions, bytes });
-    log(`   tx ${index + 1}/${messages.length}: ${instructions} instructions, ~${bytes} bytes`);
+    log(`   tx ${index + 1}/${messages.length}: ${instructions} instructions, ${bytes} bytes`);
     signatures.push(await sendAndConfirmByPolling(options.client, transaction, { blockhash: blockhash.blockhash }));
     log(`   ${signatures[signatures.length - 1]}`);
   }
