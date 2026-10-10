@@ -81,6 +81,10 @@ export interface AttestationView {
   /** 0 none, 1 basic KYC, 2 enhanced */
   level: 0 | 1 | 2;
   verifiedAt: number;
+  /** Unix seconds; 0 means it never expires. The demo issues one year. */
+  expiresAt: number;
+  /** Set by `revoke()`. The record stays on chain, which is more useful than a hole. */
+  revoked: boolean;
   /** sha256(sumsubApplicantId || salt). Lets us prove a link without storing personal data. */
   subjectHash: string;
   issuer: string;
@@ -158,6 +162,8 @@ export interface HealthResponse {
   /** Workstream E. `mock` means the checkout is a local page and no card is involved. */
   onrampProvider: "mock" | "stripe";
   offrampProvider: "mock";
+  /** Workstream D. `mock` means the identity check is a local page and no vendor is involved. */
+  kycProvider: "mock" | "sumsub";
   /** Illustrative fixed demo rate, PLN per USDC. */
   plnPerUsdc: string;
 }

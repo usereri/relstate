@@ -84,3 +84,26 @@ describe("wasOnboarded / rememberOnboarded", () => {
     expect(() => rememberOnboarded("a")).not.toThrow();
   });
 });
+
+describe("identity: todo", () => {
+  const detailOf = (identity?: "todo" | "done" | "soon") => checklist({ ...blank, identity }).find((x) => x.id === "identity")!.detail;
+
+  it("has its own detail text, neither the soon one nor the done one", () => {
+    expect(detailOf("todo")).not.toBe(detailOf(undefined));
+    expect(detailOf("todo")).not.toBe(detailOf("done"));
+    expect(detailOf("soon")).toBe(detailOf(undefined));
+  });
+
+  it("counts as an open step, so the tenant is not onboarded until it is done", () => {
+    const steps = checklist({ signedIn: true, balance: 100, applied: true, rentPaid: true, identity: "todo" });
+    expect(steps.find((s) => s.id === "identity")!.state).toBe("todo");
+    expect(openSteps(steps).map((s) => s.id)).toEqual(["identity"]);
+    expect(onboarded(steps)).toBe(false);
+  });
+
+  it("is onboarded once identity is done, and stays onboarded while it is soon", () => {
+    const rest = { signedIn: true, balance: 100, applied: true, rentPaid: true };
+    expect(onboarded(checklist({ ...rest, identity: "done" }))).toBe(true);
+    expect(onboarded(checklist({ ...rest, identity: "soon" }))).toBe(true);
+  });
+});

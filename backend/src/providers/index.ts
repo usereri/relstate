@@ -4,6 +4,8 @@
 import type { Provider, ProviderEvent } from "../contracts.ts";
 import { env } from "../env.ts";
 import { parsePln, parseRate, parseUsdc } from "./money.ts";
+import { createKyc, type KycConfig, type KycDeps } from "./kyc.ts";
+import type { SumsubConfig } from "./kyc-sumsub.ts";
 import { createOnramp, type OnrampConfig, type OnrampDeps } from "./onramp.ts";
 import { createOfframp, type OfframpConfig, type OfframpDeps } from "./offramp.ts";
 import type { StripeConfig } from "./stripe.ts";
@@ -20,9 +22,36 @@ export const mock = (kind: "kyc" | "onramp" | "offramp"): Provider => ({
   },
 });
 
-// The real client is swapped in by workstream D:
-//   process.env.KYC_PROVIDER === "sumsub" ? sumsub : mock("kyc")
-export const kyc = (): Provider => mock("kyc");
+/** Sumsub's half of the env contract, read once so the service never touches `process.env`. */
+export function sumsubConfigFromEnv(): SumsubConfig {
+  return {
+    appToken: env.kyc.sumsubAppToken,
+    secretKey: env.kyc.sumsubSecretKey,
+    webhookSecret: env.kyc.sumsubWebhookSecret,
+    apiBase: env.kyc.sumsubApiBase,
+    levelName: env.kyc.sumsubLevelName,
+    linkTtlSeconds: env.kyc.sumsubLinkTtlSeconds,
+    digestAlg: env.kyc.sumsubDigestAlg,
+    maxEventAgeSeconds: env.kyc.sumsubMaxEventAgeSeconds,
+  };
+}
+
+export function kycConfigFromEnv(backendUrl = `http://localhost:${env.port}`): KycConfig {
+  return {
+    provider: env.kyc.provider,
+    level: env.kyc.level,
+    validityDays: env.kyc.validityDays,
+    subjectSalt: env.kyc.subjectSalt,
+    maxStartsPerWalletPerHour: env.kyc.maxStartsPerWalletPerHour,
+    backendUrl,
+    appUrl: env.appUrl.replace(/\/$/, ""),
+    sumsub: env.kyc.provider === "sumsub" ? sumsubConfigFromEnv() : undefined,
+  };
+}
+
+/** Workstream D's identity provider, configured from env. `services.ts` owns the one instance. */
+export const kyc = (deps: Omit<KycDeps, "config"> & { config?: KycConfig }) =>
+  createKyc({ ...deps, config: deps.config ?? kycConfigFromEnv() });
 
 /** Stripe's half of the env contract, read once so the service never touches `process.env`. */
 export function stripeConfigFromEnv(): StripeConfig {
@@ -65,3 +94,5 @@ export const offramp = (deps: Omit<OfframpDeps, "config"> & { config?: OfframpCo
 export { createMockOnramp, createOnramp, mockCheckoutPage } from "./onramp.ts";
 export { createOfframp } from "./offramp.ts";
 export { createStripeOnramp } from "./stripe.ts";
+export { createKyc, createMockKyc, mockVerificationPage } from "./kyc.ts";
+export { createSumsubKyc } from "./kyc-sumsub.ts";

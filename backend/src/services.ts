@@ -6,7 +6,9 @@ import { SPONSOR_ALLOWLIST } from "./contracts.ts";
 import { env } from "./env.ts";
 import { getKey } from "./keys.ts";
 import { createRateLimiter } from "./limits.ts";
-import { offramp as createOfframpService, onramp as createOnrampService } from "./providers/index.ts";
+import { kyc as createKycService, offramp as createOfframpService, onramp as createOnrampService } from "./providers/index.ts";
+import { createAttestationChain, type AttestationChain, type AttestationChainRpc } from "./providers/kyc-chain.ts";
+import { KycUnavailable, type Kyc } from "./providers/kyc.ts";
 import type { Offramp } from "./providers/offramp.ts";
 import type { Onramp } from "./providers/onramp.ts";
 import { createPlanRunner, getSolanaClient, type SolanaClient } from "./rpc.ts";
@@ -22,6 +24,10 @@ export type Services = {
   /** Workstream E. Both are synchronous: neither needs a key or the network to exist. */
   onramp(): Onramp;
   offramp(): Offramp;
+  /** Workstream D. Synchronous for the same reason: only the chain write needs keys. */
+  kyc(): Kyc;
+  /** The attestation writer. Throws `KycUnavailable` when this deployment cannot write one. */
+  attestationChain(): Promise<AttestationChain>;
   /** For /health: which keys are throwaways generated for this process. */
   keyReport(): Promise<{ feePayer: string; attestationIssuer: string; treasury: string; ephemeral: string[] }>;
 };
@@ -33,6 +39,8 @@ export function createServices(log: (...args: unknown[]) => void = console.log):
   let treasury: Promise<Treasury> | undefined;
   let onramp: Onramp | undefined;
   let offramp: Offramp | undefined;
+  let kyc: Kyc | undefined;
+  let attestationChain: Promise<AttestationChain> | undefined;
 
   const getClient = () => (client ??= getSolanaClient());
 
@@ -88,6 +96,45 @@ export function createServices(log: (...args: unknown[]) => void = console.log):
 
     offramp() {
       return (offramp ??= createOfframpService({ treasury: () => this.treasury(), log }));
+    },
+
+    /**
+     * The attestation writer: the fee payer funds the account, the issuer authorises it.
+     *
+     * Refuses rather than improvises when either key is a throwaway. An ephemeral key has no
+     * lamports, so the fee payer could not pay for the account; an ephemeral *issuer* is worse
+     * than useless, because `Config::issuer` names a key that this process generated at boot and
+     * will forget on the next one — every attestation it signed would be invalid, and the next
+     * restart would sign with a different key again. Saying so is the honest answer, and
+     * `KycUnavailable` is what the service turns into a labelled "not written" record.
+     */
+    attestationChain() {
+      return (attestationChain ??= (async () => {
+        const [feePayer, issuer] = await Promise.all([getKey("feePayer"), getKey("attestationIssuer")]);
+        if (issuer.ephemeral) {
+          throw new KycUnavailable("ATTESTATION_ISSUER_KEYPAIR is not set, so there is no issuer key to sign an attestation with");
+        }
+        if (feePayer.ephemeral) {
+          throw new KycUnavailable("FEE_PAYER_KEYPAIR is not set, so there is no funded key to pay for the attestation account");
+        }
+        const solana = getClient();
+        return createAttestationChain({
+          rpc: solana.rpc as AttestationChainRpc,
+          run: createPlanRunner(solana, log),
+          payer: feePayer.signer,
+          issuer: issuer.signer,
+          log,
+        });
+      })().catch((error: unknown) => {
+        // Not memoised on failure: a missing key is permanent, but an RPC that was down when the
+        // first webhook arrived should not poison the rest of the process's life.
+        if (!(error instanceof KycUnavailable)) attestationChain = undefined;
+        throw error;
+      }));
+    },
+
+    kyc() {
+      return (kyc ??= createKycService({ chain: () => this.attestationChain(), log }));
     },
 
     async keyReport() {

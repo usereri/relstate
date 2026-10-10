@@ -1,4 +1,4 @@
-import { ShieldCheck } from "lucide-react";
+import { BadgeCheck, ShieldCheck } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ReputationPanel } from "@/gamify";
@@ -11,10 +11,12 @@ interface Props {
   profile: ProfileView | null;
   /** countries of the wallet's finished leases in this role, when known */
   countries?: string[];
+  /** the wallet holds a valid identity attestation (read from chain by the caller) */
+  verified?: boolean;
 }
 
 /** The on-chain track record: counters written only by the program, never by the users. */
-export function ProfileCard({ role, address, profile, countries }: Props) {
+export function ProfileCard({ role, address, profile, countries, verified }: Props) {
   const p = profile;
   const paid = p ? p.paidOnTime + p.paidLate : 0;
   const onTime = p && paid > 0 ? Math.round((p.paidOnTime / paid) * 100) : null;
@@ -27,9 +29,16 @@ export function ProfileCard({ role, address, profile, countries }: Props) {
           <span className="text-xs font-semibold uppercase tracking-widest opacity-80">
             {role === "tenant" ? "Tenant" : "Landlord"} record
           </span>
-          <Badge className="bg-primary-foreground/15 text-primary-foreground">
-            <ShieldCheck /> on-chain
-          </Badge>
+          <div className="flex items-center gap-1.5">
+            {verified && (
+              <Badge className="bg-success-soft text-success">
+                <BadgeCheck /> Verified
+              </Badge>
+            )}
+            <Badge className="bg-primary-foreground/15 text-primary-foreground">
+              <ShieldCheck /> on-chain
+            </Badge>
+          </div>
         </div>
         <p className="mt-3 font-mono text-xs opacity-75">{short(address, 6)}</p>
         <div className="mt-2 flex flex-wrap items-end gap-x-6 gap-y-3">

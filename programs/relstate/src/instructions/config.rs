@@ -37,6 +37,11 @@ pub fn handle_init_config(ctx: Context<InitConfig>) -> Result<()> {
     config.admin = ctx.accounts.admin.key();
     config.bump = ctx.bumps.config;
     config.mints = Vec::new();
+    // Explicit, though the account starts zeroed: a fresh network has no identity layer until
+    // `set_issuer` and `set_require_kyc` are run, and nothing about the gate is implied by which
+    // order the fields happen to sit in.
+    config.issuer = Pubkey::default();
+    config.require_kyc = false;
     Ok(())
 }
 
@@ -148,5 +153,56 @@ fn validate_mint_allowable(mint: &AccountInfo) -> Result<()> {
 pub fn handle_set_admin(ctx: Context<UpdateConfig>, new_admin: Pubkey) -> Result<()> {
     require_keys_neq!(new_admin, Pubkey::default(), ErrorCode::InvalidNewAdmin);
     ctx.accounts.config.admin = new_admin;
+    Ok(())
+}
+
+/// The two KYC settings, with the account-size check the pair of them needs.
+///
+/// `issuer` and `require_kyc` were appended to `Config` after the account already existed on the
+/// networks it had been deployed to, so a config claimed before workstream D landed is allocated
+/// for the old, shorter layout. `realloc` grows it to the current `Config::INIT_SPACE` and tops up
+/// the rent from the admin's own lamports, before either field is written: without it the first
+/// write of a full mint list would fail inside Anchor's serialization with nothing to do about it.
+/// On a network whose config was created by this build the size already matches and the constraint
+/// is a no-op, so there is no separate migration instruction to remember to run.
+#[derive(Accounts)]
+pub struct SetKycConfig<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    #[account(
+        mut,
+        has_one = admin @ ErrorCode::NotAdmin,
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+        realloc = 8 + Config::INIT_SPACE,
+        realloc::payer = admin,
+        realloc::zero = false
+    )]
+    pub config: Account<'info, Config>,
+    pub system_program: Program<'info, System>,
+}
+
+/// Points the program at the key allowed to write attestations. Admin only.
+///
+/// Rejects the all-zero pubkey, which nobody can sign for: handing the issuer role to it would
+/// read as "an issuer is configured" while making every attestation impossible. Rotating the
+/// issuer invalidates every attestation the previous key signed, because the gate compares each
+/// record's stored issuer against this field — that is the revocation path of last resort.
+pub fn handle_set_issuer(ctx: Context<SetKycConfig>, issuer: Pubkey) -> Result<()> {
+    require_keys_neq!(issuer, Pubkey::default(), ErrorCode::InvalidIssuer);
+    ctx.accounts.config.issuer = issuer;
+    Ok(())
+}
+
+/// Turns the `apply` / `propose_lease` identity gate on or off. Admin only.
+///
+/// Turning it on without an issuer would lock both instructions for everyone, with no key able to
+/// unlock them by attesting anyone, so that combination is refused rather than discovered later.
+pub fn handle_set_require_kyc(ctx: Context<SetKycConfig>, required: bool) -> Result<()> {
+    let config = &mut ctx.accounts.config;
+    if required {
+        require_keys_neq!(config.issuer, Pubkey::default(), ErrorCode::IssuerNotSet);
+    }
+    config.require_kyc = required;
     Ok(())
 }

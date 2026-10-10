@@ -8,6 +8,8 @@ import { AuthError, assertAdmin, createSessionToken, sessionFromAuthorizationHea
 import type { HealthResponse, SponsorInfoResponse, SponsorRequest, TreasuryInvariantView } from "./contracts.ts";
 import { env, redactedRpcUrl } from "./env.ts";
 import { LimitError } from "./limits.ts";
+import { KycError, mockVerificationPage } from "./providers/kyc.ts";
+import { SumsubApiError } from "./providers/kyc-sumsub.ts";
 import { formatPln, formatUsdc, parsePln, parseUsdc } from "./providers/money.ts";
 import { OnrampError, WebhookError, formatRate, mockCheckoutPage } from "./providers/onramp.ts";
 import { StripeApiError } from "./providers/stripe.ts";
@@ -27,6 +29,10 @@ function problem(error: unknown): { status: 400 | 401 | 403 | 404 | 409 | 429 | 
   // signing secret leaks into the message.
   if (error instanceof WebhookError) return { status: 400, body: { error: error.message, code: error.code } };
   if (error instanceof OnrampError) return { status: error.status, body: { error: error.message, code: error.code } };
+  if (error instanceof KycError) return { status: error.status, body: { error: error.message, code: error.code } };
+  if (error instanceof SumsubApiError) {
+    return { status: 502, body: { error: `the identity provider rejected the request: ${error.message}`, code: error.sumsubCode ?? "provider-error" } };
+  }
   if (error instanceof StripeApiError) {
     return { status: 502, body: { error: `the payment provider rejected the request: ${error.message}`, code: error.stripeCode ?? "provider-error" } };
   }
@@ -78,8 +84,8 @@ function parseAmount(value: unknown, field = "amount"): bigint {
  * turns this page into an open redirector. Anything that is not the app's own
  * origin falls back to the configured one.
  */
-export function safeReturnBase(requested: string | undefined, appUrl = env.appUrl): string {
-  const fallback = `${appUrl.replace(/\/$/, "")}/#/app?tab=wallet&topup=`;
+export function safeReturnBase(requested: string | undefined, appUrl = env.appUrl, fallbackFragment = "/#/app?tab=wallet&topup="): string {
+  const fallback = `${appUrl.replace(/\/$/, "")}${fallbackFragment}`;
   if (requested === undefined || requested === "") return fallback;
   try {
     return new URL(requested).origin === new URL(appUrl).origin ? requested : fallback;
@@ -120,6 +126,7 @@ export function createApp(services: Services = createServices()) {
       auditorConfigured: env.rusdcAuditorIkm !== "",
       onrampProvider: env.onramp.provider,
       offrampProvider: env.offramp.provider,
+      kycProvider: env.kyc.provider,
       plnPerUsdc: formatRate(services.onramp().rateScaled),
     };
     return c.json(body);
@@ -352,6 +359,65 @@ export function createApp(services: Services = createServices()) {
       receipts: offramp.history(session.wallet),
     });
   });
+
+  // --- Identity (workstream D, docs/contracts/attestation.md) ------------------
+  //
+  // The same shape as the fiat rail above, for the same reason: of everything here, only
+  // `POST /api/webhooks/kyc` decides anything, and it believes only what the provider signed. The
+  // browser can ask for a verification link and read a status; it cannot say it passed.
+
+  /** Starts a verification for the session's wallet and returns the page to open. */
+  app.post("/api/kyc/start", async (c) => {
+    const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
+    // The wallet is the session's, never the body's: it is what the webhook will attest.
+    return c.json(await services.kyc().start({ wallet: session.wallet }));
+  });
+
+  /** Reads the on-chain attestation for the session's wallet, plus whether the gate is on. */
+  app.get("/api/kyc/status", async (c) => {
+    const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
+    return c.json(await services.kyc().status(session.wallet));
+  });
+
+  /**
+   * The one trusted trigger. Deliberately unauthenticated and deliberately not reading the parsed
+   * body: Sumsub's digest covers the exact bytes received, so re-serialising the JSON would break
+   * verification.
+   *
+   * An event we do not act on (`applicantCreated`, `applicantPending`, a non-final review) answers
+   * 200 rather than 400, because the vendor would otherwise retry it forever — unlike a failed
+   * signature check, which is a 400 and stays one. A failed *chain write* is not recorded at all,
+   * so a retried delivery tries again (see `handleWebhook`).
+   *
+   * In mock mode the same route takes the mock page's `{ session, decision }`, so the demo and the
+   * real flow differ only in which provider verifies the payload.
+   */
+  app.post("/api/webhooks/kyc", async (c) => {
+    const raw = await c.req.text();
+    const headers = {
+      "x-payload-digest": c.req.header("x-payload-digest") ?? "",
+      "x-payload-digest-alg": c.req.header("x-payload-digest-alg") ?? "",
+    };
+    try {
+      const { record, replay } = await services.kyc().handleWebhook(headers, raw);
+      return c.json({ received: true, replay, record }, 200);
+    } catch (error) {
+      if (error instanceof WebhookError && error.code === "event-ignored") {
+        return c.json({ received: true, ignored: error.message, code: error.code }, 200);
+      }
+      throw error;
+    }
+  });
+
+  if (env.kyc.provider === "mock") {
+    /** The no-secrets stand-in for Sumsub's hosted check. Mock mode only. */
+    app.get("/mock/kyc", (c) => {
+      const id = c.req.query("session") ?? "";
+      const session = services.kyc().session(id);
+      if (session === undefined) return c.text(`Unknown verification session ${id}. Start again from the app.`, 404);
+      return c.html(mockVerificationPage(session, safeReturnBase(c.req.query("back"), env.appUrl, "/#/app?tab=identity&kyc=")));
+    });
+  }
 
   app.notFound((c) => c.json({ error: "not found", code: "not-found" }, 404));
   return app;
