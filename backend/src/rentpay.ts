@@ -16,6 +16,8 @@ import {
   createTransactionMessage,
   createTransactionPlanner,
   appendTransactionMessageInstructions,
+  createNoopSigner,
+  partiallySignTransactionMessageWithSigners,
   assertIsSendableTransaction,
   assertIsTransactionWithBlockhashLifetime,
   getBase64EncodedWireTransaction,
@@ -180,6 +182,20 @@ export async function planRentPayment(options: RentPaymentOptions): Promise<{ me
     (m as unknown as WithInstructions).instructions.some((ix) => isConfidentialTransferInstruction(ix)),
   );
   return { messages, carriesTransfer };
+}
+
+/** A signer that signs nothing, standing in for a key the backend holds (the sponsor, the treasury). */
+export const noopSigner = (address: Address): TransactionSigner => createNoopSigner(address);
+
+/**
+ * What a wallet posts to a co-signing route: signed by every signer it has (the tenant, the
+ * ephemeral context-state keys), with the payer's slot left empty for the backend to fill.
+ */
+export async function partiallySignPlanned(client: SolanaClient, message: PlannedMessage) {
+  const { value: blockhash } = await client.rpc.getLatestBlockhash().send();
+  const transaction = await partiallySignTransactionMessageWithSigners(setTransactionMessageLifetimeUsingBlockhash(blockhash, message));
+  const wire = getBase64EncodedWireTransaction(transaction);
+  return { wire, blockhash, bytes: Buffer.from(wire, "base64").length };
 }
 
 /** Signs a planned message under a fresh blockhash and returns it with its wire size. */

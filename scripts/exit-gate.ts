@@ -4,8 +4,10 @@
 //   node scripts/exit-gate.ts --probe    # no program needed: measure + policy-check a real proof plan
 //
 // The full gate: create listing -> apply -> propose lease -> fund deposit -> pay rent with a
-// confidential transfer on the rUSDC mint, the fee paid by the fee-payer key for a tenant wallet
-// holding 0 SOL. Then it proves the claims the demo makes rather than assuming them:
+// confidential transfer on the rUSDC mint for a tenant wallet that never holds SOL: the platform
+// provisions the rent of its Application and Profile (POST /api/treasury/rent-dust) and the treasury
+// pays the fee and the proof-account rent of the payment (POST /api/treasury/rent-payment). Both
+// routes are exercised in-process, so the gate tests the code the browser would call. Then it proves the claims the demo makes rather than assuming them:
 //
 //   - the rent amount is NOT in the confirmed transaction (decoded from the chain, not from what we built);
 //   - the auditor key decrypts EXACTLY the rent, and does not "decrypt" a different figure (negative control);
@@ -94,6 +96,10 @@ const conf = await import("../backend/src/confidential.ts");
 const rentpay = await import("../backend/src/rentpay.ts");
 const treasuryMod = await import("../backend/src/treasury.ts");
 const txinspect = await import("../backend/src/txinspect.ts");
+const rentshape = await import("../backend/src/rentshape.ts");
+const { createApp } = await import("../backend/src/server.ts");
+const { createServices } = await import("../backend/src/services.ts");
+const { createSessionToken } = await import("../backend/src/auth.ts");
 const { RELSTATE_PROGRAM } = await import("../backend/src/contracts.ts");
 
 // ---- output ---------------------------------------------------------------------------------
@@ -219,17 +225,31 @@ async function main() {
     tx.recentBlockhash = latest.blockhash;
     tx.partialSign(feePayerKp, ...signers);
     const signature = await connection.sendRawTransaction(tx.serialize(), { preflightCommitment: "confirmed" });
+    await waitFor(signature, latest.lastValidBlockHeight);
+    return signature;
+  }
+  /** Polls over HTTP: the public endpoint drops websockets under exactly this load. */
+  async function waitFor(signature: string, lastValidBlockHeight: number | bigint) {
     for (let i = 0; ; i++) {
       const { value } = await connection.getSignatureStatuses([signature]);
       const status = value[0];
       if (status?.err) throw new Error(`transaction ${signature} failed: ${JSON.stringify(status.err)}`);
-      if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") return signature;
-      if (i % 8 === 7 && (await connection.getBlockHeight("confirmed")) > latest.lastValidBlockHeight) {
+      if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") return;
+      if (i % 8 === 7 && BigInt(await connection.getBlockHeight("confirmed")) > BigInt(lastValidBlockHeight)) {
         throw new Error(`transaction ${signature} expired before it was confirmed`);
       }
       await sleep(600);
     }
   }
+
+  // The backend's own app, in-process, against devnet: the routes the browser would call.
+  const app = createApp(createServices(() => {}));
+  const call = (path: string, wallet: string, body: unknown) =>
+    app.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${createSessionToken(wallet).token}` },
+      body: JSON.stringify(body),
+    });
   const pda = (...seeds: (Buffer | Uint8Array)[]) => PublicKey.findProgramAddressSync(seeds, programId)[0];
   const u64 = (n: bigint | number) => new anchor.BN(n.toString()).toArrayLike(Buffer, "le", 8);
 
@@ -272,14 +292,11 @@ async function main() {
   say(`  landlord   ${landlord.address}`);
   say(`  tenant     ${tenant.address}`);
 
-  const fund = async (to: anchor.web3.PublicKey, sol: number) =>
-    sendTx(new Transaction().add(SystemProgram.transfer({ fromPubkey: treasuryKp.publicKey, toPubkey: to, lamports: Math.round(sol * LAMPORTS_PER_SOL) })), [treasuryKp]);
   if (!PROBE) {
-    // Account rent the PROGRAM charges its caller (listing, lease, vault, profiles, application) is paid
-    // by the actor, not the sponsor: the sponsor refuses any instruction that names the fee payer.
-    await fund(landlordKp.publicKey, 0.02);
-    await fund(tenantKp.publicKey, 0.01);
-    pass("landlord and tenant funded with account rent only (the tenant is drained back to 0 SOL before paying)");
+    // The landlord's account rent (listing, lease, vault, profile) is still script-funded: rent dust
+    // covers a TENANT's Application and Profile. The tenant gets theirs from the platform, below.
+    await sendTx(new Transaction().add(SystemProgram.transfer({ fromPubkey: treasuryKp.publicKey, toPubkey: landlordKp.publicKey, lamports: 20_000_000 })), [treasuryKp]);
+    pass("landlord funded with account rent (not covered by rent dust)");
   }
 
   await treasurySvc.ensureAccount(landlord, landlordKeys);
@@ -317,6 +334,16 @@ async function main() {
       [landlordKp],
     );
     pass("create_listing");
+
+    // The platform provisions the rent the tenant's Application and Profile cost: users never hold or acquire SOL.
+    const dust = await call("/api/treasury/rent-dust", tenant.address, {});
+    const dustBody = (await dust.json()) as { granted?: boolean; lamports?: string; reason?: string };
+    check(dust.status === 200 && dustBody.granted === true, "the platform provisioned the tenant's account rent", JSON.stringify(dustBody));
+    info(`rent dust: ${dustBody.lamports} lamports`);
+    const again = (await (await call("/api/treasury/rent-dust", tenant.address, {})).json()) as { granted?: boolean; reason?: string };
+    check(again.granted === false, "a second request for the same wallet is refused", JSON.stringify(again));
+    const stranger = await call("/api/treasury/rent-dust", tenant.address, { wallet: landlord.address });
+    check(stranger.status === 400, "a request naming another wallet is refused", `${stranger.status}`);
     const application = pda(Buffer.from("application"), listing.toBuffer(), tenantKp.publicKey.toBuffer());
     await sendTx(await program.methods.apply().accountsPartial({ tenant: tenantKp.publicKey, listing, application }).transaction(), [tenantKp]);
     pass("apply");
@@ -359,10 +386,10 @@ async function main() {
     const vaultBalance = BigInt((await connection.getTokenAccountBalance(vault)).value.amount);
     check(vaultBalance === DEPOSIT, "fund_deposit moved the public deposit into the vault", `${vaultBalance}`);
 
-    // The tenant needed SOL only for the program's account rent. Hand it back: paying rent is the claim.
+    // The grant was sized to the two accounts and nothing else, so the user spent exactly what the
+    // platform gave them and ends the lease steps holding 0 SOL. Paying rent is the claim.
     const left = await connection.getBalance(tenantKp.publicKey);
-    if (left > 0) await sendTx(new Transaction().add(SystemProgram.transfer({ fromPubkey: tenantKp.publicKey, toPubkey: treasuryKp.publicKey, lamports: left })), [tenantKp]);
-    check((await connection.getBalance(tenantKp.publicKey)) === 0, "tenant now holds exactly 0 SOL");
+    check(left === 0, "the tenant holds exactly 0 SOL after apply and fund_deposit", `${left} lamports left`);
   }
 
   // ---- F. pay rent --------------------------------------------------------------------------
@@ -387,9 +414,11 @@ async function main() {
     },
   ];
 
+  // The treasury pays: the proof plan funds its context-state accounts from the payer, so every
+  // transaction of it names the payer inside an instruction, which /api/sponsor refuses outright.
   const { messages, carriesTransfer } = await rentpay.planRentPayment({
     client,
-    payer: feePayer,
+    payer: rentpay.noopSigner(treasury.address),
     authority: tenant,
     sourceToken: tenantToken,
     destinationToken: landlordToken,
@@ -401,32 +430,62 @@ async function main() {
   });
   pass(`planned ${messages.length} transactions; the transfer and pay_rent are in #${carriesTransfer + 1}`);
 
-  // Would /api/sponsor accept these? Checked against the real inspector, on the real transactions.
+  const rules = {
+    treasury: treasury.address,
+    wallet: tenant.address,
+    mint: mintAddress,
+    walletToken: tenantToken,
+    maxContextLamports: env.rentPayment.maxContextLamports,
+    maxContextSpace: env.rentPayment.maxContextSpace,
+    maxCreateAccounts: env.rentPayment.maxCreateAccounts,
+  };
+  const treasuryBefore = await connection.getBalance(treasuryKp.publicKey);
   let sponsorRejects = 0;
+  let filtered = 0;
   const sent: string[] = [];
+  const wires: string[] = [];
   for (const [i, message] of messages.entries()) {
-    const signed = await rentpay.signPlanned(client, message);
-    const tooBig = signed.bytes > 1232;
-    let verdict = "accepted";
+    const signed = await rentpay.partiallySignPlanned(client, message);
+    const inspected = txinspect.inspectTransaction(signed.wire, { maxBytes: 100_000, maxInstructions: 64 });
+    info(`tx ${i + 1}/${messages.length}: ${signed.bytes} bytes`);
+    if (signed.bytes > 1232) failures.push(`transaction ${i + 1} is ${signed.bytes} bytes, over the 1232-byte limit`);
     try {
-      const inspected = txinspect.inspectTransaction(signed.wire, { maxBytes: 100_000, maxInstructions: 64 });
-      txinspect.assertSponsorNotUsedByInstructions(inspected, feePayer.address);
-    } catch (e) {
-      verdict = `REJECTED: ${(e as Error).message}`;
+      txinspect.assertSponsorNotUsedByInstructions(inspected, treasury.address);
+    } catch {
       sponsorRejects++;
     }
-    info(`tx ${i + 1}/${messages.length}: ${signed.bytes} bytes${tooBig ? " (OVER the 1232-byte limit)" : ""}; sponsor policy ${verdict}`);
-    if (tooBig) failures.push(`transaction ${i + 1} is ${signed.bytes} bytes, over the 1232-byte limit`);
-    if (!PROBE && !tooBig) {
-      sent.push(await rpcMod.sendAndConfirmByPolling(client, signed.transaction, { blockhash: signed.blockhash.blockhash }));
-      info(sent[sent.length - 1]!);
+    try {
+      rentshape.assertRentPaymentShape(inspected, rules);
+      filtered++;
+    } catch (e) {
+      check(false, `transaction ${i + 1} passes the rent-payment filter`, (e as Error).message);
+    }
+    if (process.env.GATE_DUMP) {
+      const label = (a: string) => (a === treasury.address ? "TREASURY" : a === tenant.address ? "TENANT" : a === tenantToken ? "SRC" : a === landlordToken ? "DST" : a.slice(0, 4));
+      for (const ix of inspected.instructions) {
+        info(`  ix${ix.index} ${ix.programAddress.slice(0, 8)} data[0..4]=${[...ix.data.slice(0, 4)].join(",")} len=${ix.data.length} accts=${ix.accounts.map((a) => label(a.address)).join(" ")}`);
+      }
+    }
+    if (!PROBE) {
+      const res = await call("/api/treasury/rent-payment", tenant.address, { txBase64: signed.wire });
+      const body = (await res.json()) as { signature?: string; error?: string; code?: string };
+      if (res.status !== 200 || !body.signature) throw new Error(`the rent-payment route refused transaction ${i + 1}: ${res.status} ${body.code ?? ""} ${body.error ?? ""}`);
+      await waitFor(body.signature, signed.blockhash.lastValidBlockHeight);
+      sent.push(body.signature);
+      wires.push(signed.wire);
+      info(body.signature);
     }
   }
-  if (sponsorRejects > 0) {
-    warn(
-      `/api/sponsor would REJECT ${sponsorRejects} of ${messages.length} transactions: the proof plan funds its context-state accounts from the payer, ` +
-        "and the sponsor refuses any instruction that names the fee payer. The gate paid the fee directly with the fee-payer key. See docs/contracts/pay.md.",
-    );
+  check(filtered === messages.length, `the real plan passes the rent-payment filter (${filtered}/${messages.length} transactions)`);
+  check(sponsorRejects === messages.length, `/api/sponsor would still refuse all ${messages.length} transactions (its rule stays absolute)`, `${sponsorRejects}`);
+  if (!PROBE) {
+    const treasuryAfter = await connection.getBalance(treasuryKp.publicKey);
+    const net = treasuryBefore - treasuryAfter;
+    check(net < 300_000, "the context-state rent came back to the treasury; only fees were spent", `net ${net} lamports`);
+    // The identical transaction again must not be co-signed a second time.
+    const replay = await call("/api/treasury/rent-payment", tenant.address, { txBase64: wires[0] });
+    const replayBody = (await replay.json()) as { code?: string };
+    check(replay.status === 400 && replayBody.code === "replay", "replaying a co-signed transaction is refused", `${replay.status} ${replayBody.code}`);
   }
   if (PROBE) return finish();
 
@@ -461,15 +520,7 @@ async function main() {
   check(after.availableBalance === RENT, "the tenant's private balance fell by exactly the rent", `${after.availableBalance}`);
 
   // The same check the app calls, through the real route, in-process.
-  const { createApp } = await import("../backend/src/server.ts");
-  const { createServices } = await import("../backend/src/services.ts");
-  const { createSessionToken } = await import("../backend/src/auth.ts");
-  const app = createApp(createServices(() => {}));
-  const res = await app.request("/api/rent/verify", {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${createSessionToken(tenant.address).token}` },
-    body: JSON.stringify({ signature: transferSignature, lease: lease.toBase58() }),
-  });
+  const res = await call("/api/rent/verify", tenant.address, { signature: transferSignature, lease: lease.toBase58() });
   const body = (await res.json()) as { ok?: boolean; settledAmount?: string };
   check(res.status === 200 && body.ok === true && body.settledAmount === RENT.toString(), "POST /api/rent/verify agrees", JSON.stringify(body));
 
