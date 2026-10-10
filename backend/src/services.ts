@@ -4,7 +4,7 @@
 import type { Address } from "@solana/kit";
 import { SPONSOR_ALLOWLIST } from "./contracts.ts";
 import { env } from "./env.ts";
-import { getKey } from "./keys.ts";
+import { getAuditorKeys, getKey, type ConfidentialKeyPair } from "./keys.ts";
 import { createRateLimiter } from "./limits.ts";
 import { kyc as createKycService, offramp as createOfframpService, onramp as createOnrampService } from "./providers/index.ts";
 import { createAttestationChain, type AttestationChain, type AttestationChainRpc } from "./providers/kyc-chain.ts";
@@ -17,6 +17,9 @@ import { createTreasury, type Treasury, type TreasuryRpc } from "./treasury.ts";
 
 export class ServiceUnavailable extends Error {}
 
+/** `POST /api/rent/verify`'s dependencies: the auditor key and nothing else of ours. */
+export type Auditor = { keys: ConfidentialKeyPair };
+
 export type Services = {
   client(): SolanaClient;
   sponsor(): Promise<SponsorService>;
@@ -28,6 +31,8 @@ export type Services = {
   kyc(): Kyc;
   /** The attestation writer. Throws `KycUnavailable` when this deployment cannot write one. */
   attestationChain(): Promise<AttestationChain>;
+  /** The auditor ElGamal pair. Throws `ServiceUnavailable` when no auditor seed is configured. */
+  auditor(): Auditor;
   /** For /health: which keys are throwaways generated for this process. */
   keyReport(): Promise<{ feePayer: string; attestationIssuer: string; treasury: string; ephemeral: string[] }>;
 };
@@ -41,6 +46,7 @@ export function createServices(log: (...args: unknown[]) => void = console.log):
   let offramp: Offramp | undefined;
   let kyc: Kyc | undefined;
   let attestationChain: Promise<AttestationChain> | undefined;
+  let auditor: Auditor | undefined;
 
   const getClient = () => (client ??= getSolanaClient());
 
@@ -135,6 +141,21 @@ export function createServices(log: (...args: unknown[]) => void = console.log):
 
     kyc() {
       return (kyc ??= createKycService({ chain: () => this.attestationChain(), log }));
+    },
+
+    /**
+     * The auditor ElGamal pair, memoised: deriving the pair is cheap but not free, and the verify route is the kind of thing
+     * a demo hits repeatedly. A missing seed is a 503 rather than a 500 — the backend is fine, this
+     * one capability simply was not configured.
+     */
+    auditor() {
+      if (auditor === undefined) {
+        if (env.rusdcAuditorIkm === "") {
+          throw new ServiceUnavailable("RUSDC_AUDITOR_IKM is not set, so no payment can be decrypted for audit");
+        }
+        auditor = { keys: getAuditorKeys() };
+      }
+      return auditor;
     },
 
     async keyReport() {
