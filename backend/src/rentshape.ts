@@ -211,7 +211,12 @@ export function assertRentPaymentShape(tx: InspectedTransaction, rules: RentPaym
       }
 
       case COMPUTE_BUDGET_PROGRAM:
-        break; // bounded separately by assertComputeBudgetWithinPolicy
+        // Bounded separately by assertComputeBudgetWithinPolicy, which reads only the data. None of
+        // its instructions takes an account, so one that carries any is not a ComputeBudget
+        // instruction the runtime would accept; the only thing it can be is a way to smuggle an
+        // account (the treasury, say) past the positional rules above. Refuse it outright.
+        if (ix.accounts.length > 0) deny(ix.index, "a ComputeBudget instruction takes no accounts", "compute-budget-accounts");
+        break;
 
       default:
         deny(ix.index, `program ${ix.programAddress} is not permitted`, "program-not-allowed");
