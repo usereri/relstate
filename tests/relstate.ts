@@ -1388,7 +1388,7 @@ describe("relstate", () => {
   it("only the landlord can finalize", async () => {
     const env = await disputed(500);
     await timeTravel(DISPUTE_WINDOW + 5);
-    await expectFail(env.finalize(env.tenant), "ConstraintHasOne");
+    await expectFail(env.finalize(env.tenant), "ConstraintSeeds"); // lease PDA is derived from the signer
     expect(await balance(env.vault)).to.equal(DEPOSIT);
   });
 
