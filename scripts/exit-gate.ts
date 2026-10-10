@@ -78,7 +78,9 @@ function loadEnv(): string[] {
   };
   for (const [name, file] of Object.entries(backups)) {
     const spec = process.env[name] ?? "";
-    if (spec === "" || spec.trim().startsWith("[") || existsSync(spec)) continue;
+    // Only a stale PATH is swapped for its backup. A value that is not path-shaped is an inline secret
+    // (or garbage), and must fail on its own terms rather than be silently replaced by another key.
+    if (spec === "" || !/[\\/]/.test(spec) || !/\.json$/i.test(spec) || existsSync(spec)) continue;
     const backup = resolve(homedir(), ".config/relstate/keys", file);
     if (existsSync(backup)) process.env[name] = backup;
   }
@@ -141,6 +143,7 @@ const REGION: [number, number] = [80, 76];
 // ---- setup ----------------------------------------------------------------------------------
 
 const requireSpec = (value: string, name: string) => (value === "" ? blocked(`${name} is not set in any env file`) : value);
+// parseKeyPairBytes never echoes the spec (it may be the secret itself), so errors here are safe to print.
 const toWeb3 = (spec: string) => Keypair.fromSecretKey(keys.parseKeyPairBytes(spec));
 const kitSigner = (bytes: Uint8Array) => keys.loadKeyPairSigner(JSON.stringify([...bytes]), "gate actor");
 
@@ -549,6 +552,10 @@ main().catch((e) => {
     say(`\nBLOCKED: ${e.message}`);
     process.exit(2);
   }
-  console.error(e);
+  // Never `console.error(e)`: Node prints the stack and the whole cause chain, and a failure on the way
+  // to loading a key is exactly where a secret could be sitting in a message. Name and message only,
+  // with every configured secret scrubbed as a second line of defence.
+  const err = e as { name?: string; message?: string };
+  console.error(keys.redactSecrets(`${err?.name ?? "Error"}: ${err?.message ?? String(e)}`));
   process.exit(1);
 });
