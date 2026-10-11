@@ -21,6 +21,7 @@ import { ServiceUnavailable, createServices, type Services } from "./services.ts
 import { InvariantViolation, reportForLog, type InvariantReport } from "./treasury.ts";
 import { clientIpOf, createIpLimiter, createWalletAuth, RateLimited, type WalletAuth } from "./wallet-auth.ts";
 import { RejectedTransaction } from "./txinspect.ts";
+import { loadIdl } from "./layout.ts";
 import { createRpcLimiter, createRpcProxy, RPC_PROXY_MAX_BODY_BYTES, type RpcProxy } from "./rpcproxy.ts";
 
 const asInvariantView = (report: InvariantReport): TreasuryInvariantView => reportForLog(report);
@@ -106,10 +107,16 @@ export function safeReturnBase(requested: string | undefined, appUrl = env.appUr
   }
 }
 
+/** The program's account discriminators from the IDL on disk, or null when a deploy carries none. */
+function idlDiscriminators(): Uint8Array[] | null {
+  const accounts = loadIdl()?.accounts;
+  return accounts && accounts.length > 0 ? accounts.map((a) => Uint8Array.from(a.discriminator)) : null;
+}
+
 export function createApp(
   services: Services = createServices(),
   walletAuth: WalletAuth | undefined = env.authMode === "wallet" ? createWalletAuth() : undefined,
-  rpcProxy: RpcProxy = createRpcProxy({ upstreamUrl: () => env.rpcUrl, secrets: () => env.rpcSecrets }),
+  rpcProxy: RpcProxy = createRpcProxy({ upstreamUrl: () => env.rpcUrl, secrets: () => env.rpcSecrets, discriminators: idlDiscriminators }),
 ) {
   const app = new Hono();
   app.use("*", cors({ origin: env.corsOrigin, allowHeaders: ["content-type", "authorization", "solana-client"], allowMethods: ["GET", "POST", "OPTIONS"] }));

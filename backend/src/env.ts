@@ -62,6 +62,20 @@ const feePayerKeypair = str("FEE_PAYER_KEYPAIR");
 const treasuryKeypair = str("TREASURY_KEYPAIR");
 const rusdcMint = str("RUSDC_MINT");
 
+/** Key-like pieces of the RPC URL: query values, path segments and credentials, plus a bare Helius key. */
+function rpcSecretsOf(): string[] {
+  const out = new Set<string>(heliusKey === "" ? [] : [heliusKey]);
+  try {
+    const u = new URL(resolveRpcUrl());
+    for (const v of u.searchParams.values()) out.add(v);
+    for (const seg of u.pathname.split("/")) if (seg.length >= 8) out.add(seg);
+    if (u.password) out.add(u.password);
+  } catch {
+    /* no parseable URL, no pieces */
+  }
+  return [...out].filter((v) => v.length >= 8);
+}
+
 export const env = {
   cluster,
   port: num("PORT", 8787),
@@ -99,14 +113,15 @@ export const env = {
   treasuryRatePerMinute: num("TREASURY_RATE_PER_MINUTE", 60),
   /**
    * Work units per minute per IP through the read-only `/api/rpc` proxy. A plain read costs 1, a
-   * list method its list length, getProgramAccounts 50 (see rpcproxy.ts), so 4000 is about 80
-   * program scans a minute: roughly four times what one open app tab polls.
+   * list method its list length, getProgramAccounts 50 (see rpcproxy.ts). One tenant tab now
+   * costs about 1,300 a minute (three shared scans every 10 s plus small reads), so 20,000 fits
+   * ~15 tabs behind one venue NAT, and the 80,000 global budget fits ~60 tabs.
    */
-  rpcProxyRatePerMinute: num("RPC_PROXY_RATE_PER_MINUTE", 4000),
+  rpcProxyRatePerMinute: num("RPC_PROXY_RATE_PER_MINUTE", 20_000),
   /** Work units per minute across ALL callers: the ceiling on what the proxy can cost the paid RPC plan. */
-  rpcProxyGlobalPerMinute: num("RPC_PROXY_GLOBAL_PER_MINUTE", 30_000),
+  rpcProxyGlobalPerMinute: num("RPC_PROXY_GLOBAL_PER_MINUTE", 80_000),
   /** Values that must never be relayed to a browser, besides what the RPC URL itself reveals. */
-  rpcSecrets: [heliusKey].filter((v) => v !== ""),
+  rpcSecrets: rpcSecretsOf(),
   sessionSecret: str("SESSION_SECRET"),
   sessionTtlSeconds: num("SESSION_TTL_SECONDS", 3600),
   adminToken: str("ADMIN_TOKEN"),

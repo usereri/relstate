@@ -16,7 +16,7 @@ import { resolve } from "node:path";
 type IdlType = string | { array: [IdlType, number] } | { defined: { name: string } } | { option: IdlType } | { vec: IdlType };
 type IdlField = { name: string; type: IdlType };
 type IdlTypeDef = { name: string; type: { kind: "struct"; fields?: IdlField[] } | { kind: "enum"; variants: { name: string; fields?: (IdlField | IdlType)[] }[] } };
-export type Idl = { types?: IdlTypeDef[] };
+export type Idl = { address?: string; accounts?: { name: string; discriminator: number[] }[]; types?: IdlTypeDef[] };
 
 export type Layout = {
   /** Total account size, including Anchor's 8-byte discriminator: what `getMinimumBalanceForRentExemption` and `space =` take. */

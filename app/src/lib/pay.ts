@@ -87,7 +87,12 @@ export function securePrivateBalance(opts: {
   const key = wallet ? `${wallet}:${opts.mint ?? ""}:${opts.holdback ?? 0n}` : "";
   const running = key ? secureInFlight.get(key) : undefined;
   if (running) return running;
-  const run = secureOnce(opts).finally(() => secureInFlight.delete(key));
+  // A deadline here too: a hang before the lock (key derivation, session set-up) would otherwise
+  // leave this entry coalescing every Retry onto a promise that never settles.
+  const run = Promise.race([
+    secureOnce(opts),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new PayError("This is taking longer than expected. Nothing is lost; try again.")), BALANCE_LOCK_DEADLINE_MS + 5_000)),
+  ]).finally(() => secureInFlight.delete(key));
   if (key) secureInFlight.set(key, run);
   return run;
 }
@@ -102,9 +107,21 @@ const secureInFlight = new Map<string, Promise<SecureResult>>();
  * {@link enablePrivateReceiving}, which every path goes through.
  */
 const locks = new Map<string, Promise<unknown>>();
-export function withBalanceLock<T>(owner: string, mint: string, work: () => Promise<T>): Promise<T> {
+/** How long one piece of locked work may hold the lock. A plan that hangs must not strand Retry. */
+export const BALANCE_LOCK_DEADLINE_MS = 150_000;
+
+export function withBalanceLock<T>(owner: string, mint: string, work: () => Promise<T>, deadlineMs = BALANCE_LOCK_DEADLINE_MS): Promise<T> {
   const key = `${owner}:${mint}`;
-  const run = (locks.get(key) ?? Promise.resolve()).catch(() => {}).then(work);
+  const guarded = () => {
+    let timer: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new PayError("This is taking longer than expected. Nothing is lost; try again.")), deadlineMs);
+    });
+    // The hung work is abandoned, not cancelled: it may still finish in the background, which is
+    // safe because every step re-reads the account before acting.
+    return Promise.race([work(), deadline]).finally(() => clearTimeout(timer));
+  };
+  const run = (locks.get(key) ?? Promise.resolve()).catch(() => {}).then(guarded);
   const tail = run.catch(() => {}).then(() => {
     if (locks.get(key) === tail) locks.delete(key);
   });

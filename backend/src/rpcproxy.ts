@@ -79,7 +79,7 @@ const GPA_KEYS = new Set(["encoding", "commitment", "filters", "withContext", "d
  * account type of OUR program (bounded by our own state, and by the response cap). `dataSize` and
  * empty or short memcmps match everything and are refused.
  */
-function checkGetProgramAccounts(params: unknown[], id: string | number | null): void {
+function checkGetProgramAccounts(params: unknown[], id: string | number | null, known: Uint8Array[] | null): void {
   if (params[0] !== RELSTATE_PROGRAM) throw new Invalid("program not allowed", id);
   const config = params[1];
   if (!isPlainObject(config)) throw new Invalid("getProgramAccounts needs a config with filters", id);
@@ -101,7 +101,11 @@ function checkGetProgramAccounts(params: unknown[], id: string | number | null):
       if (m.encoding !== undefined && m.encoding !== "base58") throw new Invalid("memcmp must use base58", id);
       const len = base58Length(m.bytes);
       if (len === null || len === 0) throw new Invalid("memcmp bytes are not base58", id);
-      if (m.offset === 0 && len === 8) selectsType = true;
+      if (m.offset === 0 && len === 8) {
+        // With the IDL at hand the value must be one of OUR account discriminators, not any 8 bytes.
+        const bytes = base58.encode(m.bytes);
+        if (known === null || known.some((d) => d.length === bytes.length && d.every((b, i) => b === bytes[i]))) selectsType = true;
+      }
     } else {
       throw new Invalid("unknown filter", id);
     }
@@ -125,7 +129,7 @@ function checkSimulate(params: unknown[], id: string | number | null): void {
   }
 }
 
-function validate(raw: unknown): Call {
+function validate(raw: unknown, known: Uint8Array[] | null): Call {
   if (!isPlainObject(raw)) throw new Invalid("request must be a JSON-RPC object");
   const id = raw.id;
   if (!(id === null || typeof id === "string" || typeof id === "number")) throw new Invalid("id must be a string, number or null");
@@ -143,7 +147,7 @@ function validate(raw: unknown): Call {
     weight = list.length;
   }
   if (method === "getProgramAccounts") {
-    checkGetProgramAccounts(params, id);
+    checkGetProgramAccounts(params, id, known);
     weight = GPA_WEIGHT;
   }
   if (method === "simulateTransaction") {
@@ -154,22 +158,20 @@ function validate(raw: unknown): Call {
 }
 
 /**
- * Everything that must never be relayed: the upstream URL itself, each of its query values, path
- * segments and credentials whatever they are called, and any configured key. Over-redacting a
- * short string is harmless in an error relayed to a browser; leaking a key is not.
+ * Exact values that must never be relayed: the upstream URL itself, its query values and
+ * credentials, and any configured secret (env.ts lists the URL's key-like path segments there).
+ * Path segments are NOT guessed from the URL here: a legitimate base58 address in a successful
+ * response could equal one, and a 200 body is never rewritten by URL shape.
  */
 function secretsFor(url: string, extra: string[]): string[] {
-  const out = new Set<string>([url, ...extra.filter((e) => e.length >= 6)]);
+  const out = new Set<string>([url, ...extra.filter((e) => e.length >= 8)]);
   try {
     const u = new URL(url);
-    for (const v of u.searchParams.values()) if (v.length >= 4) out.add(v);
-    for (const segment of u.pathname.split("/")) if (segment.length >= 6) out.add(segment);
-    if (u.password) out.add(u.password);
-    if (u.username.length >= 4) out.add(u.username);
+    for (const v of u.searchParams.values()) if (v.length >= 8) out.add(v);
+    if (u.password.length >= 4) out.add(u.password);
   } catch {
     /* an unparseable URL has nothing more to scrub, and nothing will be fetched from it either */
   }
-  // Longest first, so the full URL goes before the pieces it contains.
   return [...out].sort((a, b) => b.length - a.length);
 }
 
@@ -218,8 +220,8 @@ export class RpcRateLimited extends Error {
 
 /**
  * Work-weighted admission: a per-key budget per minute plus one process-wide budget, both fixed
- * windows. A caller whose address could not be resolved (`unknown`) shares a tenth of the per-IP
- * budget, so the degraded case fails safe instead of becoming one generous shared bucket.
+ * windows. A caller whose address could not be resolved (`unknown`) shares three times the per-IP
+ * budget (it may be a whole venue behind one proxy); the global budget bounds the total.
  */
 export function createRpcLimiter(opts: { perIpPerMinute: number; globalPerMinute: number; now?: () => number; maxKeys?: number }) {
   const now = opts.now ?? Date.now;
@@ -238,7 +240,9 @@ export function createRpcLimiter(opts: { perIpPerMinute: number; globalPerMinute
       h = { start: t, used: 0 };
       hits.set(key, h);
     }
-    const budget = key.endsWith(":unknown") ? Math.max(1, Math.floor(opts.perIpPerMinute / 10)) : opts.perIpPerMinute;
+    // An unresolved address may be a whole venue behind one proxy, so it gets MORE than one address
+    // does; the global budget is what bounds the total either way.
+    const budget = key.endsWith(":unknown") ? opts.perIpPerMinute * 3 : opts.perIpPerMinute;
     if (h.used + weight > budget) throw new RpcRateLimited("ip", Math.max(1, Math.ceil((h.start + 60_000 - t) / 1000)));
     h.used += weight;
     global.used += weight;
@@ -248,6 +252,8 @@ export function createRpcLimiter(opts: { perIpPerMinute: number; globalPerMinute
 export type RpcProxyOptions = {
   /** Read lazily so a test (or a config reload) can change it. */
   upstreamUrl: () => string;
+  /** The program's account discriminators (from the IDL), or null to check only the 8-byte shape. */
+  discriminators?: () => Uint8Array[] | null;
   /** Configured secrets (an API key) that must be scrubbed from anything relayed, besides what the URL itself reveals. */
   secrets?: () => string[];
   fetch?: typeof fetch;
@@ -261,6 +267,7 @@ export function createRpcProxy(options: RpcProxyOptions) {
   const maxBatch = options.maxBatch ?? 10;
   const maxResponse = options.maxResponseBytes ?? 8 * 1024 * 1024;
   const timeoutMs = options.timeoutMs ?? 15_000;
+  const discriminators = options.discriminators ?? (() => null);
 
   /**
    * `admit` is charged the work of the whole request before anything is sent upstream, and may throw
@@ -289,9 +296,9 @@ export function createRpcProxy(options: RpcProxyOptions) {
     try {
       if (Array.isArray(parsed)) {
         if (parsed.length === 0 || parsed.length > maxBatch) throw new Invalid(`batch must hold 1 to ${maxBatch} requests`);
-        payload = parsed.map(validate);
+        payload = parsed.map((r) => validate(r, discriminators()));
       } else {
-        payload = validate(parsed);
+        payload = validate(parsed, discriminators());
       }
     } catch (e) {
       if (!(e instanceof Invalid)) throw e;
