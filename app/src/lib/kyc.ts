@@ -110,3 +110,38 @@ export function isKycRequired(error: unknown): boolean {
   const hex = `0x${KYC_REQUIRED_CODE.toString(16)}`;
   return text.toLowerCase().includes(hex) || new RegExp(`"Custom"\\s*:\\s*${KYC_REQUIRED_CODE}\\b`).test(text);
 }
+
+/**
+ * True when the program is gating on identity and this wallet has no valid attestation, so the
+ * action would be refused on chain. A failed lookup answers false: the program stays the judge.
+ */
+export async function needsVerification(wallet: string): Promise<boolean> {
+  if (!KYC_AVAILABLE) return false;
+  try {
+    const s = await kycStatus(wallet);
+    return s.requireKyc && !s.verified && !s.unavailable;
+  } catch {
+    return false;
+  }
+}
+
+const AFTER_KYC_KEY = "relstate.afterKyc";
+
+/** Remembers, across the verification provider's redirect, that the user was sent here by an action and should go back. */
+export function setReturnAfterKyc(action: "apply" | "propose" | null): void {
+  try {
+    if (action) sessionStorage.setItem(AFTER_KYC_KEY, action);
+    else sessionStorage.removeItem(AFTER_KYC_KEY);
+  } catch {
+    /* private mode: the user just navigates back themselves */
+  }
+}
+
+export function returnAfterKyc(): "apply" | "propose" | null {
+  try {
+    const v = sessionStorage.getItem(AFTER_KYC_KEY);
+    return v === "apply" || v === "propose" ? v : null;
+  } catch {
+    return null;
+  }
+}
