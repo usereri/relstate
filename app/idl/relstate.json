@@ -1,0 +1,3093 @@
+{
+  "address": "G4iMjveQKXztnGoxigAeWPrb5evT9yt6qaLkgQEp2dXm",
+  "metadata": {
+    "name": "relstate",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Created with Anchor"
+  },
+  "instructions": [
+    {
+      "name": "abandon_dispute",
+      "docs": [
+        "Tenant rejects the proposed deduction; the deposit returns in full."
+      ],
+      "discriminator": [
+        51,
+        248,
+        79,
+        178,
+        3,
+        240,
+        74,
+        145
+      ],
+      "accounts": [
+        {
+          "name": "tenant",
+          "signer": true,
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "lease",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  97,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.landlord",
+                "account": "Lease"
+              },
+              {
+                "kind": "account",
+                "path": "lease.lease_id",
+                "account": "Lease"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "accept_deduction",
+      "docs": [
+        "Tenant accepts the landlord's proposed deduction as it stands."
+      ],
+      "discriminator": [
+        75,
+        130,
+        220,
+        51,
+        114,
+        56,
+        225,
+        189
+      ],
+      "accounts": [
+        {
+          "name": "tenant",
+          "signer": true,
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "lease",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  97,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.landlord",
+                "account": "Lease"
+              },
+              {
+                "kind": "account",
+                "path": "lease.lease_id",
+                "account": "Lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "tenant_ata",
+          "writable": true
+        },
+        {
+          "name": "landlord_ata",
+          "writable": true
+        },
+        {
+          "name": "tenant_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "tenant"
+              }
+            ]
+          }
+        },
+        {
+          "name": "landlord_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.landlord",
+                "account": "Lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "apply",
+      "discriminator": [
+        248,
+        243,
+        145,
+        24,
+        105,
+        50,
+        162,
+        225
+      ],
+      "accounts": [
+        {
+          "name": "tenant",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "listing"
+        },
+        {
+          "name": "application",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  112,
+                  112,
+                  108,
+                  105,
+                  99,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing"
+              },
+              {
+                "kind": "account",
+                "path": "tenant"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "attestation",
+          "docs": [
+            "for it. An unverified wallet has nothing here at all, so it is read by hand in the handler",
+            "and a missing account is reported as `KycRequired` rather than as a broken account list."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  116,
+                  116,
+                  101,
+                  115,
+                  116,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "tenant"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "attest",
+      "discriminator": [
+        83,
+        148,
+        120,
+        119,
+        144,
+        139,
+        117,
+        160
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "docs": [
+            "Pays the attestation account's rent and the transaction fee. Separate from `issuer` so the",
+            "backend's sponsor key can fund the write while only the issuer key authorises it; passing",
+            "the same key for both is allowed, it simply means that key does both jobs."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "issuer",
+          "signer": true
+        },
+        {
+          "name": "wallet",
+          "docs": [
+            "field — so it needs no type and never signs: KYC is granted *to* a wallet, not asked for",
+            "by one."
+          ]
+        },
+        {
+          "name": "attestation",
+          "docs": [
+            "Init-or-update, so re-verifying a wallet (a new level, a fresh expiry, or a comeback after",
+            "a revocation) is the same instruction as verifying it the first time. The seeds pin it to",
+            "`wallet`, and every field is overwritten below, so there is nothing a second call can",
+            "leave half-set."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  116,
+                  116,
+                  101,
+                  115,
+                  116,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "wallet"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "level",
+          "type": "u8"
+        },
+        {
+          "name": "expires_at",
+          "type": "i64"
+        },
+        {
+          "name": "subject_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "claim_deposit",
+      "discriminator": [
+        201,
+        106,
+        1,
+        224,
+        122,
+        144,
+        210,
+        155
+      ],
+      "accounts": [
+        {
+          "name": "tenant",
+          "signer": true,
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "lease",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  97,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.landlord",
+                "account": "Lease"
+              },
+              {
+                "kind": "account",
+                "path": "lease.lease_id",
+                "account": "Lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "tenant_ata",
+          "writable": true
+        },
+        {
+          "name": "landlord_ata",
+          "writable": true
+        },
+        {
+          "name": "tenant_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "tenant"
+              }
+            ]
+          }
+        },
+        {
+          "name": "landlord_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.landlord",
+                "account": "Lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "close_application",
+      "discriminator": [
+        185,
+        123,
+        65,
+        93,
+        138,
+        249,
+        205,
+        150
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "application",
+          "writable": true
+        },
+        {
+          "name": "tenant",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "close_listing",
+      "discriminator": [
+        33,
+        15,
+        192,
+        81,
+        78,
+        175,
+        159,
+        97
+      ],
+      "accounts": [
+        {
+          "name": "landlord",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "listing"
+          ]
+        },
+        {
+          "name": "listing",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "landlord"
+              },
+              {
+                "kind": "account",
+                "path": "listing.listing_id",
+                "account": "Listing"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "create_listing",
+      "discriminator": [
+        18,
+        168,
+        45,
+        24,
+        191,
+        31,
+        117,
+        54
+      ],
+      "accounts": [
+        {
+          "name": "landlord",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "listing",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "landlord"
+              },
+              {
+                "kind": "arg",
+                "path": "listing_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "listing_id",
+          "type": "u64"
+        },
+        {
+          "name": "rent_amount",
+          "type": "u64"
+        },
+        {
+          "name": "deposit_amount",
+          "type": "u64"
+        },
+        {
+          "name": "region",
+          "type": {
+            "array": [
+              "u8",
+              2
+            ]
+          }
+        },
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "city",
+          "type": "string"
+        },
+        {
+          "name": "blurb",
+          "type": "string"
+        },
+        {
+          "name": "photo",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "finalize_deduction",
+      "docs": [
+        "Landlord closes an unanswered dispute once the tenant's window has passed."
+      ],
+      "discriminator": [
+        44,
+        205,
+        26,
+        16,
+        245,
+        128,
+        224,
+        6
+      ],
+      "accounts": [
+        {
+          "name": "landlord",
+          "signer": true,
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "lease",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  97,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "landlord"
+              },
+              {
+                "kind": "account",
+                "path": "lease.lease_id",
+                "account": "Lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "tenant_ata",
+          "writable": true
+        },
+        {
+          "name": "landlord_ata",
+          "writable": true
+        },
+        {
+          "name": "tenant_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.tenant",
+                "account": "Lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "landlord_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "landlord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "fund_deposit",
+      "discriminator": [
+        149,
+        24,
+        209,
+        94,
+        206,
+        202,
+        144,
+        233
+      ],
+      "accounts": [
+        {
+          "name": "tenant",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "lease",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  97,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.landlord",
+                "account": "Lease"
+              },
+              {
+                "kind": "account",
+                "path": "lease.lease_id",
+                "account": "Lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "tenant_ata",
+          "writable": true
+        },
+        {
+          "name": "tenant_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "tenant"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "attestation",
+          "docs": [
+            "because an unverified wallet has no account here (see `apply`)."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  116,
+                  116,
+                  101,
+                  115,
+                  116,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "tenant"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "lease_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "init_config",
+      "discriminator": [
+        23,
+        235,
+        115,
+        232,
+        168,
+        96,
+        1,
+        231
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "mark_default",
+      "discriminator": [
+        182,
+        231,
+        123,
+        132,
+        66,
+        208,
+        137,
+        139
+      ],
+      "accounts": [
+        {
+          "name": "landlord",
+          "signer": true,
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "lease",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  97,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "landlord"
+              },
+              {
+                "kind": "account",
+                "path": "lease.lease_id",
+                "account": "Lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "tenant_ata",
+          "writable": true
+        },
+        {
+          "name": "landlord_ata",
+          "writable": true
+        },
+        {
+          "name": "tenant_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.tenant",
+                "account": "Lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "landlord_profile",
+          "docs": [
+            "Added so a seizure lands on the landlord's own record too. Without it a landlord who",
+            "defaults every tenant and keeps their deposits showed a spotless return history, which made",
+            "the return rate gameable (A1 in the plan). Created by `propose_lease`, so it always exists."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "landlord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "pay_rent",
+      "discriminator": [
+        69,
+        155,
+        112,
+        183,
+        178,
+        234,
+        94,
+        100
+      ],
+      "accounts": [
+        {
+          "name": "tenant",
+          "signer": true,
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "lease",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  97,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.landlord",
+                "account": "Lease"
+              },
+              {
+                "kind": "account",
+                "path": "lease.lease_id",
+                "account": "Lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "tenant_ata",
+          "writable": true
+        },
+        {
+          "name": "landlord_ata",
+          "writable": true
+        },
+        {
+          "name": "tenant_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "tenant"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "instructions",
+          "docs": [
+            "rent on a confidential mint. Pinned by address, and unused on a public mint."
+          ],
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "propose_lease",
+      "discriminator": [
+        244,
+        160,
+        116,
+        78,
+        18,
+        152,
+        175,
+        148
+      ],
+      "accounts": [
+        {
+          "name": "landlord",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "tenant"
+        },
+        {
+          "name": "tenant_profile",
+          "docs": [
+            "account. It may not exist yet (first-time tenant), so it is read by hand in the handler."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "tenant"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "attestation",
+          "docs": [
+            "because an unverified wallet has no account here (see `apply`)."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  116,
+                  116,
+                  101,
+                  115,
+                  116,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "landlord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "lease",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  97,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "landlord"
+              },
+              {
+                "kind": "arg",
+                "path": "lease_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "landlord_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "landlord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "lease_id",
+          "type": "u64"
+        },
+        {
+          "name": "rent_amount",
+          "type": "u64"
+        },
+        {
+          "name": "standard_deposit",
+          "type": "u64"
+        },
+        {
+          "name": "period_secs",
+          "type": "i64"
+        },
+        {
+          "name": "grace_secs",
+          "type": "i64"
+        },
+        {
+          "name": "term_periods",
+          "type": "u16"
+        },
+        {
+          "name": "lease_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "region",
+          "type": {
+            "array": [
+              "u8",
+              2
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "release_deposit",
+      "discriminator": [
+        64,
+        87,
+        121,
+        32,
+        104,
+        72,
+        160,
+        185
+      ],
+      "accounts": [
+        {
+          "name": "landlord",
+          "signer": true,
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "lease",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  97,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "landlord"
+              },
+              {
+                "kind": "account",
+                "path": "lease.lease_id",
+                "account": "Lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "tenant_ata",
+          "writable": true
+        },
+        {
+          "name": "landlord_ata",
+          "writable": true
+        },
+        {
+          "name": "tenant_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.tenant",
+                "account": "Lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "landlord_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "landlord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "deduction",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "revoke",
+      "discriminator": [
+        170,
+        23,
+        31,
+        34,
+        133,
+        173,
+        93,
+        242
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "issuer",
+          "signer": true
+        },
+        {
+          "name": "wallet"
+        },
+        {
+          "name": "attestation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  116,
+                  116,
+                  101,
+                  115,
+                  116,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "wallet"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "set_admin",
+      "discriminator": [
+        251,
+        163,
+        0,
+        52,
+        91,
+        194,
+        187,
+        92
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_admin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_issuer",
+      "discriminator": [
+        122,
+        240,
+        209,
+        127,
+        179,
+        164,
+        175,
+        206
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "issuer",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_mint_allowed",
+      "discriminator": [
+        245,
+        141,
+        124,
+        184,
+        161,
+        169,
+        177,
+        171
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "docs": [
+            "The mint being allowed or removed. On allow it is inspected for extensions that would",
+            "break the escrow arithmetic or disable the confidential-transfer privacy mitigation."
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "allowed",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "set_require_kyc",
+      "discriminator": [
+        34,
+        245,
+        213,
+        202,
+        112,
+        243,
+        32,
+        15
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "required",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "settle_dispute",
+      "docs": [
+        "Both parties sign a final deduction and the lease closes on it (D1)."
+      ],
+      "discriminator": [
+        155,
+        147,
+        5,
+        44,
+        20,
+        204,
+        146,
+        43
+      ],
+      "accounts": [
+        {
+          "name": "tenant",
+          "signer": true,
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "landlord",
+          "signer": true,
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "lease",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  97,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "landlord"
+              },
+              {
+                "kind": "account",
+                "path": "lease.lease_id",
+                "account": "Lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "tenant_ata",
+          "writable": true
+        },
+        {
+          "name": "landlord_ata",
+          "writable": true
+        },
+        {
+          "name": "tenant_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "tenant"
+              }
+            ]
+          }
+        },
+        {
+          "name": "landlord_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "landlord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "deduction",
+          "type": "u64"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Application",
+      "discriminator": [
+        219,
+        9,
+        27,
+        113,
+        208,
+        126,
+        203,
+        30
+      ]
+    },
+    {
+      "name": "Attestation",
+      "discriminator": [
+        152,
+        125,
+        183,
+        86,
+        36,
+        146,
+        121,
+        73
+      ]
+    },
+    {
+      "name": "Config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
+    },
+    {
+      "name": "Lease",
+      "discriminator": [
+        14,
+        103,
+        218,
+        61,
+        248,
+        234,
+        105,
+        84
+      ]
+    },
+    {
+      "name": "Listing",
+      "discriminator": [
+        218,
+        32,
+        50,
+        73,
+        43,
+        134,
+        26,
+        58
+      ]
+    },
+    {
+      "name": "Profile",
+      "discriminator": [
+        184,
+        101,
+        165,
+        188,
+        95,
+        63,
+        127,
+        188
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "AttestationRevoked",
+      "discriminator": [
+        47,
+        106,
+        65,
+        238,
+        200,
+        127,
+        163,
+        50
+      ]
+    },
+    {
+      "name": "Attested",
+      "discriminator": [
+        184,
+        102,
+        113,
+        199,
+        220,
+        197,
+        96,
+        50
+      ]
+    },
+    {
+      "name": "DepositDisputeRejected",
+      "discriminator": [
+        212,
+        244,
+        207,
+        79,
+        75,
+        229,
+        14,
+        224
+      ]
+    },
+    {
+      "name": "DepositDisputed",
+      "discriminator": [
+        35,
+        249,
+        16,
+        66,
+        47,
+        238,
+        27,
+        11
+      ]
+    },
+    {
+      "name": "LeaseClosed",
+      "discriminator": [
+        75,
+        156,
+        130,
+        204,
+        31,
+        95,
+        218,
+        182
+      ]
+    },
+    {
+      "name": "LeaseDefaulted",
+      "discriminator": [
+        226,
+        7,
+        17,
+        172,
+        211,
+        133,
+        104,
+        214
+      ]
+    },
+    {
+      "name": "RentPaid",
+      "discriminator": [
+        140,
+        29,
+        172,
+        69,
+        152,
+        38,
+        73,
+        241
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "WrongStatus",
+      "msg": "Lease is not in the required status"
+    },
+    {
+      "code": 6001,
+      "name": "TermCompleted",
+      "msg": "All rent periods are already paid"
+    },
+    {
+      "code": 6002,
+      "name": "TermIncomplete",
+      "msg": "Rent periods are still unpaid"
+    },
+    {
+      "code": 6003,
+      "name": "DeductionTooLarge",
+      "msg": "Deduction is larger than deposit"
+    },
+    {
+      "code": 6004,
+      "name": "ZeroRent",
+      "msg": "Rent must be greater than zero"
+    },
+    {
+      "code": 6005,
+      "name": "ZeroTerm",
+      "msg": "Lease needs at least one rent period"
+    },
+    {
+      "code": 6006,
+      "name": "PeriodTooShort",
+      "msg": "Rent period is shorter than the minimum"
+    },
+    {
+      "code": 6007,
+      "name": "SelfLease",
+      "msg": "Landlord and tenant must be different wallets"
+    },
+    {
+      "code": 6008,
+      "name": "InvalidGrace",
+      "msg": "Grace must be between zero and one period"
+    },
+    {
+      "code": 6009,
+      "name": "NotInDefault",
+      "msg": "Rent is not overdue long enough to declare a default"
+    },
+    {
+      "code": 6010,
+      "name": "ClaimTooEarly",
+      "msg": "The landlord still has time to release the deposit"
+    },
+    {
+      "code": 6011,
+      "name": "LeaseHashMismatch",
+      "msg": "Lease hash does not match the proposed lease"
+    },
+    {
+      "code": 6012,
+      "name": "TooEarly",
+      "msg": "This rent period is not due yet"
+    },
+    {
+      "code": 6013,
+      "name": "LeaseNotEnded",
+      "msg": "The lease term has not ended yet"
+    },
+    {
+      "code": 6014,
+      "name": "MintNotAllowed",
+      "msg": "Mint is not allowed for leases"
+    },
+    {
+      "code": 6015,
+      "name": "InvalidRegion",
+      "msg": "Region must be two uppercase letters (ISO country code)"
+    },
+    {
+      "code": 6016,
+      "name": "TextTooLong",
+      "msg": "Listing text is too long"
+    },
+    {
+      "code": 6017,
+      "name": "NotYourApplication",
+      "msg": "Only the applicant or the landlord can close an application"
+    },
+    {
+      "code": 6018,
+      "name": "NotAdmin",
+      "msg": "Only the config admin can change the program settings"
+    },
+    {
+      "code": 6019,
+      "name": "MintListFull",
+      "msg": "The allowed-mint list is full"
+    },
+    {
+      "code": 6020,
+      "name": "InvalidMintData",
+      "msg": "The mint account could not be read"
+    },
+    {
+      "code": 6021,
+      "name": "MissingConfidentialTransfer",
+      "msg": "Paying rent on a confidential mint needs a matching Token-2022 confidential transfer directly before pay_rent"
+    },
+    {
+      "code": 6022,
+      "name": "ConfidentialMintNeedsAuditor",
+      "msg": "A confidential-transfer mint must carry an auditor ElGamal pubkey to be allowed"
+    },
+    {
+      "code": 6023,
+      "name": "DisallowedMintExtension",
+      "msg": "The mint carries an extension that is not allowed for leases"
+    },
+    {
+      "code": 6024,
+      "name": "InvalidNewAdmin",
+      "msg": "The new admin must not be the default (all-zero) pubkey"
+    },
+    {
+      "code": 6025,
+      "name": "KycRequired",
+      "msg": "This wallet needs a valid identity attestation (level 1 or higher, not revoked, not expired)"
+    },
+    {
+      "code": 6026,
+      "name": "NotIssuer",
+      "msg": "Only the issuer key in the program config can write or revoke an attestation"
+    },
+    {
+      "code": 6027,
+      "name": "IssuerNotSet",
+      "msg": "No attestation issuer is set in the program config"
+    },
+    {
+      "code": 6028,
+      "name": "InvalidIssuer",
+      "msg": "The issuer must not be the default (all-zero) pubkey"
+    },
+    {
+      "code": 6029,
+      "name": "InvalidAttestationLevel",
+      "msg": "An attestation must be level 1 (basic) or 2 (enhanced)"
+    },
+    {
+      "code": 6030,
+      "name": "AttestationExpiryInPast",
+      "msg": "An attestation's expiry must be in the future, or zero for never"
+    },
+    {
+      "code": 6031,
+      "name": "InvalidSubjectHash",
+      "msg": "An attestation needs a non-zero subject hash"
+    },
+    {
+      "code": 6032,
+      "name": "DisputeWindowOpen",
+      "msg": "The tenant still has time to answer the proposed deduction"
+    },
+    {
+      "code": 6033,
+      "name": "DisputeWindowClosed",
+      "msg": "The window to reject the proposed deduction has passed"
+    },
+    {
+      "code": 6034,
+      "name": "DisputeAlreadyRejected",
+      "msg": "The tenant already rejected a deduction on this lease, so the deposit returns in full"
+    },
+    {
+      "code": 6035,
+      "name": "MathOverflow",
+      "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6036,
+      "name": "ZeroDeposit",
+      "msg": "The deposit must be greater than zero"
+    },
+    {
+      "code": 6037,
+      "name": "TermTooLong",
+      "msg": "The lease term (periods x period length) is too long"
+    }
+  ],
+  "types": [
+    {
+      "name": "Application",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing",
+            "type": "pubkey"
+          },
+          {
+            "name": "landlord",
+            "type": "pubkey"
+          },
+          {
+            "name": "tenant",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Attestation",
+      "docs": [
+        "One wallet's KYC result, written only by the issuer key. Seeds `[ATTESTATION_SEED, wallet]`.",
+        "",
+        "No personal data lives here and none ever should: the only link back to the applicant is",
+        "`subject_hash`, which the backend computes as `sha256(applicant_id || salt)` with a salt it",
+        "never publishes (docs/privacy.md). The chain therefore proves *that* a wallet passed a check",
+        "at a point in time, and nothing about who it belongs to."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "wallet",
+            "type": "pubkey"
+          },
+          {
+            "name": "issuer",
+            "docs": [
+              "The issuer at the time of signing. Compared against `Config::issuer` on every check, so",
+              "rotating the issuer invalidates everything the old key vouched for."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "level",
+            "docs": [
+              "0 none (never stored), 1 basic, 2 enhanced."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "verified_at",
+            "type": "i64"
+          },
+          {
+            "name": "expires_at",
+            "docs": [
+              "Unix seconds; 0 means it never expires. The demo issues one year."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "revoked",
+            "type": "bool"
+          },
+          {
+            "name": "subject_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AttestationRevoked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "wallet",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Attested",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "wallet",
+            "type": "pubkey"
+          },
+          {
+            "name": "level",
+            "type": "u8"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Config",
+      "docs": [
+        "Program-wide settings, one account at seeds `[CONFIG_SEED]`. Holds the mints a lease may be",
+        "denominated in: whoever runs `init_config` on a fresh network becomes the admin that edits it."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "mints",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "issuer",
+            "docs": [
+              "The only key `attest` and `revoke` accept as a signer. Deliberately **not** the fee payer",
+              "key: a leaked sponsor key must not be able to mint identity (docs/contracts/attestation.md).",
+              "All-zero means no issuer has been set, and `require_kyc` cannot be turned on without one."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "require_kyc",
+            "docs": [
+              "Whether `apply` and `propose_lease` demand a valid attestation from the acting wallet.",
+              "False by default, which is what keeps a fresh network (and the test suite) usable before",
+              "any KYC exists; the devnet demo deploy turns it on."
+            ],
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DepositDisputeRejected",
+      "docs": [
+        "The tenant rejected the proposal. The deposit now returns in full, through `claim_deposit`",
+        "once the resumed clock runs out, or sooner if the landlord releases it."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lease",
+            "type": "pubkey"
+          },
+          {
+            "name": "claim_deadline",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DepositDisputed",
+      "docs": [
+        "The landlord proposed a deduction and the lease is waiting on the tenant. No money moved."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lease",
+            "type": "pubkey"
+          },
+          {
+            "name": "proposed_deduction",
+            "type": "u64"
+          },
+          {
+            "name": "answer_by",
+            "docs": [
+              "When the tenant's window to answer runs out."
+            ],
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Lease",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "landlord",
+            "type": "pubkey"
+          },
+          {
+            "name": "tenant",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "lease_id",
+            "type": "u64"
+          },
+          {
+            "name": "rent_amount",
+            "type": "u64"
+          },
+          {
+            "name": "deposit_amount",
+            "type": "u64"
+          },
+          {
+            "name": "start_ts",
+            "type": "i64"
+          },
+          {
+            "name": "term_periods",
+            "type": "u16"
+          },
+          {
+            "name": "paid_count",
+            "type": "u16"
+          },
+          {
+            "name": "lease_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "status",
+            "type": {
+              "defined": {
+                "name": "Status"
+              }
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "period_secs",
+            "type": "i64"
+          },
+          {
+            "name": "grace_secs",
+            "type": "i64"
+          },
+          {
+            "name": "region",
+            "type": {
+              "array": [
+                "u8",
+                2
+              ]
+            }
+          },
+          {
+            "name": "discount_pct",
+            "type": "u8"
+          },
+          {
+            "name": "proposed_deduction",
+            "docs": [
+              "The deduction the landlord asked for when the lease entered `Disputed`. It is a proposal,",
+              "not a decision: no money moves until it is accepted, finalized or settled. Zeroed on every",
+              "exit from `Disputed`."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "disputed_at",
+            "docs": [
+              "When the dispute opened; 0 when the lease is not disputed. `DISPUTE_WINDOW_SECS` runs from",
+              "here."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "claim_pause_secs",
+            "docs": [
+              "Total seconds this lease has spent inside a dispute, added to the claim deadline. This is",
+              "what makes a rejected dispute *resume* the `claim_deposit` clock instead of restarting it,",
+              "and it is why a landlord cannot shorten the tenant's claim by opening one."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "dispute_rejected",
+            "docs": [
+              "The tenant rejected a proposed deduction. It voids that proposal and bars another one:",
+              "without it a landlord could re-dispute every time the claim came due and keep the deposit",
+              "out of reach forever. `release_deposit(0)` still works, so a full return is always open."
+            ],
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LeaseClosed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lease",
+            "type": "pubkey"
+          },
+          {
+            "name": "deduction",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LeaseDefaulted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lease",
+            "type": "pubkey"
+          },
+          {
+            "name": "seized",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Listing",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "landlord",
+            "type": "pubkey"
+          },
+          {
+            "name": "listing_id",
+            "type": "u64"
+          },
+          {
+            "name": "rent_amount",
+            "type": "u64"
+          },
+          {
+            "name": "deposit_amount",
+            "type": "u64"
+          },
+          {
+            "name": "region",
+            "type": {
+              "array": [
+                "u8",
+                2
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "title",
+            "type": "string"
+          },
+          {
+            "name": "city",
+            "type": "string"
+          },
+          {
+            "name": "blurb",
+            "type": "string"
+          },
+          {
+            "name": "photo",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Profile",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "wallet",
+            "type": "pubkey"
+          },
+          {
+            "name": "leases_completed",
+            "type": "u32"
+          },
+          {
+            "name": "paid_on_time",
+            "type": "u32"
+          },
+          {
+            "name": "paid_late",
+            "type": "u32"
+          },
+          {
+            "name": "deposits_returned_full",
+            "type": "u32"
+          },
+          {
+            "name": "deposit_total",
+            "type": "u64"
+          },
+          {
+            "name": "deducted_total",
+            "type": "u64"
+          },
+          {
+            "name": "defaults",
+            "type": "u32"
+          },
+          {
+            "name": "deposits_claimed",
+            "type": "u32"
+          },
+          {
+            "name": "rent_paid_total",
+            "type": "u64"
+          },
+          {
+            "name": "last_deposit_return_bps",
+            "docs": [
+              "How much of the most recent closed deposit went back to the tenant, in basis points",
+              "(`BPS_FULL` = all of it). 0 also reads as \"no deposit outcome yet\", which `deposit_events`",
+              "tells apart."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "deposit_events",
+            "docs": [
+              "How many leases reached a deposit outcome — release, settlement, claim or default. The",
+              "denominator behind \"returns X% of deposits over N leases\", and the confidence in the rate:",
+              "one lease at 100% says much less than twenty."
+            ],
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RentPaid",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lease",
+            "type": "pubkey"
+          },
+          {
+            "name": "period",
+            "type": "u16"
+          },
+          {
+            "name": "on_time",
+            "type": "bool"
+          },
+          {
+            "name": "confidential",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Status",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Proposed"
+          },
+          {
+            "name": "Active"
+          },
+          {
+            "name": "Closed"
+          },
+          {
+            "name": "Defaulted"
+          },
+          {
+            "name": "Disputed"
+          }
+        ]
+      }
+    }
+  ],
+  "constants": [
+    {
+      "name": "APPLICATION_SEED",
+      "type": "bytes",
+      "value": "[97, 112, 112, 108, 105, 99, 97, 116, 105, 111, 110]"
+    },
+    {
+      "name": "ATTESTATION_SEED",
+      "type": "bytes",
+      "value": "[97, 116, 116, 101, 115, 116, 97, 116, 105, 111, 110]"
+    },
+    {
+      "name": "BPS_FULL",
+      "type": "u16",
+      "value": "10000"
+    },
+    {
+      "name": "CLAIM_WINDOW_SECS",
+      "type": "i64",
+      "value": "10"
+    },
+    {
+      "name": "CONFIG_SEED",
+      "type": "bytes",
+      "value": "[99, 111, 110, 102, 105, 103]"
+    },
+    {
+      "name": "DISPUTE_WINDOW_SECS",
+      "type": "i64",
+      "value": "30"
+    },
+    {
+      "name": "GOOD_STANDING_DISCOUNT_PCT",
+      "type": "u8",
+      "value": "50"
+    },
+    {
+      "name": "KYC_LEVEL_BASIC",
+      "type": "u8",
+      "value": "1"
+    },
+    {
+      "name": "KYC_LEVEL_ENHANCED",
+      "type": "u8",
+      "value": "2"
+    },
+    {
+      "name": "LEASE_SEED",
+      "type": "bytes",
+      "value": "[108, 101, 97, 115, 101]"
+    },
+    {
+      "name": "LISTING_SEED",
+      "type": "bytes",
+      "value": "[108, 105, 115, 116, 105, 110, 103]"
+    },
+    {
+      "name": "PROFILE_SEED",
+      "type": "bytes",
+      "value": "[112, 114, 111, 102, 105, 108, 101]"
+    },
+    {
+      "name": "RENT_HEADROOM_PCT",
+      "type": "u16",
+      "value": "150"
+    },
+    {
+      "name": "VAULT_SEED",
+      "type": "bytes",
+      "value": "[118, 97, 117, 108, 116]"
+    }
+  ]
+}

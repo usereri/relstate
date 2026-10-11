@@ -1,0 +1,59 @@
+name: CI
+
+# No Rust/Anchor here on purpose: the program is built and tested locally with `make test-demo`
+# (needs cargo, the Solana CLI and Surfpool). This workflow only checks the three TypeScript
+# packages, each against the tracked IDL copy (app/idl/, scripts/sync-idl.sh) since ../target is
+# git-ignored and never present in a runner checkout.
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app:
+    name: app (build + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run app:build
+      - run: npm run app:test
+
+  site:
+    name: site (build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - run: npm ci
+        working-directory: site
+      - run: npm run build
+        working-directory: site
+
+  backend:
+    name: backend (typecheck + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+        working-directory: backend
+      - run: npm run typecheck
+        working-directory: backend
+      - run: ONRAMP_PROVIDER=mock npm test
+        working-directory: backend
