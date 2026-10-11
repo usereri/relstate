@@ -148,6 +148,7 @@ export function createApp(services: Services = createServices(), walletAuth: Wal
    */
   if (env.authMode === "mock") {
     app.post("/api/auth/mock", async (c) => {
+      limit(`m:${clientIp(c)}`);
       const { wallet } = await readJson<{ wallet?: string }>(c);
       if (typeof wallet !== "string" || wallet.trim() === "") {
         throw new RejectedTransaction("wallet is required", "malformed-body");
@@ -164,22 +165,23 @@ export function createApp(services: Services = createServices(), walletAuth: Wal
     });
   }
 
+  // Per-IP limiter for the unauthenticated session-issuing routes (wallet login and mock sessions).
+  const limit = createIpLimiter(env.authRatePerMinute);
+  const clientIp = (c: Parameters<typeof getConnInfo>[0]): string => {
+    let socket: string | undefined;
+    try {
+      socket = getConnInfo(c).remote.address;
+    } catch {
+      socket = undefined;
+    }
+    return clientIpOf((n) => c.req.header(n), socket, env.trustProxyIpHeader);
+  };
+
   /** Wallet-signature login. Only mounted when AUTH_MODE=wallet; see wallet-auth.ts. */
   if (walletAuth !== undefined) {
-    const limit = createIpLimiter(env.authRatePerMinute);
-    const clientIp = (c: Parameters<typeof getConnInfo>[0]): string => {
-      let socket: string | undefined;
-      try {
-        socket = getConnInfo(c).remote.address;
-      } catch {
-        socket = undefined;
-      }
-      return clientIpOf((n) => c.req.header(n), socket, env.trustProxyIpHeader);
-    };
     app.post("/api/auth/challenge", async (c) => {
       limit(`c:${clientIp(c)}`);
       const { wallet } = await readJson<{ wallet?: unknown }>(c);
-      if (typeof wallet === "string") limit(`w:${wallet}`);
       return c.json(walletAuth.challenge(wallet));
     });
     app.post("/api/auth/verify", async (c) => {

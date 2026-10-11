@@ -45,7 +45,7 @@ export function kycConfigFromEnv(backendUrl = `http://localhost:${env.port}`): K
     maxStartsPerWalletPerHour: env.kyc.maxStartsPerWalletPerHour,
     backendUrl,
     appUrl: env.appUrl.replace(/\/$/, ""),
-    mockBudget: env.mode !== "live" ? undefined : { maxPerHour: env.kyc.mockMaxAttestsPerHour, maxLamportsPerDay: env.kyc.mockMaxLamportsPerDay, lamportsPerAttest: env.kyc.mockLamportsPerAttest },
+    mockBudget: { maxPerHour: env.kyc.mockMaxAttestsPerHour, maxLamportsPerDay: env.kyc.mockMaxLamportsPerDay, lamportsPerAttest: env.kyc.mockLamportsPerAttest },
     sumsub: env.kyc.provider === "sumsub" ? sumsubConfigFromEnv() : undefined,
   };
 }

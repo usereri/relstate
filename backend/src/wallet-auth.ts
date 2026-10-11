@@ -45,7 +45,7 @@ export function createWalletAuth(options: WalletAuthOptions = {}) {
   const sessionTtlSeconds = options.sessionTtlSeconds ?? env.walletSessionTtlSeconds;
   const maxAttempts = options.maxAttempts ?? 5;
   const maxPending = options.maxPending ?? 10_000;
-  const maxPendingPerWallet = options.maxPendingPerWallet ?? 3;
+  const maxPendingPerWallet = options.maxPendingPerWallet ?? 5;
   // Keyed by nonce, so nobody but the holder of a challenge can burn its attempts, and a third
   // party asking for a challenge for someone's address cannot invalidate the one they already hold.
   // Map order is insertion order, which is what makes "evict the oldest" cheap.
@@ -70,10 +70,11 @@ export function createWalletAuth(options: WalletAuthOptions = {}) {
     sweep();
     // Full store or too many for one wallet: evict the oldest rather than refuse, so a flood
     // degrades the flooder's own entries first and never locks a new user out.
-    while (pending.size >= maxPending) drop(pending.keys().next().value as string);
-    // Re-read each pass: drop() installs a new array, so a hoisted reference would never shrink.
-    for (let mine = byWallet.get(wallet); mine !== undefined && mine.length >= maxPendingPerWallet; mine = byWallet.get(wallet)) {
-      drop(mine[0] as string);
+    while (pending.size > 0 && pending.size >= maxPending) drop(pending.keys().next().value as string);
+    // Over quota: evict the NEWEST existing entry, so a challenge the user is about to sign
+    // outlives a flood of later ones. Re-read each pass: drop() installs a new array.
+    for (let mine = byWallet.get(wallet); mine !== undefined && mine.length > 0 && mine.length >= maxPendingPerWallet; mine = byWallet.get(wallet)) {
+      drop(mine[mine.length - 1] as string);
     }
     const issued = now();
     const expiresAt = issued + challengeTtlMs;
@@ -130,7 +131,7 @@ export function createIpLimiter(perMinute: number, now: () => number = Date.now,
     const h = hits.get(key);
     if (h === undefined || t - h.windowStart >= 60_000) {
       hits.delete(key); // re-insert so Map order stays oldest-window-first
-      while (hits.size >= maxKeys) hits.delete(hits.keys().next().value as string);
+      while (hits.size > 0 && hits.size >= maxKeys) hits.delete(hits.keys().next().value as string);
       hits.set(key, { windowStart: t, count: 1 });
       return;
     }

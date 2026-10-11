@@ -107,14 +107,13 @@ const toBase64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
 /** Wallet-signature login: sign the backend's one-time challenge, trade the signature for a session. */
 const CHALLENGE_STATEMENT = "Sign in to relstate. This proves you control the wallet and costs nothing.";
 const MAX_CHALLENGE_LIFETIME_MS = 10 * 60_000;
-const MAX_CLOCK_SKEW_MS = 5 * 60_000;
 
 /**
  * Signs nothing but the exact login template for THIS wallet and THIS site: a compromised or
  * hostile API cannot get a signature over arbitrary text (a transfer memo, a terms-of-service
  * clause...) out of the user. Throws on any extra, missing or reordered line.
  */
-export function assertChallenge(message: string, wallet: string, nonce: string, nowMs = Date.now()): void {
+export function assertChallenge(message: string, wallet: string, nonce: string): void {
   const bad = () => new Error("The login challenge does not match the expected format for this wallet and site, so it was not signed.");
   const lines = message.split("\n");
   if (lines.length !== 9) throw bad();
@@ -130,7 +129,9 @@ export function assertChallenge(message: string, wallet: string, nonce: string, 
   const issued = Date.parse(issuedM[2] as string);
   const expiry = Date.parse(expiryM[2] as string);
   if (!Number.isFinite(issued) || !Number.isFinite(expiry)) throw bad();
-  if (Math.abs(issued - nowMs) > MAX_CLOCK_SKEW_MS || expiry <= nowMs || expiry - issued > MAX_CHALLENGE_LIFETIME_MS) throw bad();
+  // Only the lifetime is checked, not the absolute time: the device clock may be wrong, and the
+  // backend enforces real expiry. The lifetime bound is what stops a long-lived or pre-dated signature.
+  if (expiry <= issued || expiry - issued > MAX_CHALLENGE_LIFETIME_MS) throw bad();
 }
 
 async function requestWalletSession(wallet: string): Promise<BackendSession> {

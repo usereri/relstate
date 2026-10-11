@@ -13,6 +13,8 @@ no-keys demo, but **never share `SESSION_SECRET` between a mock and a live deplo
 that follows (3.4) and `fly.toml` currently ship `BACKEND_MODE=mock`; switch them to live only after
 the live variables in the checklist are set.
 
+**Budgets reset on restart.** The mock-KYC attestation budget (default 30/hour, 100/day) and the login and sponsor rate limits are in memory, so a machine restart or redeploy resets them. Run a single Fly machine and treat the daily cap as per-process.
+
 ## 0. Prerequisites and accounts
 
 | What | Why | Get it |

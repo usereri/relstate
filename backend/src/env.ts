@@ -187,9 +187,9 @@ export const env = {
      * value `devnet` counts, and boot additionally checks the RPC's genesis hash (see boot.ts).
      */
     allowMock: str("ALLOW_MOCK_KYC"),
-    /** Global budget for the mock verifier's attestations (each one is paid for by the fee payer). */
-    mockMaxAttestsPerHour: num("KYC_MOCK_MAX_ATTESTS_PER_HOUR", 20),
-    mockMaxLamportsPerDay: bigintOf("KYC_MOCK_MAX_LAMPORTS_PER_DAY", 20_000_000n),
+    /** Global budget for the mock verifier's attestations (each one is paid for by the fee payer), in every backend mode. Per process: a restart resets it. 30/h and 100/day (4M x 100). */
+    mockMaxAttestsPerHour: num("KYC_MOCK_MAX_ATTESTS_PER_HOUR", 30),
+    mockMaxLamportsPerDay: bigintOf("KYC_MOCK_MAX_LAMPORTS_PER_DAY", 400_000_000n),
     /** Booked per attest: ~0.0035 SOL rent for a new account plus fees, rounded up. */
     mockLamportsPerAttest: bigintOf("KYC_MOCK_LAMPORTS_PER_ATTEST", 4_000_000n),
     /** Verification links one wallet may start per hour; each one costs a vendor API call in sumsub mode. */
