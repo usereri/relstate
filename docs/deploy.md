@@ -115,28 +115,21 @@ Writes `RUSDC_MINT`, `RUSDC_AUDITOR_IKM` and `RUSDC_AUDITOR_ELGAMAL_PUBKEY` into
 `.env` (git-ignored) and prints them. **Record all three** — they go into Fly secrets/env in step 4,
 and `RUSDC_MINT` also goes into the Pages build variables (`docs/env-checklist.md`).
 
-Then allow rUSDC on the Config allowlist, signed by the same treasury key (this is the one call the
-repo's scripts don't expose directly — it's the same `set_mint_allowed` instruction
-`scripts/setup-demo.ts` already uses for test-USDC, documented in
-`docs/contracts/program-interface.md` §2):
+Then allow rUSDC on the Config allowlist, signed by the same treasury key, with
+`scripts/allow-mint.ts` — the same `set_mint_allowed` instruction `scripts/setup-demo.ts` already
+uses for test-USDC, documented in `docs/contracts/program-interface.md` §2:
 
 ```bash
-node --input-type=module -e '
-import * as anchor from "@anchor-lang/core";
-import fs from "node:fs";
-const { Connection, Keypair, PublicKey } = anchor.web3;
-const idl = JSON.parse(fs.readFileSync("target/idl/relstate.json", "utf8"));
-const admin = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(process.env.TREASURY_KEYPAIR, "utf8"))));
-const program = new anchor.Program(idl, new anchor.AnchorProvider(new Connection(process.env.RPC, "confirmed"), new anchor.Wallet(admin), { commitment: "confirmed" }));
-const [config] = PublicKey.findProgramAddressSync([Buffer.from("config")], program.programId);
-await program.methods.setMintAllowed(true).accountsPartial({ admin: admin.publicKey, config, mint: new PublicKey(process.env.RUSDC_MINT) }).rpc();
-console.log("rUSDC allowed on", process.env.RPC);
-' 2>&1
+ADMIN_KEYPAIR=~/.config/relstate/treasury.json RPC=https://api.devnet.solana.com \
+  node scripts/allow-mint.ts <RUSDC_MINT from step 3.3>
 ```
-(run from the repo root with `RPC=https://api.devnet.solana.com`, `TREASURY_KEYPAIR` and
-`RUSDC_MINT` set in the environment — `TREASURY_KEYPAIR` must be a **file path** here, not an inline
-secret, since the snippet reads it with `readFileSync`). This fails with `NotAdmin` if a different
-key already holds Config admin — see 3.1's note.
+
+It prints the Config PDA, the admin's public key and the mint before sending anything, and never
+prints a secret. Pass `off` as a second argument later if you ever need to remove a mint from the
+allowlist (e.g. `node scripts/allow-mint.ts <mint> off`) — it's idempotent either way, so running it
+again (on or off) when nothing needs to change is harmless. `ADMIN_KEYPAIR` is never defaulted to
+`~/.config/solana/id.json`; this fails with `NotAdmin` if the keypair you pass is not the one that
+holds Config admin — see 3.1's note.
 
 ### 3.4 Stand up the backend on Fly
 
