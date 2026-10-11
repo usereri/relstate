@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stubLocalStorage } from "./storage";
+import { assertChallenge } from "../session";
 
 // session.ts takes API from sponsor.ts, which reads VITE_API at load, so each case re-imports.
 async function load(env: { api?: string } = { api: "http://b" }) {
@@ -294,23 +295,26 @@ describe("without localStorage (node)", () => {
 
 describe("obtainSession (wallet auth mode)", () => {
   const APP_ORIGIN = "http://localhost:3000";
+  const HOST = "localhost:3000";
+  const VALID_NONCE = "abcdefghijklmnopqrstuvwxyzABCDEF"; // 32 chars, matches the backend's nonce shape
+
   beforeEach(() => {
-    // session.ts checks the challenge's URI against window.location.origin; the node test
+    // session.ts checks the challenge's host/URI against window.location; the node test
     // environment has no window at all, so the app's own origin is stubbed here.
-    vi.stubGlobal("window", { location: { origin: APP_ORIGIN } });
+    vi.stubGlobal("window", { location: { host: HOST, origin: APP_ORIGIN } });
   });
 
-  const CHALLENGE = (wallet: string, origin = APP_ORIGIN) =>
+  const CHALLENGE = (wallet: string, opts: { origin?: string; nonce?: string } = {}) =>
     [
-      "example.test wants you to sign in with your Solana account:",
+      `${HOST} wants you to sign in with your Solana account:`,
       wallet,
       "",
       "Sign in to relstate. This proves you control the wallet and costs nothing.",
       "",
-      `URI: ${origin}`,
-      "Nonce: abc123",
-      "Issued At: 2026-01-01T00:00:00.000Z",
-      "Expiration Time: 2026-01-01T00:05:00.000Z",
+      `URI: ${opts.origin ?? APP_ORIGIN}`,
+      `Nonce: ${opts.nonce ?? VALID_NONCE}`,
+      `Issued At: ${new Date(NOW * 1000).toISOString()}`,
+      `Expiration Time: ${new Date(NOW * 1000 + 5 * 60_000).toISOString()}`,
     ].join("\n");
 
   function registerSignerCapture(s: Awaited<ReturnType<typeof load>>, wallet: string) {
@@ -322,12 +326,12 @@ describe("obtainSession (wallet auth mode)", () => {
     return calls;
   }
 
-  it("challenges, signs the exact bytes, verifies, and stores the session", async () => {
+  it("challenges, signs the exact bytes, verifies (with the nonce), and stores the session", async () => {
     const wallet = "W1";
     const challenge = CHALLENGE(wallet);
     fetchMock()
       .mockResolvedValueOnce(json({ authMode: "wallet" })) // GET /health
-      .mockResolvedValueOnce(json({ message: challenge })) // POST /api/auth/challenge
+      .mockResolvedValueOnce(json({ message: challenge, nonce: VALID_NONCE })) // POST /api/auth/challenge
       .mockResolvedValueOnce(json({ ...session("WT", 3600), wallet })); // POST /api/auth/verify
     const s = await load();
     const calls = registerSignerCapture(s, wallet);
@@ -346,6 +350,7 @@ describe("obtainSession (wallet auth mode)", () => {
     expect(verifyUrl).toBe("http://b/api/auth/verify");
     const body = JSON.parse(verifyInit.body);
     expect(body.wallet).toBe(wallet);
+    expect(body.nonce).toBe(VALID_NONCE);
     expect(body.signature).toBe(btoa(String.fromCharCode(9, 9, 9)));
 
     expect(store.has(`relstate.session.${wallet}`)).toBe(true);
@@ -355,10 +360,10 @@ describe("obtainSession (wallet auth mode)", () => {
     const wallet = "W1";
     fetchMock()
       .mockResolvedValueOnce(json({ authMode: "wallet" }))
-      .mockResolvedValueOnce(json({ message: CHALLENGE("SOMEONE-ELSE") }));
+      .mockResolvedValueOnce(json({ message: CHALLENGE("SOMEONE-ELSE"), nonce: VALID_NONCE }));
     const s = await load();
     const calls = registerSignerCapture(s, wallet);
-    await expect(s.obtainSession(wallet)).rejects.toThrow(/does not match this wallet and site/);
+    await expect(s.obtainSession(wallet)).rejects.toThrow(/does not match the expected format for this wallet and site/);
     expect(calls).toHaveLength(0);
   });
 
@@ -366,10 +371,10 @@ describe("obtainSession (wallet auth mode)", () => {
     const wallet = "W1";
     fetchMock()
       .mockResolvedValueOnce(json({ authMode: "wallet" }))
-      .mockResolvedValueOnce(json({ message: CHALLENGE(wallet, "https://evil.test") }));
+      .mockResolvedValueOnce(json({ message: CHALLENGE(wallet, { origin: "https://evil.test" }), nonce: VALID_NONCE }));
     const s = await load();
     const calls = registerSignerCapture(s, wallet);
-    await expect(s.obtainSession(wallet)).rejects.toThrow(/does not match this wallet and site/);
+    await expect(s.obtainSession(wallet)).rejects.toThrow(/does not match the expected format for this wallet and site/);
     expect(calls).toHaveLength(0);
   });
 
@@ -383,9 +388,9 @@ describe("obtainSession (wallet auth mode)", () => {
     const wallet = "W1";
     fetchMock()
       .mockResolvedValueOnce(json({ authMode: "wallet" }))
-      .mockResolvedValueOnce(json({ message: CHALLENGE(wallet) }))
+      .mockResolvedValueOnce(json({ message: CHALLENGE(wallet), nonce: VALID_NONCE }))
       .mockResolvedValueOnce(json({ ...session("WT1", 3600), wallet }))
-      .mockResolvedValueOnce(json({ message: CHALLENGE(wallet) })) // authMode is cached, so no second /health call
+      .mockResolvedValueOnce(json({ message: CHALLENGE(wallet), nonce: VALID_NONCE })) // authMode is cached, so no second /health call
       .mockResolvedValueOnce(json({ ...session("WT2", 3600), wallet }));
     const s = await load();
     registerSignerCapture(s, wallet);
@@ -394,5 +399,113 @@ describe("obtainSession (wallet auth mode)", () => {
     expect((await s.obtainSession(wallet)).token).toBe("WT2");
     // health, challenge 1, verify 1, challenge 2, verify 2
     expect(fetchMock()).toHaveBeenCalledTimes(5);
+  });
+});
+
+describe("assertChallenge", () => {
+  const APP_ORIGIN = "http://localhost:3000";
+  const HOST = "localhost:3000";
+  const WALLET = "W1";
+  const VALID_NONCE = "abcdefghijklmnopqrstuvwxyzABCDEF"; // 32 chars
+  const STATEMENT = "Sign in to relstate. This proves you control the wallet and costs nothing.";
+
+  beforeEach(() => {
+    vi.stubGlobal("window", { location: { host: HOST, origin: APP_ORIGIN } });
+  });
+
+  function lines(
+    opts: Partial<{ host: string; origin: string; wallet: string; statement: string; nonceLine: string; issuedAt: number; expiresAt: number }> = {},
+  ): string[] {
+    const issuedAt = opts.issuedAt ?? NOW * 1000;
+    const expiresAt = opts.expiresAt ?? issuedAt + 5 * 60_000;
+    return [
+      `${opts.host ?? HOST} wants you to sign in with your Solana account:`,
+      opts.wallet ?? WALLET,
+      "",
+      opts.statement ?? STATEMENT,
+      "",
+      `URI: ${opts.origin ?? APP_ORIGIN}`,
+      opts.nonceLine ?? `Nonce: ${VALID_NONCE}`,
+      `Issued At: ${new Date(issuedAt).toISOString()}`,
+      `Expiration Time: ${new Date(expiresAt).toISOString()}`,
+    ];
+  }
+  const msg = (opts: Parameters<typeof lines>[0] = {}) => lines(opts).join("\n");
+  const check = (message: string, nonce = VALID_NONCE) => () => assertChallenge(message, WALLET, nonce, NOW * 1000);
+
+  it("passes a well-formed challenge for this wallet, site and nonce", () => {
+    expect(check(msg())).not.toThrow();
+  });
+
+  it("rejects an extra line", () => {
+    expect(() => assertChallenge([...lines(), "extra"].join("\n"), WALLET, VALID_NONCE, NOW * 1000)).toThrow(/does not match the expected format/);
+  });
+
+  it("rejects a missing line", () => {
+    const l = lines();
+    l.splice(2, 1); // drop the blank line after the wallet
+    expect(() => assertChallenge(l.join("\n"), WALLET, VALID_NONCE, NOW * 1000)).toThrow(/does not match the expected format/);
+  });
+
+  it("rejects reordered lines", () => {
+    const l = lines();
+    [l[6], l[7]] = [l[7]!, l[6]!]; // swap the Nonce and Issued At lines
+    expect(() => assertChallenge(l.join("\n"), WALLET, VALID_NONCE, NOW * 1000)).toThrow(/does not match the expected format/);
+  });
+
+  it("rejects a different statement", () => {
+    expect(check(msg({ statement: "Sign in to evil.test and give up your wallet." }))).toThrow(/does not match the expected format/);
+  });
+
+  it("rejects a wrong host (independent of the URI line)", () => {
+    expect(check(msg({ host: "evil.test" }))).toThrow(/does not match the expected format/);
+  });
+
+  it("rejects a wrong URI (independent of the host line)", () => {
+    expect(check(msg({ origin: "https://evil.test" }))).toThrow(/does not match the expected format/);
+  });
+
+  it("rejects a wallet that does not match the one logging in", () => {
+    expect(check(msg({ wallet: "SOMEONE-ELSE" }))).toThrow(/does not match the expected format/);
+  });
+
+  it("rejects a nonce mismatch between the message and the challenge response", () => {
+    // The message's own nonce line is well-formed, but it differs from the nonce the (simulated)
+    // challenge response carried alongside it.
+    const otherNonce = "ZYXWVUTSRQPONMLKJIHGFEDCBA098765";
+    expect(check(msg({ nonceLine: `Nonce: ${otherNonce}` }), VALID_NONCE)).toThrow(/does not match the expected format/);
+  });
+
+  it("rejects a malformed nonce (wrong length or characters), even if consistent", () => {
+    for (const bad of ["short", "x".repeat(31), "x".repeat(33), `${"x".repeat(31)}!`]) {
+      expect(check(msg({ nonceLine: `Nonce: ${bad}` }), bad)).toThrow(/does not match the expected format/);
+    }
+  });
+
+  it("rejects an Issued At too far from now (clock skew)", () => {
+    expect(check(msg({ issuedAt: NOW * 1000 - 6 * 60_000, expiresAt: NOW * 1000 + 4 * 60_000 }))).toThrow(/does not match the expected format/);
+    expect(check(msg({ issuedAt: NOW * 1000 + 6 * 60_000, expiresAt: NOW * 1000 + 11 * 60_000 }))).toThrow(/does not match the expected format/);
+  });
+
+  it("rejects an expiry already in the past", () => {
+    expect(check(msg({ expiresAt: NOW * 1000 - 1 }))).toThrow(/does not match the expected format/);
+  });
+
+  it("rejects a lifetime longer than 10 minutes, even if issued just now", () => {
+    expect(check(msg({ issuedAt: NOW * 1000, expiresAt: NOW * 1000 + 10 * 60_000 + 1 }))).toThrow(/does not match the expected format/);
+    expect(check(msg({ issuedAt: NOW * 1000, expiresAt: NOW * 1000 + 10 * 60_000 }))).not.toThrow(); // exactly 10 minutes is fine
+  });
+
+  it("rejects other casings or labels for the Issued At / Expiration Time lines", () => {
+    for (const bad of ["issued at", "ISSUED AT", "Issued-At", "Created At"]) {
+      const l = lines();
+      l[7] = `${bad}: ${new Date(NOW * 1000).toISOString()}`;
+      expect(() => assertChallenge(l.join("\n"), WALLET, VALID_NONCE, NOW * 1000)).toThrow(/does not match the expected format/);
+    }
+    for (const bad of ["expiration time", "Expires", "EXPIRATION TIME"]) {
+      const l = lines();
+      l[8] = `${bad}: ${new Date(NOW * 1000 + 5 * 60_000).toISOString()}`;
+      expect(() => assertChallenge(l.join("\n"), WALLET, VALID_NONCE, NOW * 1000)).toThrow(/does not match the expected format/);
+    }
   });
 });
