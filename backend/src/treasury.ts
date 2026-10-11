@@ -78,7 +78,8 @@ export type TreasuryRpc = Rpc<
 export class SendOutcomeUnknown extends RejectedTransaction {
   readonly signature: Signature;
   constructor(signature: Signature, cause: unknown) {
-    super(`sending ${signature} failed (${cause instanceof Error ? cause.message : String(cause)}); it may still land, check its status before retrying`, "send-outcome-unknown");
+    super(`sending ${signature} failed; it may still land, check its status before retrying`, "send-outcome-unknown");
+    void cause; // the RPC error text stays in the server log, never in the response
     this.signature = signature;
   }
 }

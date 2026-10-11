@@ -349,7 +349,7 @@ export function createApp(services: Services = createServices(), walletAuth: Wal
   // (workstream C); they are here so the treasury is exercisable on stage and in
   // the scripted devnet run.
   app.post("/api/treasury/credit-reserve", async (c) => {
-    treasuryLimit(`t:${clientIp(c)}`);
+    treasuryLimit(`a:${clientIp(c)}`);
     assertAdmin(c.req.header("authorization"));
     const body = await readJson<{ amount?: string; ref?: string }>(c);
     const treasury = await services.treasury();
@@ -361,7 +361,7 @@ export function createApp(services: Services = createServices(), walletAuth: Wal
   });
 
   app.post("/api/treasury/wrap", async (c) => {
-    treasuryLimit(`t:${clientIp(c)}`);
+    treasuryLimit(`a:${clientIp(c)}`);
     assertAdmin(c.req.header("authorization"));
     const body = await readJson<{ wallet?: string; amount?: string; creditReserve?: boolean }>(c);
     if (typeof body.wallet !== "string" || body.wallet === "") {

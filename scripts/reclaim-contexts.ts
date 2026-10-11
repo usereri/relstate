@@ -58,7 +58,7 @@ for (const { pubkey, account } of found) {
   const sigs = await connection.getSignaturesForAddress(pubkey, { limit: 1000 });
   const oldest = sigs[sigs.length - 1]?.blockTime;
   const ageMs = oldest == null ? Infinity : Date.now() - oldest * 1000;
-  const old = ageMs >= minAgeMs;
+  const old = Number.isFinite(ageMs) && ageMs >= minAgeMs; // unknown age is NOT reclaimable: it may be a plan still in flight
   console.log(`  ${pubkey.toBase58()}  ${account.lamports} lamports  age ${Number.isFinite(ageMs) ? Math.round(ageMs / 60_000) + " min" : "unknown"}  ${old ? "reclaimable" : "too recent, skipped"}`);
   if (!execute || !old) continue;
   const ix = new TransactionInstruction({

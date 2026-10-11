@@ -642,7 +642,7 @@ describe("treasury routes: per-IP limiter", () => {
     assert.equal(body.code, "rate-limited");
   });
 
-  it("shares one budget per IP across /api/sponsor and the /api/treasury/* routes", async () => {
+  it("shares one budget per IP across /api/sponsor and the user /api/treasury/* routes, with admin routes in their own bucket", async () => {
     const f = await fixture({ ipRate: 2 });
     const json = { "content-type": "application/json" };
     const rentPayment = () => f.post(f.c.wallet.address, {});
@@ -653,7 +653,10 @@ describe("treasury routes: per-IP limiter", () => {
     const credit = () => f.app.request("/api/treasury/credit-reserve", { method: "POST", headers: json, body: "{}" });
     await rentPayment();
     await sponsor();
-    for (const route of [rentPayment, sponsor, wrap, setup, dust, credit]) assert.deepEqual(await status(route()), { status: 429 });
+    for (const route of [rentPayment, sponsor, setup, dust]) assert.deepEqual(await status(route()), { status: 429 });
+    // Admin routes are charged to their own bucket, so user traffic cannot starve them (and vice versa).
+    assert.notEqual((await status(wrap())).status, 429);
+    assert.notEqual((await status(credit())).status, 429);
   });
 });
 

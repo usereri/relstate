@@ -119,7 +119,7 @@ export function createRentPlanRegistry(now: () => number = Date.now) {
         if (!removedPlan) return;
         plans.set(wallet, plan);
         live = plan;
-      } else if (live !== plan && !removedPlan) {
+      } else if (live !== plan) {
         return; // the plan expired and a newer one took its place: this delta belongs to the old one
       }
       for (const c of added) live.contexts.delete(c);
