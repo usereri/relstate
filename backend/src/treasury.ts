@@ -74,6 +74,16 @@ export type TreasuryRpc = Rpc<
   GetAccountInfoApi & GetBalanceApi & GetMinimumBalanceForRentExemptionApi & GetTokenAccountBalanceApi & SimulateTransactionApi & SendTransactionApi
 >;
 
+/** The send errored in a way that does not prove the transaction failed to land. */
+export class SendOutcomeUnknown extends RejectedTransaction {
+  readonly signature: Signature;
+  constructor(signature: Signature, cause: unknown) {
+    super(`sending ${signature} failed (${cause instanceof Error ? cause.message : String(cause)}); it may still land, check its status before retrying`, "send-outcome-unknown");
+    this.signature = signature;
+  }
+}
+const isKnownNotLanded = (e: unknown): boolean => e instanceof Error && /blockhash not found|blockhash.*expired|block height exceeded/i.test(e.message);
+
 export class InvariantViolation extends Error {
   readonly supply: bigint;
   readonly reserve: bigint;
@@ -485,8 +495,9 @@ export function createTreasury(deps: TreasuryDeps) {
       maxCuPriceMicroLamports: env.sponsor.maxCuPriceMicroLamports,
       maxFeeLamports: env.sponsor.maxFeeLamports,
     });
-    if (wallet === deps.treasury.address) throw new RejectedTransaction("the treasury cannot be the session wallet", "wallet-mismatch");
-    const walletSigns = tx.accounts.some((a) => a.isSigner && a.address === wallet);
+    if (wallet === deps.treasury.address || !tx.accounts.some((a) => a.isSigner && a.address === wallet && a.address !== deps.treasury.address)) {
+      throw new RejectedTransaction(`the session wallet ${wallet} is not a signer of this transaction`, "wallet-mismatch");
+    }
     let reservation;
     try {
       reservation = setupLimiter.reserve(wallet, maxRentLamports + worstCaseFee);
@@ -565,8 +576,17 @@ export function createTreasury(deps: TreasuryDeps) {
       void wire;
       return { signature, broadcast: false, rentLamports: spent.toString() };
     }
-    await deps.rpc.sendTransaction(wire, { encoding: "base64", skipPreflight: true, maxRetries: 3n }).send();
-    // Committed only once the send succeeded, so a failed send leaves the caller's budget alone.
+    try {
+      await deps.rpc.sendTransaction(wire, { encoding: "base64", skipPreflight: true, maxRetries: 3n }).send();
+    } catch (e) {
+      // A send that errors may still have propagated (skipPreflight, retries). Only a failure that
+      // proves it did not land leaves the caller's budget and plan alone; any other is UNKNOWN, and
+      // the spend stays booked until the window rolls.
+      if (isKnownNotLanded(e)) throw e;
+      reservation.commit(booked);
+      throw new SendOutcomeUnknown(signature, e);
+    }
+    // Committed only once the send succeeded, so a definitely-failed send leaves the caller's budget alone.
     reservation.commit(booked);
     log(`treasury: sent ${bounds.label} ${signature}, net ${spent} lamports`);
     return { signature, broadcast: true, rentLamports: spent.toString() };
@@ -632,10 +652,12 @@ export function createTreasury(deps: TreasuryDeps) {
       maxCreateAccounts: env.rentPayment.maxCreateAccounts,
       rangeContextLamports: await rangeContextRent(),
     });
-    if (!walletSigns) {
+    const use = contextUse(tx);
+    if (!walletSigns || use.created.length > 0) {
       // A preparation transaction is not signed by the wallet, so the wallet has to be tied to it
-      // some other way (rentplan.ts). First, the wallet must actually be a rUSDC holder: its token
-      // account exists. That account costs real setup, so it is not free to rotate wallets.
+      // some other way (rentplan.ts). First, the wallet must hold an rUSDC token account. That filters
+      // an empty wallet, not a determined attacker: on devnet the account is nearly free. The same
+      // applies to any transaction that creates a funded context, whoever signs it.
       const info = await deps.rpc.getAccountInfo(walletToken, { encoding: "base64", commitment: "confirmed" }).send();
       if (info.value === null) throw new RejectedTransaction(`the session wallet ${wallet} has no rUSDC account`, "wallet-mismatch");
     }
@@ -664,7 +686,7 @@ export function createTreasury(deps: TreasuryDeps) {
     // beyond this point), so concurrent requests cannot both claim one context.
     let undoPlan: () => void;
     try {
-      undoPlan = rentPlans.admit(wallet, contextUse(tx), walletSigns);
+      undoPlan = rentPlans.admit(wallet, use, walletSigns);
     } catch (e) {
       reservation.cancel();
       throw e;
@@ -677,6 +699,8 @@ export function createTreasury(deps: TreasuryDeps) {
         label: "rent payment",
       });
     } catch (e) {
+      // Unknown outcome: keep the replay entry, the booked spend and the plan; the TTL cleans up.
+      if (e instanceof SendOutcomeUnknown) throw e;
       // Nothing landed, so a corrected retry of the same message is legitimate.
       seenMessages.delete(key);
       undoPlan();

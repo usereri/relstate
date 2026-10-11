@@ -10,6 +10,7 @@
         "target": "es2022",
         "moduleResolution": "nodenext",
         "strict": true,
+        "noUnusedLocals": true,
         "noUncheckedIndexedAccess": true,
         "esModuleInterop": true,
         "skipLibCheck": true,

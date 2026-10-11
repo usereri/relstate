@@ -167,6 +167,7 @@ export function createApp(services: Services = createServices(), walletAuth: Wal
 
   // Per-IP limiter for the unauthenticated session-issuing routes (wallet login and mock sessions).
   const limit = createIpLimiter(env.authRatePerMinute);
+  const treasuryLimit = createIpLimiter(env.treasuryRatePerMinute);
   const clientIp = (c: Parameters<typeof getConnInfo>[0]): string => {
     let socket: string | undefined;
     try {
@@ -207,6 +208,7 @@ export function createApp(services: Services = createServices(), walletAuth: Wal
   });
 
   app.post("/api/sponsor", async (c) => {
+    treasuryLimit(`t:${clientIp(c)}`);
     const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
     const { txBase64 } = await readJson<SponsorRequest>(c);
     if (typeof txBase64 !== "string" || txBase64 === "") {
@@ -219,6 +221,7 @@ export function createApp(services: Services = createServices(), walletAuth: Wal
 
   /** First-use confidential account: the wallet signed it, the treasury pays fee and rent. */
   app.post("/api/treasury/confidential-account", async (c) => {
+    treasuryLimit(`t:${clientIp(c)}`);
     const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
     const { txBase64 } = await readJson<{ txBase64?: string }>(c);
     if (typeof txBase64 !== "string" || txBase64 === "") {
@@ -238,6 +241,7 @@ export function createApp(services: Services = createServices(), walletAuth: Wal
    * limiter and replay guard.
    */
   app.post("/api/treasury/rent-payment", async (c) => {
+    treasuryLimit(`t:${clientIp(c)}`);
     const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
     const { txBase64 } = await readJson<{ txBase64?: string }>(c);
     if (typeof txBase64 !== "string" || txBase64 === "") {
@@ -253,6 +257,7 @@ export function createApp(services: Services = createServices(), walletAuth: Wal
    * obeyed), once per wallet, never to a wallet that already holds enough.
    */
   app.post("/api/treasury/rent-dust", async (c) => {
+    treasuryLimit(`t:${clientIp(c)}`);
     const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
     const body = ((await c.req.json().catch(() => null)) ?? {}) as { wallet?: unknown };
     if (body.wallet !== undefined && body.wallet !== session.wallet) {
@@ -344,6 +349,7 @@ export function createApp(services: Services = createServices(), walletAuth: Wal
   // (workstream C); they are here so the treasury is exercisable on stage and in
   // the scripted devnet run.
   app.post("/api/treasury/credit-reserve", async (c) => {
+    treasuryLimit(`t:${clientIp(c)}`);
     assertAdmin(c.req.header("authorization"));
     const body = await readJson<{ amount?: string; ref?: string }>(c);
     const treasury = await services.treasury();
@@ -355,6 +361,7 @@ export function createApp(services: Services = createServices(), walletAuth: Wal
   });
 
   app.post("/api/treasury/wrap", async (c) => {
+    treasuryLimit(`t:${clientIp(c)}`);
     assertAdmin(c.req.header("authorization"));
     const body = await readJson<{ wallet?: string; amount?: string; creditReserve?: boolean }>(c);
     if (typeof body.wallet !== "string" || body.wallet === "") {

@@ -95,6 +95,8 @@ export const env = {
   trustProxyIpHeader: str("FLY_APP_NAME") !== "" || str("TRUST_PROXY_IP_HEADER") === "1",
   /** Requests per minute per client IP to /api/auth/challenge and /api/auth/verify (each). */
   authRatePerMinute: num("AUTH_RATE_PER_MINUTE", 20),
+  /** Per IP, across the treasury-key routes: failing requests would otherwise cost nothing. */
+  treasuryRatePerMinute: num("TREASURY_RATE_PER_MINUTE", 60),
   sessionSecret: str("SESSION_SECRET"),
   sessionTtlSeconds: num("SESSION_TTL_SECONDS", 3600),
   adminToken: str("ADMIN_TOKEN"),
