@@ -191,9 +191,11 @@ login and KYC decision that stay mocked.
 
 Settings → Secrets and variables → Actions → **Variables** tab (not Secrets — see
 `docs/env-checklist.md` for why), set every variable in that page's "App" and "Site" tables:
-`VITE_API` (your Fly app's `https://<app>.fly.dev` URL), `VITE_RPC` (a **domain-restricted** Helius
-key — restrict it to your Pages domain in the Helius dashboard, since this one ships in the public
-bundle), `VITE_RUSDC_MINT`, `VITE_MINT`, `SITE_APP_URL`, `CUSTOM_DOMAIN`.
+`VITE_API` (your Fly app's `https://<app>.fly.dev` URL), `VITE_RUSDC_MINT`, `VITE_MINT`,
+`SITE_APP_URL`, `CUSTOM_DOMAIN`. Leave `VITE_RPC` **unset**: the app then reads the chain through
+the backend's read-only proxy (`POST ${VITE_API}/api/rpc`, allowlisted read methods, per-IP rate
+limited), so no RPC key ships in the public bundle. Set `VITE_RPC` only for local development
+against a local validator, and `VITE_LOCAL=1` if the proxied backend points at a local chain.
 
 Then push (or fast-forward) a `deploy` branch to trigger `pages.yml`:
 
