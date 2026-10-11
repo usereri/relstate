@@ -21,7 +21,7 @@ import { ServiceUnavailable, createServices, type Services } from "./services.ts
 import { InvariantViolation, reportForLog, type InvariantReport } from "./treasury.ts";
 import { clientIpOf, createIpLimiter, createWalletAuth, RateLimited, type WalletAuth } from "./wallet-auth.ts";
 import { RejectedTransaction } from "./txinspect.ts";
-import { createRpcProxy, RPC_PROXY_MAX_BODY_BYTES, type RpcProxy } from "./rpcproxy.ts";
+import { createRpcLimiter, createRpcProxy, RPC_PROXY_MAX_BODY_BYTES, type RpcProxy } from "./rpcproxy.ts";
 
 const asInvariantView = (report: InvariantReport): TreasuryInvariantView => reportForLog(report);
 
@@ -109,7 +109,7 @@ export function safeReturnBase(requested: string | undefined, appUrl = env.appUr
 export function createApp(
   services: Services = createServices(),
   walletAuth: WalletAuth | undefined = env.authMode === "wallet" ? createWalletAuth() : undefined,
-  rpcProxy: RpcProxy = createRpcProxy({ upstreamUrl: () => env.rpcUrl }),
+  rpcProxy: RpcProxy = createRpcProxy({ upstreamUrl: () => env.rpcUrl, secrets: () => env.rpcSecrets }),
 ) {
   const app = new Hono();
   app.use("*", cors({ origin: env.corsOrigin, allowHeaders: ["content-type", "authorization", "solana-client"], allowMethods: ["GET", "POST", "OPTIONS"] }));
@@ -186,9 +186,11 @@ export function createApp(
 
   /**
    * Read-only JSON-RPC proxy for the browser (see rpcproxy.ts). Public on purpose: it carries no
-   * session and does only what the allowlist there permits. The limiter counts one hit per call.
+   * session and does only what the allowlist there permits. It has its own work-weighted limiter
+   * (per IP and process-wide) and requires `application/json`, which makes a cross-origin request
+   * preflighted instead of "simple".
    */
-  const rpcLimit = createIpLimiter(env.rpcProxyRatePerMinute);
+  const rpcAdmit = createRpcLimiter({ perIpPerMinute: env.rpcProxyRatePerMinute, globalPerMinute: env.rpcProxyGlobalPerMinute });
   app.post(
     "/api/rpc",
     bodyLimit({
@@ -196,10 +198,11 @@ export function createApp(
       onError: (c) => c.json({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "request too large" } }, 413),
     }),
     async (c) => {
+      if (!/^application\/json\s*(;|$)/i.test(c.req.header("content-type") ?? "")) {
+        return c.json({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "content-type must be application/json" } }, 415);
+      }
       const ip = clientIp(c);
-      const result = await rpcProxy.handle(await c.req.text(), (calls) => {
-        for (let i = 0; i < calls; i++) rpcLimit(`rpc:${ip}`);
-      });
+      const result = await rpcProxy.handle(await c.req.text(), (weight) => rpcAdmit(`rpc:${ip}`, weight));
       if (result.retryAfter) c.header("retry-after", result.retryAfter);
       return c.body(result.body, result.status as 200, { "content-type": "application/json" });
     },

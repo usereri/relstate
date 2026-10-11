@@ -6,6 +6,7 @@
 // The session wallet is whichever key actually signed; nothing a client sends afterwards can change
 // it. Challenges live in memory (single instance, like limits.ts), expire in minutes, are consumed
 // on the first success, and a wrong guess does not burn the real user's challenge but is capped.
+import { isIP } from "node:net";
 import { createPublicKey, randomBytes, verify } from "node:crypto";
 import { getAddressEncoder, isAddress, type Address } from "@solana/kit";
 import { AuthError, createSessionToken } from "./auth.ts";
@@ -145,8 +146,9 @@ export function createIpLimiter(perMinute: number, now: () => number = Date.now,
  */
 export function clientIpOf(header: (name: string) => string | undefined, socketAddress: string | undefined, trustProxyHeader: boolean): string {
   if (trustProxyHeader) {
-    const fly = header("fly-client-ip");
-    if (fly !== undefined && fly !== "") return fly;
+    const fly = header("fly-client-ip")?.trim();
+    // A header that is not an address is not evidence of anything: fall back to the socket.
+    if (fly !== undefined && isIP(fly) !== 0) return fly;
   }
   return socketAddress ?? "unknown";
 }

@@ -97,8 +97,16 @@ export const env = {
   authRatePerMinute: num("AUTH_RATE_PER_MINUTE", 20),
   /** Per IP, across the treasury-key routes: failing requests would otherwise cost nothing. */
   treasuryRatePerMinute: num("TREASURY_RATE_PER_MINUTE", 60),
-  /** Per IP, JSON-RPC calls per minute through the read-only `/api/rpc` proxy (a batch counts once per item). */
-  rpcProxyRatePerMinute: num("RPC_PROXY_RATE_PER_MINUTE", 600),
+  /**
+   * Work units per minute per IP through the read-only `/api/rpc` proxy. A plain read costs 1, a
+   * list method its list length, getProgramAccounts 50 (see rpcproxy.ts), so 4000 is about 80
+   * program scans a minute: roughly four times what one open app tab polls.
+   */
+  rpcProxyRatePerMinute: num("RPC_PROXY_RATE_PER_MINUTE", 4000),
+  /** Work units per minute across ALL callers: the ceiling on what the proxy can cost the paid RPC plan. */
+  rpcProxyGlobalPerMinute: num("RPC_PROXY_GLOBAL_PER_MINUTE", 30_000),
+  /** Values that must never be relayed to a browser, besides what the RPC URL itself reveals. */
+  rpcSecrets: [heliusKey].filter((v) => v !== ""),
   sessionSecret: str("SESSION_SECRET"),
   sessionTtlSeconds: num("SESSION_TTL_SECONDS", 3600),
   adminToken: str("ADMIN_TOKEN"),
@@ -244,7 +252,7 @@ export const env = {
    */
   rentDust: {
     maxGlobalPerHour: num("RENT_DUST_MAX_GLOBAL_PER_HOUR", 60),
-    maxLamportsGlobalPerDay: bigintOf("RENT_DUST_MAX_LAMPORTS_GLOBAL_PER_DAY", 100_000_000n),
+    maxLamportsGlobalPerDay: bigintOf("RENT_DUST_MAX_LAMPORTS_GLOBAL_PER_DAY", 500_000_000n),
   },
 } as const;
 
@@ -270,6 +278,8 @@ export function redactedRpcUrl(url = env.rpcUrl): string {
 export function assertEnvConsistent(e: Env = env): void {
   const problems: string[] = [];
   if (e.mode === "live") {
+    // "*" would let any website read /api/rpc and every other route's responses.
+    if (e.corsOrigin === "*" || e.corsOrigin === "") problems.push("CORS_ORIGIN must be set to the app's origin when BACKEND_MODE=live (it defaults to *)");
     if (e.feePayerKeypair === "") problems.push("FEE_PAYER_KEYPAIR is required when BACKEND_MODE=live");
     if (e.treasuryKeypair === "") problems.push("TREASURY_KEYPAIR is required when BACKEND_MODE=live");
     // Without these two, a live backend would take identity decisions it cannot record: no key to
