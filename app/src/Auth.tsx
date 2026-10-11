@@ -17,6 +17,27 @@ const ROLE_CARDS: Record<Role, { icon: typeof KeyRound; title: string; text: str
   landlord: { icon: Building2, title: "I rent out property", text: "List apartments and pick tenants with a verified payment history." },
 };
 
+/**
+ * Sign-in does not know the role yet (it is stored with the account), but the wallet providers
+ * keep their per-browser state under a role-named key. Until the account says which role this is,
+ * that state lives under this scope; {@link adoptSigninScope} then moves it under the real role.
+ */
+const SIGNIN_SCOPE = "signin" as Role;
+const SCOPED_KEYS = ["relstate.embedded.", "relstate.wallet."];
+
+function adoptSigninScope(role: Role) {
+  try {
+    for (const base of SCOPED_KEYS) {
+      const v = localStorage.getItem(base + SIGNIN_SCOPE);
+      if (v === null) continue;
+      localStorage.setItem(base + role, v);
+      localStorage.removeItem(base + SIGNIN_SCOPE);
+    }
+  } catch {
+    /* private mode: the wallet is simply asked for again after the redirect */
+  }
+}
+
 /** Sign up and sign in share one frame: a form on the left, a brand panel on the right. */
 export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: (role: Role) => void }) {
   const [role, setRole] = useState<Role>("tenant");
@@ -24,14 +45,24 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
   const [details, setDetails] = useState({ name: "", email: "", city: "" });
   // wallet first, profile second: the wallet is the account, a name is optional and asked only after it connects
   const [pending, setPending] = useState<string | null>(null);
-  const connected = (address: string) => {
+  const connected = (address: string, roleHint?: Role) => {
     const prior = loadAccount(address);
-    if (mode === "signup" || !prior) {
+    if (mode === "signup") {
       setPending(address);
       setStep("details");
       return;
     }
-    onDone(role);
+    // Sign-in restores whatever role the account was created with.
+    const stored = prior?.role ?? roleHint;
+    if (stored) {
+      adoptSigninScope(stored);
+      if (!prior) saveAccount(address, { name: "", email: "", city: "", role: stored, createdAt: Date.now() });
+      onDone(stored);
+      return;
+    }
+    // No account yet: profile creation is where the role is chosen.
+    setPending(address);
+    setStep("role");
   };
   const finish = (address: string) => {
     const prior = loadAccount(address);
@@ -43,6 +74,7 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
       createdAt: prior?.createdAt ?? Date.now(),
     };
     saveAccount(address, a);
+    if (mode === "signin") adoptSigninScope(role);
     onDone(role);
   };
 
@@ -52,6 +84,7 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
   }, [role, mode]);
 
   const steps = ["role", "wallet", "details"] as const;
+  const scope: Role = mode === "signin" ? SIGNIN_SCOPE : role;
 
   return (
     <div className="grid min-h-dvh lg:grid-cols-[1fr_minmax(0,560px)]">
@@ -82,7 +115,10 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
 
           {step === "role" && (
             <div key="role" className="rise flex flex-col gap-6">
-              <Heading title="Create your account" text="Free for tenants and landlords. Tell us how you'll use Relstate." />
+              <Heading
+                title={pending ? "Set up your profile" : "Create your account"}
+                text={pending ? "We don't have a profile for this wallet yet. Tell us how you'll use Relstate." : "Free for tenants and landlords. Tell us how you'll use Relstate."}
+              />
               <div className="grid gap-3" role="radiogroup" aria-label="Account type">
                 {(Object.keys(ROLE_CARDS) as Role[]).map((r) => {
                   const C = ROLE_CARDS[r];
@@ -119,7 +155,7 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
                   );
                 })}
               </div>
-              <Button size="lg" onClick={() => setStep("wallet")}>
+              <Button size="lg" onClick={() => setStep(pending ? "details" : "wallet")}>
                 Continue <ArrowRight />
               </Button>
             </div>
@@ -175,6 +211,7 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
                     if (!pending) return;
                     // remember the choice so sign-in doesn't ask again
                     if (!loadAccount(pending)) saveAccount(pending, { name: "", email: "", city: "", role, createdAt: Date.now() });
+                    if (mode === "signin") adoptSigninScope(role);
                     onDone(role);
                   }}
                 >
@@ -195,22 +232,6 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
                     title="Welcome back"
                     text={EMBEDDED_ENABLED ? "Sign in with your email, or with the wallet that holds your rental record." : "Sign in with the wallet that holds your rental record."}
                   />
-                  <div className="grid grid-cols-2 gap-1 rounded-xl bg-muted p-1" role="tablist" aria-label="Sign in as">
-                    {(["tenant", "landlord"] as Role[]).map((r) => (
-                      <button
-                        key={r}
-                        role="tab"
-                        aria-selected={role === r}
-                        onClick={() => setRole(r)}
-                        className={cn(
-                          "h-10 rounded-lg text-sm font-medium capitalize transition-all",
-                          role === r ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-                        )}
-                      >
-                        {r}
-                      </button>
-                    ))}
-                  </div>
                 </>
               ) : (
                 <Heading
@@ -224,10 +245,10 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
               )}
 
               {/* keyed by role: each role keeps its own wallet, exactly like the app */}
-              <WalletProvider key={role} wallets={[]} autoConnect={false} localStorageKey={`relstate.wallet.${role}`}>
-                <LocalWalletProvider role={role}>
-                  <EmbeddedWalletProvider role={role}>
-                    <WalletChoices onConnected={connected} />
+              <WalletProvider key={scope} wallets={[]} autoConnect={false} localStorageKey={`relstate.wallet.${scope}`}>
+                <LocalWalletProvider role={scope}>
+                  <EmbeddedWalletProvider role={scope}>
+                    <WalletChoices onConnected={connected} signin={mode === "signin"} />
                   </EmbeddedWalletProvider>
                 </LocalWalletProvider>
               </WalletProvider>
@@ -249,7 +270,7 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
   );
 }
 
-function WalletChoices({ onConnected }: { onConnected: (address: string) => void }) {
+function WalletChoices({ onConnected, signin }: { onConnected: (address: string, roleHint?: Role) => void; signin: boolean }) {
   const local = useLocalWallet();
   const { wallets, select } = useWallet();
   const installed = wallets.filter((w) => w.readyState === WalletReadyState.Installed);
@@ -257,11 +278,12 @@ function WalletChoices({ onConnected }: { onConnected: (address: string) => void
   const [phase, setPhase] = useState<"idle" | "connecting" | "signing" | "done">("idle");
   const [error, setError] = useState<string | null>(null);
   const [address, setAddress] = useState<string | null>(null);
+  const [hint, setHint] = useState<Role | null>(null);
   const busy = phase === "connecting" || phase === "signing";
 
   useEffect(() => {
     if (phase !== "done" || !address) return;
-    const t = setTimeout(() => onConnected(address), 450); // let the success state register
+    const t = setTimeout(() => onConnected(address, hint ?? undefined), 450); // let the success state register
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, address]);
@@ -365,22 +387,32 @@ function WalletChoices({ onConnected }: { onConnected: (address: string) => void
           onClick={() => pick(w)}
         />
       ))}
-      {chain.LOCAL_WALLETS_AVAILABLE && (
-        <Row
-          icon={
-            <span className="grid size-7 place-items-center rounded-md bg-brass-soft text-warning">
-              <FlaskConical className="size-4" />
-            </span>
-          }
-          name={`Demo wallet (${local.role})`}
-          note="Pre-funded test account on the local network"
-          onClick={() => {
-            local.set(true);
-            setAddress(chain.localKeypair(local.role).publicKey.toBase58());
-            setPhase("done");
-          }}
-        />
-      )}
+      {chain.LOCAL_WALLETS_AVAILABLE &&
+        // The built-in test accounts are two fixed identities, not a role choice: each one signs in as itself.
+        (signin ? (["tenant", "landlord"] as Role[]) : [local.role]).map((r) => (
+          <Row
+            key={r}
+            icon={
+              <span className="grid size-7 place-items-center rounded-md bg-brass-soft text-warning">
+                <FlaskConical className="size-4" />
+              </span>
+            }
+            name={`Demo wallet (${r})`}
+            note="Pre-funded test account on the local network"
+            onClick={() => {
+              if (signin) {
+                try {
+                  sessionStorage.setItem(`relstate.localWallet.${r}`, "1");
+                } catch {
+                  /* private mode: the choice is forgotten on reload */
+                }
+                setHint(r);
+              } else local.set(true);
+              setAddress(chain.localKeypair(r).publicKey.toBase58());
+              setPhase("done");
+            }}
+          />
+        ))}
       {installed.length === 0 && (
         <div className="flex items-start gap-3 rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
           <Wallet className="mt-0.5 size-5 shrink-0" />
