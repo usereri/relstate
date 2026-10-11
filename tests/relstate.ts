@@ -1367,12 +1367,13 @@ describe("relstate", () => {
     await timeTravel(CLAIM_WINDOW + 5); // the claim window has already lapsed
     await env.release(800);
     await expectFail(env.claim(), "WrongStatus"); // paused while disputed
-    await timeTravel(5);
+    const spent = Math.max(1, DISPUTE_WINDOW - 3); // strictly inside the window, whatever its length
+    await timeTravel(spent);
     await env.abandon();
     // the time spent disputed was added back, so the tenant waits no longer than before the
     // proposal and no shorter than the paused seconds allow
     const lease = await program.account.lease.fetch(env.lease);
-    expect(lease.claimPauseSecs.toNumber()).to.be.at.least(5);
+    expect(lease.claimPauseSecs.toNumber()).to.be.at.least(spent);
     await timeTravel(lease.claimPauseSecs.toNumber() + CLAIM_WINDOW);
     await env.claim();
     await expectConserved(env, DEPOSIT, 0);

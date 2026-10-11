@@ -91,7 +91,7 @@ export interface Snapshot {
 const constant = (name: string) => Number(idl.constants.find((c) => c.name === name)!.value);
 export const DISCOUNT_PCT = constant("GOOD_STANDING_DISCOUNT_PCT");
 export const RENT_HEADROOM_PCT = constant("RENT_HEADROOM_PCT");
-/** How long a tenant has to answer a proposed deduction. Build-dependent (demo 30 s, release 14 days), so it comes from the IDL. */
+/** How long a tenant has to answer a proposed deduction. Build-dependent (demo 5 s, release 14 days), so it comes from the IDL. */
 export const DISPUTE_WINDOW_SECS = constant("DISPUTE_WINDOW_SECS");
 
 // Previews of Profile::good_standing / typical_rent / deserves_discount in the program;

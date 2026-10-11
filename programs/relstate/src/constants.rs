@@ -68,7 +68,7 @@ pub const MIN_PERIOD_SECS: i64 = if cfg!(feature = "demo") {
 // as a number.
 #[cfg(feature = "demo")]
 #[constant]
-pub const CLAIM_WINDOW_SECS: i64 = 10;
+pub const CLAIM_WINDOW_SECS: i64 = 3;
 #[cfg(not(feature = "demo"))]
 #[constant]
 pub const CLAIM_WINDOW_SECS: i64 = 1_209_600;
@@ -78,7 +78,7 @@ pub const CLAIM_WINDOW_SECS: i64 = 1_209_600;
 // and short enough in the demo build to be shown on stage without waiting.
 #[cfg(feature = "demo")]
 #[constant]
-pub const DISPUTE_WINDOW_SECS: i64 = 30;
+pub const DISPUTE_WINDOW_SECS: i64 = 5;
 #[cfg(not(feature = "demo"))]
 #[constant]
 pub const DISPUTE_WINDOW_SECS: i64 = 1_209_600;

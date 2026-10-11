@@ -3037,7 +3037,7 @@
     {
       "name": "CLAIM_WINDOW_SECS",
       "type": "i64",
-      "value": "10"
+      "value": "3"
     },
     {
       "name": "CONFIG_SEED",
@@ -3047,7 +3047,7 @@
     {
       "name": "DISPUTE_WINDOW_SECS",
       "type": "i64",
-      "value": "30"
+      "value": "5"
     },
     {
       "name": "GOOD_STANDING_DISCOUNT_PCT",

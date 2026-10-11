@@ -3043,7 +3043,7 @@ export type Relstate = {
     {
       "name": "claimWindowSecs",
       "type": "i64",
-      "value": "10"
+      "value": "3"
     },
     {
       "name": "configSeed",
@@ -3053,7 +3053,7 @@ export type Relstate = {
     {
       "name": "disputeWindowSecs",
       "type": "i64",
-      "value": "30"
+      "value": "5"
     },
     {
       "name": "goodStandingDiscountPct",

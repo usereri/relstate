@@ -14,7 +14,7 @@ export const PERIOD_SECS = IS_LOCAL ? 30 * 86_400 : 45;
 export const GRACE_SECS = IS_LOCAL ? 3 * 86_400 : 20;
 export const TERM_PERIODS = 3;
 // Read from the program's IDL (the build the app is built against), never mirrored: the demo
-// build is 10 s and the release build 14 days.
+// build is 3 s and the release build 14 days.
 export const CLAIM_WINDOW_SECS: number = Number(idl.constants.find((c) => c.name === "CLAIM_WINDOW_SECS")!.value);
 export const USDC = 1_000_000;
 // The test-USDC mint `make demo-setup` creates: derived from the payer wallet

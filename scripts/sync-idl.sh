@@ -7,7 +7,7 @@
 #   make program-keypair && anchor build -- --features demo
 #   scripts/sync-idl.sh
 #
-# Refuses a release-build IDL (CLAIM_WINDOW_SECS must be 10, DISPUTE_WINDOW_SECS must be 30 -- a
+# Refuses a release-build IDL (CLAIM_WINDOW_SECS must be 3, DISPUTE_WINDOW_SECS must be 5 -- a
 # release build has 1_209_600 for both, docs/contracts/program-interface.md §5), so a stale or
 # wrongly-featured build fails here instead of silently shipping the wrong timing to the app.
 set -euo pipefail
@@ -37,13 +37,13 @@ read_constant() {
 CLAIM_WINDOW_SECS="$(read_constant CLAIM_WINDOW_SECS)"
 DISPUTE_WINDOW_SECS="$(read_constant DISPUTE_WINDOW_SECS)"
 
-if [[ "$CLAIM_WINDOW_SECS" != "10" ]]; then
-  echo "error: target/idl/relstate.json has CLAIM_WINDOW_SECS=$CLAIM_WINDOW_SECS, expected 10 (the demo build)." >&2
+if [[ "$CLAIM_WINDOW_SECS" != "3" ]]; then
+  echo "error: target/idl/relstate.json has CLAIM_WINDOW_SECS=$CLAIM_WINDOW_SECS, expected 3 (the demo build)." >&2
   echo "       this looks like a release build, or a stale one. Rebuild with: anchor build -- --features demo" >&2
   exit 1
 fi
-if [[ "$DISPUTE_WINDOW_SECS" != "30" ]]; then
-  echo "error: target/idl/relstate.json has DISPUTE_WINDOW_SECS=$DISPUTE_WINDOW_SECS, expected 30 (the demo build)." >&2
+if [[ "$DISPUTE_WINDOW_SECS" != "5" ]]; then
+  echo "error: target/idl/relstate.json has DISPUTE_WINDOW_SECS=$DISPUTE_WINDOW_SECS, expected 5 (the demo build)." >&2
   echo "       this looks like a release build, or a stale one. Rebuild with: anchor build -- --features demo" >&2
   exit 1
 fi
@@ -52,4 +52,4 @@ mkdir -p "$OUT_DIR"
 cp "$TARGET_IDL" "$OUT_DIR/relstate.json"
 cp "$TARGET_TYPES" "$OUT_DIR/relstate.ts"
 
-echo "synced app/idl/relstate.json and app/idl/relstate.ts from target/ (CLAIM_WINDOW_SECS=10, DISPUTE_WINDOW_SECS=30)"
+echo "synced app/idl/relstate.json and app/idl/relstate.ts from target/ (CLAIM_WINDOW_SECS=3, DISPUTE_WINDOW_SECS=5)"
