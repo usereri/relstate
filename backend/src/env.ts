@@ -253,9 +253,11 @@ export function weakSecret(v: string): boolean {
   return v.length < 32 || new Set(v).size < 10;
 }
 
-/** URL with the Helius key removed, safe for logs and /health. */
+/** URL with the RPC key removed (Helius `?api-key=`, Alchemy `/v2/<key>`), safe for logs and /health. */
 export function redactedRpcUrl(url = env.rpcUrl): string {
-  return url.replace(/([?&]api-key=)[^&]+/i, "$1<redacted>");
+  return url
+    .replace(/([?&]api-key=)[^&]+/i, "$1<redacted>")
+    .replace(/(\/v2\/)[^/?#]+/i, "$1<redacted>");
 }
 
 /**
