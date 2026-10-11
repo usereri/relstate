@@ -1,5 +1,7 @@
 import "./noenv.ts";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, it } from "node:test";
 import { generateKeyPairSigner } from "@solana/kit";
 import { accountLayout, type Layout } from "../src/layout.ts";
@@ -13,7 +15,20 @@ const { createSessionToken } = await import("../src/auth.ts");
 
 const APPLICATION = 1_500_000n;
 const PROFILE = 1_300_000n;
-const AMOUNT = APPLICATION + PROFILE;
+const LISTING = 2_000_000n;
+// 8 (discriminator) + 59 fixed bytes + the four strings, each with a 4-byte length prefix, at the
+// program's own MAX_* caps. Parsed straight out of the Rust source so a change there (which would
+// silently under-fund a listing's rent) fails this test instead of only showing up on chain.
+const CONSTANTS_RS = readFileSync(resolve(import.meta.dirname, "../../programs/relstate/src/constants.rs"), "utf8");
+const maxConst = (name: string): number => {
+  const m = CONSTANTS_RS.match(new RegExp(`pub const ${name}: usize = (\\d+);`));
+  if (!m) throw new Error(`${name} not found in constants.rs`);
+  return Number(m[1]);
+};
+const LISTING_MAX_SIZE = 8 + 59 + (4 + maxConst("MAX_TITLE")) + (4 + maxConst("MAX_CITY")) + (4 + maxConst("MAX_BLURB")) + (4 + maxConst("MAX_PHOTO"));
+assert.equal(LISTING_MAX_SIZE, 423, "LISTING_MAX_SIZE drifted from constants.rs (expected the four MAX_* caps to still sum to 423)");
+// Two Applications, one Profile, one Listing: see treasury.ts rentDustAmount().
+const AMOUNT = 2n * APPLICATION + PROFILE + LISTING;
 const code = (c: string) => (e: unknown) => e instanceof RejectedTransaction && e.code === c;
 const limiter = (perWallet = 100, global = 100) =>
   createRateLimiter({ maxPerWalletPerHour: perWallet, maxGlobalPerHour: global, maxLamportsPerWalletPerDay: 10n ** 12n, maxLamportsGlobalPerDay: 10n ** 12n });
@@ -29,7 +44,7 @@ async function fixture(options: { limiter?: RateLimiter; balances?: Record<strin
     getMinimumBalanceForRentExemption: (size: bigint) => ({
       send: async () => {
         state.rentQueries.push(size);
-        return size === 104n ? APPLICATION : size === 94n ? PROFILE : size === 120n ? PROFILE + 400_000n : 999n;
+        return size === 104n ? APPLICATION : size === 94n ? PROFILE : size === BigInt(LISTING_MAX_SIZE) ? LISTING : size === 120n ? PROFILE + 400_000n : 999n;
       },
     }),
     // A real RPC yields to the event loop here, which is what makes two requests interleave.
@@ -69,10 +84,13 @@ async function fixture(options: { limiter?: RateLimiter; balances?: Record<strin
 }
 
 describe("rentDustAmount", () => {
-  it("is the rent-exempt minimum of an Application (104 bytes) plus a Profile (94 bytes, with the deposit-return fields)", async () => {
+  it("is twice an Application (104 bytes) plus a Profile (94 bytes) plus a Listing at its max text lengths (423 bytes)", async () => {
     const f = await fixture();
     assert.equal(await f.treasury.rentDustAmount(), AMOUNT);
-    assert.deepEqual([...f.state.rentQueries].sort((a, b) => (a < b ? -1 : 1)), [94n, 104n]);
+    assert.deepEqual([...f.state.rentQueries].sort((a, b) => (a < b ? -1 : 1)), [94n, 104n, BigInt(LISTING_MAX_SIZE)].sort((a, b) => (a < b ? -1 : 1)));
+    // Only one rent query per account type: the "two Applications" in the amount is arithmetic
+    // (2n * application), not two separate RPC round trips.
+    assert.equal(f.state.rentQueries.length, 3);
   });
 });
 
@@ -81,8 +99,8 @@ describe("rentDustAmount follows the program's account layout", () => {
   // come from the layout, so that change reaches the rent amount without anyone editing this module.
   it("asks for the rent of whatever size the layout says, not a constant", async () => {
     const f = await fixture({ layout: (account) => (account === "Profile" ? { ...accountLayout("Profile"), size: 120 } : accountLayout(account)) });
-    assert.equal(await f.treasury.rentDustAmount(), APPLICATION + PROFILE + 400_000n);
-    assert.deepEqual([...f.state.rentQueries].sort((a, b) => (a < b ? -1 : 1)), [104n, 120n]);
+    assert.equal(await f.treasury.rentDustAmount(), 2n * APPLICATION + (PROFILE + 400_000n) + LISTING);
+    assert.deepEqual([...f.state.rentQueries].sort((a, b) => (a < b ? -1 : 1)), [104n, 120n, BigInt(LISTING_MAX_SIZE)].sort((a, b) => (a < b ? -1 : 1)));
   });
 });
 

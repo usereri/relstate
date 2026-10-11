@@ -21,7 +21,7 @@ export interface Step {
 export interface OnboardingState {
   /** a wallet is connected, so there is an account to attach a record to */
   signedIn: boolean;
-  /** lease-mint balance in base units, or null when the wallet has no token account yet */
+  /** public lease-mint balance in base units, or null when the wallet has no token account yet (a private top-up leaves it at 0) */
   balance: number | null;
   /** an application or a lease exists for this wallet */
   applied: boolean;
@@ -34,7 +34,10 @@ export interface OnboardingState {
 const state = (done: boolean): StepState => (done ? "done" : "todo");
 
 export function checklist(s: OnboardingState): Step[] {
-  const funded = s.balance !== null && s.balance > 0;
+  // The token account exists once the top-up has minted to it. Its PUBLIC balance can legitimately be 0
+  // afterwards, because the browser moves the credit into the private balance, so a balance check
+  // would never tick for exactly the people who completed the flow.
+  const funded = s.balance !== null;
   return [
     {
       id: "account",

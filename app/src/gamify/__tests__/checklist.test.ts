@@ -21,9 +21,9 @@ describe("checklist", () => {
       expect(checklist(s).find((x) => x.id === "identity")!.state).toBe("soon");
   });
 
-  it("no token account and a zero balance both leave topup todo; a positive balance is done", () => {
+  it("no token account leaves topup todo; an account is done even at zero (a private top-up empties the public balance)", () => {
     expect(states({ ...blank, balance: null }).topup).toBe("todo");
-    expect(states({ ...blank, balance: 0 }).topup).toBe("todo");
+    expect(states({ ...blank, balance: 0 }).topup).toBe("done");
     expect(states({ ...blank, balance: 1 }).topup).toBe("done");
   });
 

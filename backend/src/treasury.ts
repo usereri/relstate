@@ -724,13 +724,28 @@ export function createTreasury(deps: TreasuryDeps) {
     maxLamportsGlobalPerDay: env.rentDust.maxLamportsGlobalPerDay,
   });
 
-  /** Just enough for a tenant's Application and Profile accounts: nothing for fees, which are the sponsor's. */
+  /**
+   * A listing at its maximum text lengths: 8 (discriminator) + 59 fixed bytes + the four strings at
+   * their `MAX_*` caps (programs/relstate/src/constants.rs: 60, 40, 120, 120, each with a 4-byte
+   * length prefix). The IDL cannot give this (strings carry no length there), so it is pinned here
+   * and covered by a test that recomputes it from the same constants.
+   */
+  const LISTING_MAX_SIZE = 8 + 59 + (4 + 60) + (4 + 40) + (4 + 120) + (4 + 120);
+
+  /**
+   * Enough for two Applications (a tenant comparing flats), a Profile, and one Listing (a landlord's
+   * first). Fees are the sponsor's; this is only account rent, which the program charges the wallet.
+   * Granted once per wallet, so it is the whole budget of a demo user: about 0.0086 SOL at devnet
+   * rent rates (documented in docs/deploy.md with the treasury cost).
+   */
   async function rentDustAmount(): Promise<bigint> {
-    const [application, profile] = await Promise.all([
-      deps.rpc.getMinimumBalanceForRentExemption(BigInt((deps.accountLayout ?? accountLayout)("Application").size)).send(),
-      deps.rpc.getMinimumBalanceForRentExemption(BigInt((deps.accountLayout ?? accountLayout)("Profile").size)).send(),
+    const layout = deps.accountLayout ?? accountLayout;
+    const [application, profile, listing] = await Promise.all([
+      deps.rpc.getMinimumBalanceForRentExemption(BigInt(layout("Application").size)).send(),
+      deps.rpc.getMinimumBalanceForRentExemption(BigInt(layout("Profile").size)).send(),
+      deps.rpc.getMinimumBalanceForRentExemption(BigInt(LISTING_MAX_SIZE)).send(),
     ]);
-    return BigInt(application) + BigInt(profile);
+    return 2n * BigInt(application) + BigInt(profile) + BigInt(listing);
   }
 
   /**

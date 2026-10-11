@@ -28,7 +28,7 @@ vi.mock("../chain", () => ({
 }));
 vi.mock("../mint", () => ({ mintKind: vi.fn(async () => ({ confidential: true, decimals: 6 })) }));
 
-const { PayError, enablePrivateReceiving, format, payErrorMessage, payRentPrivately, securePrivateBalance } = await import("../pay");
+const { PayError, enablePrivateReceiving, format, payErrorMessage, payRentPrivately, securePrivateBalance, withBalanceLock } = await import("../pay");
 
 const wallet = {} as WalletProvider;
 type Message = { tag: string };
@@ -171,6 +171,113 @@ describe("securePrivateBalance", () => {
     const result = await securePrivateBalance({ wallet });
     expect(result.createdAccount).toBe(true);
     expect(log.filter((l) => l.startsWith("submit"))).toEqual(["submitSetup:create", "submit:deposit", "submit:apply"]);
+  });
+
+  // The dedupe key is wallet+mint+holdback: two callers asking for the same run must share one
+  // in-flight result, and a caller with a different holdback must never be handed someone else's.
+  describe("coalescing concurrent calls", () => {
+    const keyedWallet = { publicKey: { toBase58: () => "WALLET1" } } as unknown as WalletProvider;
+
+    it("coalesces two overlapping calls for the same wallet+mint+holdback into one run", async () => {
+      conf.accountState.mockResolvedValue({ exists: true, configured: true, publicAmount: 10_000_000n });
+      const p1 = securePrivateBalance({ wallet: keyedWallet, holdback: 1_000_000n });
+      const p2 = securePrivateBalance({ wallet: keyedWallet, holdback: 1_000_000n });
+      expect(p1).toBe(p2); // the second call is handed the very same in-flight promise
+      await p1;
+      expect(conf.openSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not coalesce calls with a different holdback", async () => {
+      conf.accountState.mockResolvedValue({ exists: true, configured: true, publicAmount: 10_000_000n });
+      const p1 = securePrivateBalance({ wallet: keyedWallet, holdback: 1_000_000n });
+      const p2 = securePrivateBalance({ wallet: keyedWallet, holdback: 2_000_000n });
+      expect(p1).not.toBe(p2);
+      await Promise.all([p1, p2]);
+      expect(conf.openSession).toHaveBeenCalledTimes(2);
+    });
+
+    // app/src/lib/pay.ts (0625828): the dedupe key tolerates a wallet with no publicKey at all
+    // (a test stub, or a provider mid-connect) rather than throwing on `.publicKey.toBase58()`.
+    it("tolerates a wallet with no publicKey: runs without throwing and without coalescing", async () => {
+      conf.accountState.mockResolvedValue({ exists: true, configured: true, publicAmount: 10_000_000n });
+      const noKeyWallet = {} as WalletProvider;
+      const p1 = securePrivateBalance({ wallet: noKeyWallet, holdback: 1_000_000n });
+      const p2 = securePrivateBalance({ wallet: noKeyWallet, holdback: 1_000_000n });
+      await expect(Promise.all([p1, p2])).resolves.toBeDefined();
+      // Never coalesced for this wallet, since there is no stable key to coalesce under.
+      expect(conf.openSession).toHaveBeenCalledTimes(2);
+    });
+  });
+});
+
+describe("withBalanceLock", () => {
+  // A deferred promise: lets a test hold "first work" open and release it on cue.
+  const deferred = <T>() => {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  it("runs two overlapping works for the same owner+mint serially: the second starts only after the first ends", async () => {
+    const order: string[] = [];
+    const gate = deferred<void>();
+    const p1 = withBalanceLock("owner", "mint", async () => {
+      order.push("first-start");
+      await gate.promise;
+      order.push("first-end");
+    });
+    const p2 = withBalanceLock("owner", "mint", async () => {
+      order.push("second-start");
+    });
+
+    await settle();
+    expect(order).toEqual(["first-start"]); // second must not have started while first is held open
+
+    gate.resolve();
+    await Promise.all([p1, p2]);
+    expect(order).toEqual(["first-start", "first-end", "second-start"]);
+  });
+
+  it("runs works for a different owner or mint concurrently, not behind the first lock", async () => {
+    const order: string[] = [];
+    const gate = deferred<void>();
+    const p1 = withBalanceLock("ownerA", "mintA", async () => {
+      order.push("A-start");
+      await gate.promise;
+      order.push("A-end");
+    });
+    const p2 = withBalanceLock("ownerB", "mintA", async () => {
+      order.push("B");
+    });
+    const p3 = withBalanceLock("ownerA", "mintB", async () => {
+      order.push("C");
+    });
+
+    await settle();
+    // Neither a different owner nor a different mint is held up behind ownerA/mintA.
+    expect(order).toEqual(["A-start", "B", "C"]);
+    gate.resolve();
+    await Promise.all([p1, p2, p3]);
+  });
+
+  it("a failing work releases the lock: it does not block the next one for the same owner+mint", async () => {
+    const order: string[] = [];
+    const p1 = withBalanceLock("owner", "mint", async () => {
+      order.push("first");
+      throw new Error("boom");
+    });
+    const p2 = withBalanceLock("owner", "mint", async () => {
+      order.push("second");
+    });
+
+    await expect(p1).rejects.toThrow("boom");
+    await p2;
+    expect(order).toEqual(["first", "second"]);
   });
 });
 

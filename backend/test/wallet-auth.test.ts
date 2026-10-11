@@ -413,6 +413,23 @@ describe("clientIpOf", () => {
     assert.equal(clientIpOf(() => undefined, undefined, true), "unknown");
     assert.equal(clientIpOf(() => "1.2.3.4", undefined, false), "unknown");
   });
+
+  it("accepts a trusted header that is a valid IPv6 address, not just IPv4", () => {
+    const header = (name: string) => (name === "fly-client-ip" ? "2001:db8::1" : undefined);
+    assert.equal(clientIpOf(header, "10.0.0.1", true), "2001:db8::1");
+  });
+
+  it("falls back to the socket when the trusted header is not a valid IP at all (not evidence of anything)", () => {
+    for (const bogus of ["not-an-ip", "1.2.3.4; DROP TABLE", "999.999.999.999", "1.2.3.4,5.6.7.8"]) {
+      const header = (name: string) => (name === "fly-client-ip" ? bogus : undefined);
+      assert.equal(clientIpOf(header, "10.0.0.1", true), "10.0.0.1", bogus);
+    }
+  });
+
+  it("ignores even a well-formed header when the header is not trusted", () => {
+    const header = (name: string) => (name === "fly-client-ip" ? "2001:db8::1" : undefined);
+    assert.equal(clientIpOf(header, "10.0.0.1", false), "10.0.0.1");
+  });
 });
 
 describe("wallet-auth routes via createApp", () => {

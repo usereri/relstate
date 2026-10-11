@@ -27,3 +27,6 @@ export const photoUrl = (p: string) => {
   if (s.startsWith("/")) return import.meta.env.BASE_URL + s.slice(1); // works under a subpath like GitHub Pages
   return `${import.meta.env.BASE_URL}listings/${/\.[a-z0-9]{2,5}$/i.test(s) ? s : `${s}.jpg`}`;
 };
+
+/** `JSON.stringify` that survives the bigints kit puts in transaction errors (instruction error codes). */
+export const jsonSafe = (v: unknown): string => JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x));

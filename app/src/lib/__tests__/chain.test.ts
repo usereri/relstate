@@ -1,14 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as anchor from "@anchor-lang/core";
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-token";
-import { MINT } from "../config";
 import { localKeypair } from "../wallet";
 
 const { PublicKey } = anchor.web3;
 
 // chain.ts builds a Connection at module load and config.ts needs an RPC; neither touches the
 // network until a read is made, and the one read here (getAccountInfo) is stubbed.
-beforeEach(() => vi.stubEnv("VITE_RPC", "http://127.0.0.1:8899"));
+// The mint is pinned here rather than read from config.ts: a developer's app/.env.local sets VITE_MINT, and the ATA literals below are derived from this one.
+const MINT = "Gco8ivBzZTq9U4iBLEApWxy8bcHbtenNP6crmYQcPCXH";
+beforeEach(() => {
+  vi.stubEnv("VITE_RPC", "http://127.0.0.1:8899");
+  vi.stubEnv("VITE_MINT", MINT);
+});
 afterEach(() => vi.unstubAllEnvs());
 
 async function load(owner: anchor.web3.PublicKey | null | Error) {

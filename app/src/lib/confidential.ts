@@ -31,6 +31,7 @@ import type { AeKey, ElGamalKeypair } from "@solana/zk-sdk/bundler";
 import type { ConfidentialTransferBalance } from "@solana-program/token-2022/confidential";
 import { RPC, RUSDC_MINT } from "./config";
 import { retryOn429 } from "./rpc";
+import { jsonSafe } from "./utils";
 import { backendInfo, postConfidentialAccountSetup, postRentPayment, postSponsoredDetailed, sponsorFeePayer, type Cosigned } from "./sponsor";
 import { CONFIDENTIAL_DERIVATION_MESSAGE, isConfidentialDerivationMessage, type WalletProvider } from "./wallet";
 
@@ -149,7 +150,10 @@ export async function openSession(opts: { wallet: WalletProvider; mint?: string;
     keys,
     payer: kit.createNoopSigner(kit.address(feePayer)),
     setupPayer: kit.createNoopSigner(kit.address(backend.treasury)),
-    authority: owner,
+    // A signer, not a bare address: the token program only accepts the owner's instructions
+    // (configure, deposit, apply, transfer) if the owner is marked as signing. Noop because the
+    // wallet adds its signature afterwards, exactly like the sponsored fee payer.
+    authority: kit.createNoopSigner(owner),
     submit: sponsoredSubmit(opts.wallet, l, postSponsoredDetailed),
     submitSetup: sponsoredSubmit(opts.wallet, l, postConfidentialAccountSetup),
     submitRentPayment: sponsoredSubmit(opts.wallet, l, postRentPayment),
@@ -230,7 +234,13 @@ function sponsoredSubmit(wallet: WalletProvider, l: Libs, post: (txBase64: strin
     const anchor = await import("@anchor-lang/core");
     const wire = Buffer.from(kit.getBase64EncodedWireTransaction(partial), "base64");
     const tx = anchor.web3.VersionedTransaction.deserialize(wire);
-    const signed = await wallet.signTransaction(tx);
+    // Several transactions of a rent-payment plan (the proof context-state ones) have only the
+    // treasury and ephemeral keys as signers; web3.js throws "Cannot sign with non signer key" if
+    // the wallet is asked to sign one, so only ask when its signature is actually required.
+    const required = tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures);
+    // publicKey is typed non-null but an adapter reports null once disconnected mid-plan.
+    const walletKey = wallet.publicKey?.toBase58();
+    const signed = required.some((k) => k.toBase58() === walletKey) ? await wallet.signTransaction(tx) : tx;
     const { signature, broadcast } = await post(Buffer.from(signed.serialize()).toString("base64"));
     // The backend returns as soon as it has SENT the transaction. A proof plan is a chain of
     // dependent transactions (each reads the context state the one before created), and so are
@@ -258,7 +268,7 @@ async function confirm(rpc: Rpc<SolanaRpcApi>, signature: string, lastValidBlock
   for (let poll = 0; ; poll++) {
     const { value } = await rpc.getSignatureStatuses([signature as Parameters<typeof rpc.getSignatureStatuses>[0][0]]).send();
     const status = value[0];
-    if (status?.err) throw new Error(`Transaction ${signature} failed: ${JSON.stringify(status.err)}`);
+    if (status?.err) throw new Error(`Transaction ${signature} failed: ${jsonSafe(status.err)}`);
     if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") return;
     if (poll % EXPIRY_CHECK_EVERY === EXPIRY_CHECK_EVERY - 1) {
       const height = await rpc.getBlockHeight({ commitment: "confirmed" }).send();

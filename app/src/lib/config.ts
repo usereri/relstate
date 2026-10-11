@@ -1,14 +1,20 @@
 import idl from "@target/idl/relstate.json";
 
-// Network + lease timing. Point the app at devnet with VITE_RPC in app/.env.local, for example
-//   VITE_RPC=https://api.devnet.solana.com
+// Network + lease timing.
+//
+// Reads go through the backend's read-only proxy (`POST /api/rpc`) whenever a backend is configured:
+// the browser then needs no RPC key, and nothing talks to the rate-limited public endpoint. VITE_RPC
+// still overrides it, e.g. `VITE_RPC=http://localhost:8899` for a local validator, or a keyed URL
+// in local development only (a key set here ends up in the bundle).
+const API_BASE: string | undefined = import.meta.env.VITE_API;
 export const RPC: string =
-  import.meta.env.VITE_RPC ??
-  `http://${globalThis.location?.hostname ?? "localhost"}:8899`;
+  import.meta.env.VITE_RPC ||
+  (API_BASE ? `${API_BASE.replace(/\/$/, "")}/api/rpc` : `http://${globalThis.location?.hostname ?? "localhost"}:8899`);
 
 // Local Surfpool can jump the clock, so a local run can show a realistic 30-day rent period.
-// On devnet the clock is real, so periods are compressed (say so out loud).
-export const IS_LOCAL = !/devnet|mainnet|testnet/.test(RPC);
+// On devnet the clock is real, so periods are compressed (say so out loud). The proxy's URL says
+// nothing about which cluster is behind it, so a proxied app is on a real network unless VITE_LOCAL=1.
+export const IS_LOCAL = /\/api\/rpc\/?$/.test(RPC) ? import.meta.env.VITE_LOCAL === "1" : !/devnet|mainnet|testnet/.test(RPC);
 export const CAN_FAST_FORWARD = IS_LOCAL;
 export const PERIOD_SECS = IS_LOCAL ? 30 * 86_400 : 45;
 export const GRACE_SECS = IS_LOCAL ? 3 * 86_400 : 20;

@@ -20,7 +20,7 @@ import { LocalWalletProvider, WalletButton, useLocalWallet, useMe } from "@/comp
 import { Handlers, LeaseTab, LogEntry, Waiting } from "@/screens";
 import { Kyc, VerifyFirst } from "@/screens/Kyc";
 import { Payout, TopUp } from "@/screens/TopUp";
-import { isKycRequired } from "@/lib/kyc";
+import { isKycRequired, needsVerification, returnAfterKyc, setReturnAfterKyc } from "@/lib/kyc";
 import { Listings, MyProfile } from "@/views";
 
 const ROLE_KEY = "relstate.role";
@@ -192,6 +192,14 @@ function Shell({
   const [error, setError] = useState<string | null>(null);
   // apply / propose_lease refused for want of a verified identity: a prompt, not an error
   const [needsKyc, setNeedsKyc] = useState(false);
+  // set when an action sent the user to the Verify tab: the screen explains why and returns them after
+  const [kycFor, setKycFor] = useState<"apply" | "propose" | null>(returnAfterKyc);
+  const sendToVerify = (action: "apply" | "propose") => {
+    setReturnAfterKyc(action);
+    setKycFor(action);
+    setNeedsKyc(false);
+    setTab("identity");
+  };
   const [log, setLog] = useState<LogEntry[]>([]);
   const [now, setNow] = useState<number>();
 
@@ -242,10 +250,21 @@ function Shell({
     busy,
     createListing: (f) => run("Publishing listing…", (m) => chain.createListing(m, chain.newId(), f)),
     closeListing: (l) => run("Removing listing…", (m) => chain.closeListing(m, l)),
-    apply: (l) => run("Applying…", (m) => chain.applyTo(m, l)),
+    apply: async (l) => {
+      if (address && (await needsVerification(address))) {
+        sendToVerify("apply");
+        return false;
+      }
+      return run("Applying…", (m) => chain.applyTo(m, l));
+    },
     closeApplication: (a) => run("Closing application…", (m) => chain.closeApplication(m, a)),
-    propose: (id, l, tenant, doc: Doc, application) =>
-      run("Proposing lease…", (m) => chain.proposeLease(m, id, l, tenant, doc.hash, application)),
+    propose: async (id, l, tenant, doc: Doc, application) => {
+      if (address && (await needsVerification(address))) {
+        sendToVerify("propose");
+        return false;
+      }
+      return run("Proposing lease…", (m) => chain.proposeLease(m, id, l, tenant, doc.hash, application));
+    },
     fund: (l, doc) =>
       run("Funding deposit…", async (m) => {
         // tidying up applications is a nicety: never let a failed lookup block accepting the lease
@@ -333,7 +352,7 @@ function Shell({
           </p>
         )}
 
-        {needsKyc && <VerifyFirst onVerify={() => (setNeedsKyc(false), setTab("identity"))} onDismiss={() => setNeedsKyc(false)} />}
+        {needsKyc && <VerifyFirst onVerify={() => sendToVerify("apply")} onDismiss={() => setNeedsKyc(false)} />}
 
         {readError && !error && (
           <p role="alert" className="rounded-xl border border-destructive/30 bg-danger-soft p-3 text-sm text-destructive">
@@ -379,7 +398,30 @@ function Shell({
           ))}
         {tab === "wallet" &&
           (role === "tenant" ? <TopUp wallet={address} onCredited={bump} /> : <Payout wallet={address} balanceBase={balances?.usdc} />)}
-        {tab === "identity" && <Kyc wallet={address} onVerified={bump} />}
+        {tab === "identity" && (
+          <>
+            {kycFor && (
+              <p role="status" className="rounded-xl border border-primary/30 bg-secondary/60 p-3 text-sm">
+                {kycFor === "apply" ? "Applying to a listing needs a verified identity." : "Proposing a lease needs a verified identity."} Verify once
+                here and you will go straight back.
+              </p>
+            )}
+            <Kyc
+              wallet={address}
+              onVerified={() => {
+                bump();
+                // back to where the action started, but only if the check actually passed
+                if (!kycFor || !address) return;
+                void needsVerification(address).then((still) => {
+                  if (still) return;
+                  setReturnAfterKyc(null);
+                  setKycFor(null);
+                  setTab(kycFor === "apply" ? "apartments" : "lease");
+                });
+              }}
+            />
+          </>
+        )}
         {tab === "profile" && (address ? <MyProfile role={role} me={address} /> : connectFirst)}
       </div>
     </div>

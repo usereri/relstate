@@ -191,9 +191,11 @@ login and KYC decision that stay mocked.
 
 Settings → Secrets and variables → Actions → **Variables** tab (not Secrets — see
 `docs/env-checklist.md` for why), set every variable in that page's "App" and "Site" tables:
-`VITE_API` (your Fly app's `https://<app>.fly.dev` URL), `VITE_RPC` (a **domain-restricted** Helius
-key — restrict it to your Pages domain in the Helius dashboard, since this one ships in the public
-bundle), `VITE_RUSDC_MINT`, `VITE_MINT`, `SITE_APP_URL`, `CUSTOM_DOMAIN`.
+`VITE_API` (your Fly app's `https://<app>.fly.dev` URL), `VITE_RUSDC_MINT`, `VITE_MINT`,
+`SITE_APP_URL`, `CUSTOM_DOMAIN`. Leave `VITE_RPC` **unset**: the app then reads the chain through
+the backend's read-only proxy (`POST ${VITE_API}/api/rpc`, allowlisted read methods, per-IP rate
+limited), so no RPC key ships in the public bundle. Set `VITE_RPC` only for local development
+against a local validator, and `VITE_LOCAL=1` if the proxied backend points at a local chain.
 
 Then push (or fast-forward) a `deploy` branch to trigger `pages.yml`:
 
@@ -204,6 +206,21 @@ git push origin deploy
 
 Watch the Actions tab; `pages.yml` fails fast with a named list of missing variables if you missed
 one.
+
+### Rent dust (what a new wallet costs the treasury)
+
+`POST /api/treasury/rent-dust` gives each wallet, once, enough SOL for the account rent the program
+charges it: two Applications, one Profile and one Listing at its maximum text length (about
+0.0086 SOL at devnet rent rates; sized from the IDL plus `LISTING_MAX_SIZE` in `treasury.ts`).
+`RENT_DUST_MAX_LAMPORTS_GLOBAL_PER_DAY` caps the total (default 500,000,000 lamports = 0.5 SOL,
+about 58 new wallets a day) and `RENT_DUST_MAX_GLOBAL_PER_HOUR` the count.
+
+### Proxy limits and CORS
+
+`CORS_ORIGIN` must be set (to the app's origin) when `BACKEND_MODE=live`; the backend refuses to
+boot with the default `*`. `/api/rpc` is limited in work units: `RPC_PROXY_RATE_PER_MINUTE` per IP
+(default 4000) and `RPC_PROXY_GLOBAL_PER_MINUTE` across all callers (default 30000); a plain read
+costs 1, a list method its length, `getProgramAccounts` 50.
 
 ## 4. Stripe webhook (test mode)
 

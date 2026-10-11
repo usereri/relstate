@@ -5,6 +5,7 @@ import idl from "@target/idl/relstate.json";
 import type { Relstate } from "@target/types/relstate";
 import { GRACE_SECS, IS_LOCAL, MINT, PERIOD_SECS, RPC, TERM_PERIODS } from "./config";
 import { retryingFetch } from "./rpc";
+import { jsonSafe } from "./utils";
 import { API, SPONSORED, postSponsored, sponsorFeePayer } from "./sponsor";
 import { asWalletProvider, localKeypair, localWallet, readOnlyWallet } from "./wallet";
 import type { AdapterWallet, Role, WalletProvider } from "./wallet";
@@ -649,6 +650,32 @@ export const explorerTx = (sig: string) =>
   `https://explorer.solana.com/tx/${sig}?cluster=` +
   (/devnet/.test(RPC) ? "devnet" : `custom&customUrl=${encodeURIComponent(RPC)}`);
 
+/** What a person should read for the program errors they can actually run into. Others fall back to the IDL's own message. */
+const FRIENDLY_PROGRAM_ERRORS: Record<string, string> = {
+  KycRequired: "Verify your identity first: open the Verify tab, then come back.",
+  WrongStatus: "That lease is not in a state where this can be done.",
+  TooEarly: "This rent period is not due yet.",
+  TermCompleted: "Every rent period of this lease is already paid.",
+  SelfLease: "You cannot rent your own listing: landlord and tenant must be different wallets.",
+  MintNotAllowed: "This listing uses a token that is not allowed for leases.",
+  MissingConfidentialTransfer: "The private payment was assembled in the wrong order and was refused. Nothing was paid.",
+};
+
+/** Finds the program error named, or coded, anywhere in a failure's text (message, logs, simulation error). */
+export function programErrorMessage(text: string): string | null {
+  const errors = (idl as { errors?: { name: string; code: number; msg?: string }[] }).errors ?? [];
+  for (const er of errors) {
+    const hex = `0x${er.code.toString(16)}`;
+    if (
+      new RegExp(`\\b${er.name}\\b`).test(text) ||
+      text.toLowerCase().includes(`custom program error: ${hex}`) ||
+      new RegExp(`"Custom"\\s*:\\s*${er.code}\\b`).test(text)
+    )
+      return FRIENDLY_PROGRAM_ERRORS[er.name] ?? er.msg ?? null;
+  }
+  return null;
+}
+
 export function errorMessage(e: unknown): string {
   const err = e as {
     error?: { errorMessage?: string };
@@ -656,10 +683,16 @@ export function errorMessage(e: unknown): string {
     name?: string;
     simulationResponse?: { err: unknown; logs?: string[] | null };
   };
-  if (err?.error?.errorMessage) return err.error.errorMessage;
   const sim = err?.simulationResponse;
+  const known = programErrorMessage([err?.message, err?.error?.errorMessage, ...(sim?.logs ?? []), sim ? jsonSafe(sim.err) : ""].filter(Boolean).join(" "));
+  if (known) return known;
+  // System program "custom program error: 0x1" is InsufficientFunds: the wallet cannot pay the rent
+  // of the account this action creates (the sponsor covers fees, not account storage).
+  if (/11111111111111111111111111111111 failed: custom program error: 0x1\b/.test([err?.message, ...(sim?.logs ?? [])].filter(Boolean).join(" ")))
+    return "This wallet has too little SOL to cover the storage rent of the account this creates. The sponsor pays fees but not rent; send the wallet a little devnet SOL and try again.";
+  if (err?.error?.errorMessage) return err.error.errorMessage;
   if (sim) {
-    const why = JSON.stringify(sim.err);
+    const why = jsonSafe(sim.err);
     if (/AccountNotFound/.test(why)) return "This wallet has no SOL on this network, so it cannot pay fees. Fund it first (see the box at the top).";
     return `The network rejected the transaction: ${why}${sim.logs?.length ? `. Last log: ${sim.logs[sim.logs.length - 1]}` : ""}`;
   }
