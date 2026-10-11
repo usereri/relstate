@@ -10,7 +10,7 @@
 // which is public and says only that a period was paid. The amount is never shown from public data,
 // because it is not there: the landlord reveals it by decrypting their own incoming balance with
 // their own viewing key, in their own browser.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUpRight, BadgeCheck, Eye, HandCoins, Loader2, Lock, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -322,46 +322,73 @@ function ReceivedCard({ lease }: { lease: LeaseView }) {
  *
  * One state, one sentence, no crypto words.
  */
+const SECURE_TIMEOUT_MS = 180_000;
+
 export function SecurePrivateBalance({ credit }: { credit: OnrampCredit }) {
   const me = useSigner();
   const [progress, setProgress] = useState<pay.Progress | null>(null);
   const [done, setDone] = useState<pay.SecureResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const pending = credit.confidentialPending && BigInt(credit.confidentialAmount) > 0n;
+  // The effect must not depend on `me` (a fresh object whenever the wallet context re-renders) or
+  // on its own progress state: either one re-runs the effect, and the cleanup of the previous run
+  // used to drop every later result, leaving "Securing…" on screen for good.
+  const meRef = useRef(me);
+  meRef.current = me;
+  const wallet = me?.key.toBase58() ?? null;
+  const holdback = credit.publicHoldback || "0";
 
   useEffect(() => {
-    if (!me || !pending || done || progress || error) return;
+    const signer = meRef.current;
+    if (!signer || !pending) return;
     let live = true;
+    setError(null);
     setProgress({ phase: "unlocking", message: pay.SECURING_MESSAGE });
-    pay
-      .securePrivateBalance({
-        wallet: me.wallet,
-        holdback: BigInt(credit.publicHoldback || "0"),
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new pay.PayError("This is taking longer than expected. Nothing is lost; try again.")), SECURE_TIMEOUT_MS),
+    );
+    Promise.race([
+      pay.securePrivateBalance({
+        wallet: signer.wallet,
+        holdback: BigInt(holdback),
         onProgress: (p) => live && setProgress(p),
-      })
-      .then(
-        (r) => live && setDone(r),
-        (e: unknown) => live && setError(pay.payErrorMessage(e)),
-      )
-      .finally(() => live && setProgress(null));
+      }),
+      timeout,
+    ]).then(
+      (r) => live && (setDone(r), setProgress(null)),
+      (e: unknown) => {
+        console.error("securePrivateBalance failed", e);
+        if (live) (setError(pay.payErrorMessage(e)), setProgress(null));
+      },
+    );
     return () => {
       live = false;
     };
-    // Runs once per credit: `pending` and the holdback both come off `credit`.
-  }, [me, pending, credit.publicHoldback, done, progress, error]);
+  }, [wallet, pending, holdback, attempt]);
 
   if (!pending) return null;
+  if (!me) return <p className="text-sm text-muted-foreground">Sign in to finish securing your balance.</p>;
   if (error) {
     return (
       <div className="flex flex-col gap-1 rounded-xl border border-warning/50 bg-warning-soft p-4 text-sm">
         <p className="font-medium">Your balance is credited, but not private yet.</p>
         <p>{error}</p>
-        <p>Nothing is lost: it is in your wallet, and the app will try again the next time you pay rent.</p>
+        <p>Nothing is lost: it is in your wallet, and the app will also try again the next time you pay rent.</p>
+        <Button size="sm" variant="outline" className="self-start" onClick={() => setAttempt((n) => n + 1)}>
+          Retry
+        </Button>
       </div>
     );
   }
   if (done) {
-    if (done.secured === 0n) return null;
+    if (done.secured === 0n)
+      return (
+        <p className="flex items-center gap-2 rounded-xl border border-success/40 bg-success-soft p-3 text-sm">
+          <Lock className="size-4 shrink-0" />
+          <span>Your balance is private.</span>
+        </p>
+      );
     return (
       <p className="flex items-center gap-2 rounded-xl border border-success/40 bg-success-soft p-3 text-sm">
         <Lock className="size-4 shrink-0" />

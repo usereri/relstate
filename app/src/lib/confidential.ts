@@ -31,6 +31,7 @@ import type { AeKey, ElGamalKeypair } from "@solana/zk-sdk/bundler";
 import type { ConfidentialTransferBalance } from "@solana-program/token-2022/confidential";
 import { RPC, RUSDC_MINT } from "./config";
 import { retryOn429 } from "./rpc";
+import { jsonSafe } from "./utils";
 import { backendInfo, postConfidentialAccountSetup, postRentPayment, postSponsoredDetailed, sponsorFeePayer, type Cosigned } from "./sponsor";
 import { CONFIDENTIAL_DERIVATION_MESSAGE, isConfidentialDerivationMessage, type WalletProvider } from "./wallet";
 
@@ -149,7 +150,10 @@ export async function openSession(opts: { wallet: WalletProvider; mint?: string;
     keys,
     payer: kit.createNoopSigner(kit.address(feePayer)),
     setupPayer: kit.createNoopSigner(kit.address(backend.treasury)),
-    authority: owner,
+    // A signer, not a bare address: the token program only accepts the owner's instructions
+    // (configure, deposit, apply, transfer) if the owner is marked as signing. Noop because the
+    // wallet adds its signature afterwards, exactly like the sponsored fee payer.
+    authority: kit.createNoopSigner(owner),
     submit: sponsoredSubmit(opts.wallet, l, postSponsoredDetailed),
     submitSetup: sponsoredSubmit(opts.wallet, l, postConfidentialAccountSetup),
     submitRentPayment: sponsoredSubmit(opts.wallet, l, postRentPayment),
@@ -258,7 +262,7 @@ async function confirm(rpc: Rpc<SolanaRpcApi>, signature: string, lastValidBlock
   for (let poll = 0; ; poll++) {
     const { value } = await rpc.getSignatureStatuses([signature as Parameters<typeof rpc.getSignatureStatuses>[0][0]]).send();
     const status = value[0];
-    if (status?.err) throw new Error(`Transaction ${signature} failed: ${JSON.stringify(status.err)}`);
+    if (status?.err) throw new Error(`Transaction ${signature} failed: ${jsonSafe(status.err)}`);
     if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") return;
     if (poll % EXPIRY_CHECK_EVERY === EXPIRY_CHECK_EVERY - 1) {
       const height = await rpc.getBlockHeight({ commitment: "confirmed" }).send();

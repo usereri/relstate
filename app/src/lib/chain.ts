@@ -5,6 +5,7 @@ import idl from "@target/idl/relstate.json";
 import type { Relstate } from "@target/types/relstate";
 import { GRACE_SECS, IS_LOCAL, MINT, PERIOD_SECS, RPC, TERM_PERIODS } from "./config";
 import { retryingFetch } from "./rpc";
+import { jsonSafe } from "./utils";
 import { API, SPONSORED, postSponsored, sponsorFeePayer } from "./sponsor";
 import { asWalletProvider, localKeypair, localWallet, readOnlyWallet } from "./wallet";
 import type { AdapterWallet, Role, WalletProvider } from "./wallet";
@@ -659,7 +660,7 @@ export function errorMessage(e: unknown): string {
   if (err?.error?.errorMessage) return err.error.errorMessage;
   const sim = err?.simulationResponse;
   if (sim) {
-    const why = JSON.stringify(sim.err);
+    const why = jsonSafe(sim.err);
     if (/AccountNotFound/.test(why)) return "This wallet has no SOL on this network, so it cannot pay fees. Fund it first (see the box at the top).";
     return `The network rejected the transaction: ${why}${sim.logs?.length ? `. Last log: ${sim.logs[sim.logs.length - 1]}` : ""}`;
   }
