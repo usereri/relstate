@@ -20,12 +20,12 @@ const code = (c: string) => (e: unknown) => e instanceof RejectedTransaction && 
 const generous = () => createRateLimiter({ maxPerWalletPerHour: 100, maxGlobalPerHour: 100, maxLamportsPerWalletPerDay: 10n ** 12n, maxLamportsGlobalPerDay: 10n ** 12n });
 
 /** `prepare` (default true) runs the four real preparation transactions first, so the wallet's contexts are registered and a tx5 can be admitted; the send log is cleared afterwards. */
-async function fixture(options: { limiter?: RateLimiter; mode?: "mock" | "live"; prepare?: boolean } = {}) {
+async function fixture(options: { limiter?: RateLimiter; mode?: "mock" | "live"; prepare?: boolean; ipRate?: number } = {}) {
   const c0 = await cast();
   const mint = c0.mint;
   // The route derives the wallet's token account itself, so the cast has to agree with it.
   const c: Cast = { ...c0, walletToken: await associatedTokenAddress(c0.wallet.address, mint), rules: { ...c0.rules, walletToken: await associatedTokenAddress(c0.wallet.address, mint) } };
-  const state = { balance: 10n ** 10n, balanceAfterSim: null as bigint | null, simPre: null as bigint | null, spent: 2_500_000n, simError: null as unknown, failSends: 0, walletAccount: true, sent: [] as string[] };
+  const state = { balance: 10n ** 10n, balanceAfterSim: null as bigint | null, simPre: null as bigint | null, spent: 2_500_000n, simError: null as unknown, failSends: 0, walletAccount: true, accountReads: 0, sendError: "blockhash not found", failWhenTouching: null as Address | null, sent: [] as string[] };
   let simulated = false;
   const rpc = {
     // The range context's rent-exempt minimum, as the cluster reports it.
@@ -46,13 +46,17 @@ async function fixture(options: { limiter?: RateLimiter; mode?: "mock" | "live";
       },
     }),
     getAccountInfo: () => ({
-      send: async () => ({ context: { slot: 1n }, value: state.walletAccount ? { lamports: 1n, data: ["", "base64"], owner: TOKEN22, executable: false, rentEpoch: 0n, space: 0n } : null }),
+      send: async () => (state.accountReads++, { context: { slot: 1n }, value: state.walletAccount ? { lamports: 1n, data: ["", "base64"], owner: TOKEN22, executable: false, rentEpoch: 0n, space: 0n } : null }),
     }),
     sendTransaction: (wire: string) => ({
       send: async () => {
         if (state.failSends > 0) {
           state.failSends--;
-          throw new Error("blockhash not found");
+          throw new Error(state.sendError);
+        }
+        if (state.failWhenTouching !== null && inspectTransaction(wire).accounts.some((a) => a.address === state.failWhenTouching)) {
+          state.failWhenTouching = null;
+          throw new Error(state.sendError);
         }
         state.sent.push(wire);
         return "sig";
@@ -69,7 +73,11 @@ async function fixture(options: { limiter?: RateLimiter; mode?: "mock" | "live";
     rentPaymentLimiter: options.limiter ?? generous(),
   });
   const services = { treasury: async () => treasury, sponsor: async () => ({ feePayer: "fp" }) } as unknown as Services;
+  const savedIpRate = env.treasuryRatePerMinute;
+  const mutableEnv = env as { treasuryRatePerMinute: number };
+  if (options.ipRate !== undefined) mutableEnv.treasuryRatePerMinute = options.ipRate;
   const app = createApp(services);
+  mutableEnv.treasuryRatePerMinute = savedIpRate; // createApp read it once
   const post = (wallet: string | null, body: unknown, raw = false) =>
     app.request("/api/treasury/rent-payment", {
       method: "POST",
@@ -84,7 +92,7 @@ async function fixture(options: { limiter?: RateLimiter; mode?: "mock" | "live";
     await prepare();
     state.sent.length = 0;
   }
-  return { c, p: plan(c), state, treasury, post, sponsor, prepare };
+  return { c, p: plan(c), state, treasury, post, sponsor, prepare, app };
 }
 type Fx = Awaited<ReturnType<typeof fixture>>;
 const valid = (f: Fx, price = 0n) => [...(price > 0n ? [f.p.computePrice(price)] : []), ...tx5(f.c)];
@@ -552,3 +560,100 @@ describe("sponsorRentPayment: the preparation transactions and the plan registry
     await assert.rejects(w.sponsor(prep(w)[0]!), code("rate-limited"));
   });
 });
+
+describe("sponsorRentPayment: wallet-signed transactions that create a context", () => {
+  const range = REAL_CONTEXTS.range;
+  /** [transfer, pay_rent, createAccount(range ctx)]: the wallet signs (pay_rent), and a funded context is created. */
+  const signedCreate = (f: Fx, ctx: Parameters<Fx["p"]["createContext"]>[0]) => [f.p.transfer(), f.p.payRent(), f.p.createContext(ctx, { lamports: range.lamports, space: range.space })];
+
+  it("needs an rUSDC account even though the wallet signs", async () => {
+    const f = await fixture({ prepare: false });
+    f.state.walletAccount = false;
+    await assert.rejects(f.sponsor(signedCreate(f, f.c.ctxA)), code("wallet-mismatch"));
+    assert.ok(f.state.accountReads > 0, "getAccountInfo must have been consulted");
+    assert.equal(f.state.sent.length, 0);
+  });
+
+  it("counts toward the preparation cap: the seventh creation is plan-full", async () => {
+    const f = await fixture({ prepare: false });
+    for (let i = 0; i < 6; i++) await f.sponsor(signedCreate(f, await generateKeyPairSigner()));
+    await assert.rejects(f.sponsor(signedCreate(f, await generateKeyPairSigner())), code("plan-full"));
+    assert.equal(f.state.sent.length, 6);
+  });
+});
+
+describe("sponsorRentPayment: a send whose outcome is unknown", () => {
+  it("is reported as send-outcome-unknown, keeps the replay entry, the booked spend and the plan", async () => {
+    const limiter = generous();
+    const f = await fixture({ limiter, prepare: false });
+    const txs = prepTxs(f.c);
+    const first = await build(f.c, txs[0]!);
+    f.state.failSends = 1;
+    f.state.sendError = "connection reset";
+    await assert.rejects(f.treasury.sponsorRentPayment({ txBase64: first, wallet: f.c.wallet.address }), code("send-outcome-unknown"));
+    // The identical message is not retried blindly: it may have landed.
+    await assert.rejects(f.treasury.sponsorRentPayment({ txBase64: first, wallet: f.c.wallet.address }), code("replay"));
+    const usage = limiter.snapshot(f.c.wallet.address);
+    assert.equal(usage.walletLastHour, 1);
+    assert.ok(usage.walletLamportsLastDay > 0n, "the spend stays booked");
+    // The plan was not undone: A is still the wallet's, so a verify of it is admitted, and A cannot be re-created.
+    await f.sponsor([f.p.computeLimit(222_222), f.p.verify(f.c.ctxA, REAL_CONTEXTS.equality.verifyTag)]);
+    await assert.rejects(f.sponsor(prepTxs(f.c, 5)[0]!), code("context-reused"));
+  });
+
+  it("is undone, budget and plan, when the error proves the transaction did not land", async () => {
+    const limiter = generous();
+    const f = await fixture({ limiter, prepare: false });
+    const first = await build(f.c, prepTxs(f.c)[0]!);
+    for (const message of ["blockhash not found", "Blockhash expired", "block height exceeded"]) {
+      f.state.failSends = 1;
+      f.state.sendError = message;
+      await assert.rejects(f.treasury.sponsorRentPayment({ txBase64: first, wallet: f.c.wallet.address }), (e: unknown) => e instanceof Error && !(e instanceof RejectedTransaction));
+      assert.equal(limiter.snapshot(f.c.wallet.address).walletLastHour, 0);
+    }
+    assert.equal((await f.treasury.sponsorRentPayment({ txBase64: first, wallet: f.c.wallet.address })).broadcast, true);
+  });
+
+  it("keeps a concurrent request's context when the other one's send fails with a known error", async () => {
+    const f = await fixture({ prepare: false });
+    const [txA, txB] = prepTxs(f.c);
+    f.state.failWhenTouching = f.c.ctxA.address;
+    const [a, b] = await Promise.allSettled([f.sponsor(txA!), f.sponsor(txB!)]);
+    assert.equal(a.status, "rejected");
+    assert.equal(b.status, "fulfilled");
+    // B's context survived A's rollback; A's did not outlive its failed send.
+    await f.sponsor([f.p.computeLimit(231_000), f.p.verify(f.c.ctxB, REAL_CONTEXTS.validity.verifyTag)]);
+    await assert.rejects(f.sponsor([f.p.computeLimit(231_001), f.p.verify(f.c.ctxA, REAL_CONTEXTS.equality.verifyTag)]), code("foreign-context"));
+    assert.equal((await f.sponsor(prepTxs(f.c, 8)[0]!)).broadcast, true);
+  });
+});
+
+describe("treasury routes: per-IP limiter", () => {
+  const status = async (p: Response | Promise<Response>) => ({ status: (await p).status });
+
+  it("answers 429 rate-limited past the per-minute cap on /api/treasury/rent-payment", async () => {
+    const f = await fixture({ ipRate: 2 });
+    const hit = () => f.post(f.c.wallet.address, {});
+    assert.equal((await hit()).status, 400);
+    assert.equal((await hit()).status, 400);
+    const third = await hit();
+    assert.equal(third.status, 429);
+    const body = (await third.json()) as { code: string };
+    assert.equal(body.code, "rate-limited");
+  });
+
+  it("shares one budget per IP across /api/sponsor and the /api/treasury/* routes", async () => {
+    const f = await fixture({ ipRate: 2 });
+    const json = { "content-type": "application/json" };
+    const rentPayment = () => f.post(f.c.wallet.address, {});
+    const sponsor = () => f.app.request("/api/sponsor", { method: "POST", headers: json, body: "{}" });
+    const wrap = () => f.app.request("/api/treasury/wrap", { method: "POST", headers: json, body: "{}" });
+    const setup = () => f.app.request("/api/treasury/confidential-account", { method: "POST", headers: json, body: "{}" });
+    const dust = () => f.app.request("/api/treasury/rent-dust", { method: "POST", headers: json, body: "{}" });
+    const credit = () => f.app.request("/api/treasury/credit-reserve", { method: "POST", headers: json, body: "{}" });
+    await rentPayment();
+    await sponsor();
+    for (const route of [rentPayment, sponsor, wrap, setup, dust, credit]) assert.deepEqual(await status(route()), { status: 429 });
+  });
+});
+

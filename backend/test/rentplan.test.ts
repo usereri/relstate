@@ -2,7 +2,7 @@ import "./noenv.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Address } from "@solana/kit";
-import { MAX_PREPARATION_TXS, PLAN_TTL_MS, contextUse, createRentPlanRegistry, type ContextUse } from "../src/rentplan.ts";
+import { MAX_LIVE_PLANS, MAX_PREPARATION_TXS, PLAN_TTL_MS, contextUse, createRentPlanRegistry, type ContextUse } from "../src/rentplan.ts";
 import { RejectedTransaction, inspectTransaction } from "../src/txinspect.ts";
 import { build, cast, plan } from "./rentfixtures.ts";
 
@@ -110,5 +110,98 @@ describe("rent plan registry", () => {
     assert.equal(r.size(), 2);
     assert.throws(() => r.admit("w", verify(A), false), code("plan-full"));
     r.admit("x", verify(B), false);
+  });
+});
+
+describe("rent plan registry: rollback and bounds", () => {
+  const X = "ctxX" as Address;
+  const Y = "ctxY" as Address;
+
+  it("a context created and closed in one transaction nets out, and undo leaves the address free", () => {
+    const r = createRentPlanRegistry();
+    const undo = r.admit("w", { created: [A], touched: [A], closed: [A] }, false);
+    assert.equal(r.ownerOf(A), undefined);
+    undo();
+    assert.equal(r.ownerOf(A), undefined);
+    assert.equal(r.size(), 0, "no empty plan stranded");
+    r.admit("x", create(A), false);
+    assert.equal(r.ownerOf(A), "x");
+  });
+
+  it("leaves no owner entry behind after the TTL sweep", () => {
+    let t = 0;
+    const r = createRentPlanRegistry(() => t);
+    r.admit("w", create(A, B), false);
+    r.admit("v", create(C), false);
+    t += PLAN_TTL_MS + 1;
+    assert.throws(() => r.admit("z", use({}), false), code("no-wallet-relation")); // any admission sweeps
+    for (const c of [A, B, C]) assert.equal(r.ownerOf(c), undefined);
+    assert.equal(r.size(), 0);
+  });
+
+  it("undoing one request leaves a concurrent request's context and the plan alive", () => {
+    const r = createRentPlanRegistry();
+    const undoA = r.admit("w", create(X), false);
+    r.admit("w", create(Y), false);
+    undoA();
+    assert.equal(r.ownerOf(X), undefined);
+    assert.equal(r.ownerOf(Y), "w");
+    assert.deepEqual(r.contextsOf("w"), [Y]);
+    assert.equal(r.size(), 1);
+  });
+
+  it("a second undo is a no-op and resurrects nothing", () => {
+    const r = createRentPlanRegistry();
+    const undoA = r.admit("w", create(X), false);
+    const undoB = r.admit("w", create(Y), false);
+    undoA();
+    undoB();
+    undoA();
+    assert.equal(r.size(), 0);
+    assert.equal(r.ownerOf(X), undefined);
+    assert.equal(r.ownerOf(Y), undefined);
+    // ...and it does not undo someone else's later use of the same address.
+    r.admit("x", create(X), false);
+    undoA();
+    assert.equal(r.ownerOf(X), "x");
+  });
+
+  it("undoing the final transaction re-registers consumed contexts only if nobody claimed the address", () => {
+    const r = createRentPlanRegistry();
+    r.admit("w", create(X, Y), false);
+    const undoFinal = r.admit("w", close(X, Y), true);
+    assert.equal(r.size(), 0);
+    assert.equal(r.ownerOf(X), undefined);
+    undoFinal();
+    assert.equal(r.ownerOf(X), "w");
+    assert.equal(r.ownerOf(Y), "w");
+
+    const q = createRentPlanRegistry();
+    q.admit("w", create(X, Y), false);
+    const undo = q.admit("w", close(X, Y), true);
+    q.admit("x", create(X), false); // freed by the close, claimed by another wallet
+    undo();
+    assert.equal(q.ownerOf(X), "x", "the other wallet keeps it");
+    assert.equal(q.ownerOf(Y), "w");
+    assert.deepEqual(q.contextsOf("w"), [Y]);
+  });
+
+  it("refuses a new plan's create at MAX_LIVE_PLANS but not existing wallets", () => {
+    const r = createRentPlanRegistry();
+    for (let i = 0; i < MAX_LIVE_PLANS; i++) r.admit(`w${i}`, create(`c${i}` as Address), false);
+    assert.equal(r.size(), MAX_LIVE_PLANS);
+    assert.throws(() => r.admit("new", create("cNew" as Address), false), code("registry-full"));
+    assert.equal(r.size(), MAX_LIVE_PLANS);
+    r.admit("w0", create("cMore" as Address), false);
+    r.admit("w1", verify("c1" as Address), false);
+    r.admit("w2", close("c2" as Address), true); // finishing a plan is never blocked
+  });
+
+  it("counts a wallet-signed transaction that creates a context as a preparation", () => {
+    const r = createRentPlanRegistry();
+    for (let i = 0; i < MAX_PREPARATION_TXS; i++) r.admit("w", create(`s${i}` as Address), true);
+    assert.throws(() => r.admit("w", create("s-last" as Address), true), code("plan-full"));
+    // A signed transaction that creates nothing is the final one, not a preparation.
+    r.admit("w", close("s0" as Address), true);
   });
 });
