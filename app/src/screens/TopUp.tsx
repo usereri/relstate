@@ -211,7 +211,7 @@ export function TopUp({ wallet, onCredited }: { wallet: string | null; onCredite
           ) : (
             <Button onClick={start} disabled={!valid || !config || phase.at === "starting"} size="lg">
               {phase.at === "starting" ? <Loader2 className="animate-spin" /> : <CreditCard />}
-              {phase.at === "starting" ? "Opening checkout…" : config?.simulated ? "Continue (simulated)" : "Pay with card or BLIK"}
+              {phase.at === "starting" ? "Opening checkout…" : config?.simulated ? "Continue (simulated)" : "Pay with card"}
             </Button>
           )}
         </CardContent>

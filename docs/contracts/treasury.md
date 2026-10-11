@@ -58,6 +58,36 @@ So that one flow uses the **treasury** key through `POST /api/treasury/confident
 
 The fee-payer rule in `/api/sponsor` therefore stays absolute, with no exception carved into it.
 
+## Binding rent-payment transactions to the session wallet
+
+`POST /api/treasury/rent-payment` (`sponsorRentPayment`) co-signs the 5 transactions of a confidential rent payment with the treasury key. The measured plan (devnet, 2026-10-11):
+
+| tx | contents | signers besides the treasury |
+|----|----------|------------------------------|
+| 1 | createAccount(ctx A) + verify into A | ctx A keypair |
+| 2 | createAccount(ctx B) + verify into B | ctx B keypair |
+| 3 | createAccount(ctx C, range-proof context) | ctx C keypair |
+| 4 | verify range proof into C | none |
+| 5 | confidential transfer + `pay_rent` + 3 closes | **the tenant** |
+
+Only tx 5 is signed by the tenant, so "the session wallet signs every transaction" cannot hold. The binding is a per-wallet **plan registry** (`backend/src/rentplan.ts`) on top of the shape filter (`rentshape.ts`), which is unchanged:
+
+- Session auth identifies the wallet. A transaction the wallet signs is the final one (the shape filter already forces the wallet to be the transfer's authority and `pay_rent`'s tenant).
+- A transaction the wallet does **not** sign is a *preparation* transaction and is accepted only if: the wallet already has an rUSDC token account (setup that costs real work, so wallets are not free to rotate); it creates or verifies a proof context (a tx with no context is refused, `no-wallet-relation`); every context it verifies or closes is created in that same transaction or is already registered to **this** wallet by an earlier accepted transaction (`foreign-context`); it does not re-create a context that is registered to anyone (`context-reused`).
+- Created contexts are registered to the wallet. Closes in the final transaction consume them, so a context is spent once; replaying a preparation transaction after completion references an unregistered context and is refused.
+- A wallet has one live plan: at most 6 preparation transactions (`plan-full`; any transaction that creates a context counts, whoever signs it, and the rUSDC-account requirement applies to those too) and a 5 minute lifetime, after which its contexts are forgotten. At most 2000 plans are live at once (`registry-full`).
+- The registry has one store (wallet -> plan); ownership is derived from it. Rollback undoes only the delta of the failed request (idempotent), never a snapshot, so concurrent requests cannot disturb each other.
+- A send that errors without proving the transaction did not land (anything but blockhash not found/expired) is an unknown outcome (`send-outcome-unknown`): the spend stays booked, the replay entry and the plan are kept, and the TTL cleans up. Only definite failures (simulation, blockhash) undo.
+- `/api/sponsor` and every `/api/treasury/*` route carry a per-IP limiter (`TREASURY_RATE_PER_MINUTE`, default 60), so failing requests are not free.
+- Registry changes are applied after the shape, signature, limiter and replay checks, and undone if the simulation or send fails, so a retry is legitimate.
+- Unchanged: shape filter (treasury only as createAccount funder, proof-context authority, close destination), size and lamport caps per account, simulated spend cap, replay guard, per-wallet and global limiters.
+
+Residual (stated in `rentshape.ts`): tx 3 creates a funded, unverified range context. A client can have the treasury fund one and then claim it by verifying with a different authority in their own transaction. The wallet binding does not close this; it bounds it. Measured ceiling with the real limiter: **25,908,000 lamports (0.0259 SOL) per wallet per day** (12 transactions) and **97,155,000 (0.097 SOL) per day for the whole backend** (45). The 6-per-plan cap bounds one plan, not a day, because a completed plan is deleted. The treasury cannot recover a claimed context. The rUSDC-account requirement filters empty wallets, not determined ones (the account is nearly free on devnet); the real fix is a treasury-owned pool of pre-created contexts.
+
+### Restart orphans
+
+The registry is in memory, so a restart (or the 5 minute TTL) between tx 1 and tx 5 forgets the contexts: tx 5's closes are then refused (`foreign-context`) and up to about 6.2M lamports (1,468,120 + 2,606,040 + 2,159,000) stay in context accounts. Contexts that were verified have the treasury as authority and can be closed with the treasury key: `node scripts/reclaim-contexts.ts` lists them (dry run), `--execute` closes accounts older than 10 minutes with the rent returned to the treasury, and `--accounts A,B` names candidates on RPC tiers without `getProgramAccounts`. Never run automatically. A context created but never verified has no authority yet and cannot be closed by anyone.
+
 ## Auditing a rent payment
 
 `pay_rent` credits `lease.rent_amount` whatever was actually sent, because it cannot see a hidden amount (`docs/privacy.md`). `verifyRentPayment(rpc, signature, { relstateProgram, expectedAmount, auditorSecret })` is the after-the-fact check the auditor key exists for: it pairs the confidential `Transfer` directly before the `pay_rent` instruction — the program's own layout rule — decrypts the auditor ciphertext, and compares. `auditTransaction` returns every transfer in a transaction with its decrypted amount.

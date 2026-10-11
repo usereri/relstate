@@ -95,6 +95,8 @@ export const env = {
   trustProxyIpHeader: str("FLY_APP_NAME") !== "" || str("TRUST_PROXY_IP_HEADER") === "1",
   /** Requests per minute per client IP to /api/auth/challenge and /api/auth/verify (each). */
   authRatePerMinute: num("AUTH_RATE_PER_MINUTE", 20),
+  /** Per IP, across the treasury-key routes: failing requests would otherwise cost nothing. */
+  treasuryRatePerMinute: num("TREASURY_RATE_PER_MINUTE", 60),
   sessionSecret: str("SESSION_SECRET"),
   sessionTtlSeconds: num("SESSION_TTL_SECONDS", 3600),
   adminToken: str("ADMIN_TOKEN"),
@@ -251,9 +253,11 @@ export function weakSecret(v: string): boolean {
   return v.length < 32 || new Set(v).size < 10;
 }
 
-/** URL with the Helius key removed, safe for logs and /health. */
+/** URL with the RPC key removed (Helius `?api-key=`, Alchemy `/v2/<key>`), safe for logs and /health. */
 export function redactedRpcUrl(url = env.rpcUrl): string {
-  return url.replace(/([?&]api-key=)[^&]+/i, "$1<redacted>");
+  return url
+    .replace(/([?&]api-key=)[^&]+/i, "$1<redacted>")
+    .replace(/(\/v2\/)[^/?#]+/i, "$1<redacted>");
 }
 
 /**

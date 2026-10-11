@@ -194,7 +194,6 @@ export type StripeOnramp = Provider & {
 
 export function createStripeOnramp(config: StripeConfig, deps: { fetch?: Fetch; log?: (...args: unknown[]) => void } = {}): StripeOnramp {
   const doFetch = deps.fetch ?? ((input, init) => retryingFetch(input as string, init as RequestInit));
-  const log = deps.log ?? (() => {});
 
   async function post(path: string, form: Record<string, string | number | undefined>, idempotencyKey: string): Promise<Record<string, unknown>> {
     const response = await doFetch(`${config.apiBase}${path}`, {

@@ -8,6 +8,7 @@
 //
 // Deliberately free of React so it can be tested without a DOM, and free of
 // web3.js so the top-up screen does not pull in the chain stack.
+import { clearSession, obtainSession } from "@/auth/session";
 import { API } from "@/lib/sponsor";
 
 export type OnrampConfig = {
@@ -91,43 +92,19 @@ async function fail(res: Response, what: string): Promise<never> {
 /**
  * Session token for the backend's authenticated routes.
  *
- * `POST /api/auth/mock` exists only while `AUTH_MODE=mock` and hands a real
- * HMAC session to any wallet that asks — fine locally, refused outright in live
- * mode. Workstream B replaces this with the embedded-wallet login, which issues
- * the same token shape, so only this function changes.
- *
- * Cached per wallet for the process. A token that has expired surfaces as a 401,
- * and `withSession` retries once with a fresh one rather than making the user
- * reload the page.
+ * The token comes from the wallet-signature login in `auth/session.ts` (which
+ * falls back to `POST /api/auth/mock` when the backend runs in mock auth mode).
+ * That layer caches per wallet, persists to localStorage, and renews on 401, so
+ * these flows get the same session the sponsored transactions use.
  */
-const sessions = new Map<string, Promise<string>>();
-
 export function sessionToken(wallet: string, { refresh = false } = {}): Promise<string> {
   if (!API) return Promise.reject(noBackend());
-  if (refresh) sessions.delete(wallet);
-  let pending = sessions.get(wallet);
-  if (pending === undefined) {
-    pending = (async () => {
-      const res = await fetch(`${API}/api/auth/mock`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ wallet }),
-      });
-      if (!res.ok) return fail(res, "sign-in");
-      const { token } = (await res.json()) as { token?: string };
-      if (!token) throw new Error("the backend issued no session token");
-      return token;
-    })().catch((e) => {
-      sessions.delete(wallet);
-      throw e;
-    });
-    sessions.set(wallet, pending);
-  }
-  return pending;
+  if (refresh) clearSession(wallet);
+  return obtainSession(wallet).then((s) => s.token);
 }
 
 /** Clears the cached session, e.g. on sign-out. */
-export const forgetSession = (wallet?: string) => (wallet === undefined ? sessions.clear() : sessions.delete(wallet));
+export const forgetSession = clearSession;
 
 export type Req = { path: string; method?: "GET" | "POST"; body?: unknown; what: string };
 
