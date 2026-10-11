@@ -69,7 +69,7 @@ export function useMe(): chain.Me | null {
   const me = useSigner();
   // The one place that knows which wallet is live, so the one place that can authenticate it to
   // the sponsor. Covers all three kinds.
-  useSponsorSession(me?.key.toBase58() ?? null);
+  useSponsorSession(me?.key.toBase58() ?? null, me?.wallet.signMessage);
   return me;
 }
 

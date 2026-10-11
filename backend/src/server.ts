@@ -3,6 +3,7 @@
 // adds the webhook routes on top of this.
 import { isAddress, type Address, type Signature } from "@solana/kit";
 import { Hono } from "hono";
+import { getConnInfo } from "@hono/node-server/conninfo";
 import { cors } from "hono/cors";
 import { AuthError, assertAdmin, createSessionToken, sessionFromAuthorizationHeader } from "./auth.ts";
 import { verifyRentPayment } from "./confidential.ts";
@@ -17,6 +18,7 @@ import { OnrampError, WebhookError, formatRate, mockCheckoutPage } from "./provi
 import { StripeApiError } from "./providers/stripe.ts";
 import { ServiceUnavailable, createServices, type Services } from "./services.ts";
 import { InvariantViolation, reportForLog, type InvariantReport } from "./treasury.ts";
+import { clientIpOf, createIpLimiter, createWalletAuth, RateLimited, type WalletAuth } from "./wallet-auth.ts";
 import { RejectedTransaction } from "./txinspect.ts";
 
 const asInvariantView = (report: InvariantReport): TreasuryInvariantView => reportForLog(report);
@@ -25,6 +27,7 @@ const asInvariantView = (report: InvariantReport): TreasuryInvariantView => repo
 function problem(error: unknown): { status: 400 | 401 | 403 | 404 | 409 | 429 | 500 | 502 | 503; body: Record<string, unknown> } {
   if (error instanceof RejectedTransaction) return { status: 400, body: { error: error.message, code: error.code } };
   if (error instanceof AuthError) return { status: 401, body: { error: error.message, code: "unauthorized" } };
+  if (error instanceof RateLimited) return { status: 429, body: { error: error.message, code: "rate-limited", scope: "ip" } };
   if (error instanceof LimitError) return { status: 429, body: { error: error.message, code: "rate-limited", scope: error.scope } };
   // A rejected webhook is the caller's problem, not ours: 400 so a genuine
   // provider retry of a *valid* event is still possible, and nothing about the
@@ -101,7 +104,7 @@ export function safeReturnBase(requested: string | undefined, appUrl = env.appUr
   }
 }
 
-export function createApp(services: Services = createServices()) {
+export function createApp(services: Services = createServices(), walletAuth: WalletAuth | undefined = env.authMode === "wallet" ? createWalletAuth() : undefined) {
   const app = new Hono();
   app.use("*", cors({ origin: env.corsOrigin, allowHeaders: ["content-type", "authorization"], allowMethods: ["GET", "POST", "OPTIONS"] }));
 
@@ -145,6 +148,7 @@ export function createApp(services: Services = createServices()) {
    */
   if (env.authMode === "mock") {
     app.post("/api/auth/mock", async (c) => {
+      limit(`m:${clientIp(c)}`);
       const { wallet } = await readJson<{ wallet?: string }>(c);
       if (typeof wallet !== "string" || wallet.trim() === "") {
         throw new RejectedTransaction("wallet is required", "malformed-body");
@@ -158,6 +162,32 @@ export function createApp(services: Services = createServices()) {
       }
       const { token, expiresAt } = createSessionToken(wallet);
       return c.json({ token, wallet, expiresAt });
+    });
+  }
+
+  // Per-IP limiter for the unauthenticated session-issuing routes (wallet login and mock sessions).
+  const limit = createIpLimiter(env.authRatePerMinute);
+  const clientIp = (c: Parameters<typeof getConnInfo>[0]): string => {
+    let socket: string | undefined;
+    try {
+      socket = getConnInfo(c).remote.address;
+    } catch {
+      socket = undefined;
+    }
+    return clientIpOf((n) => c.req.header(n), socket, env.trustProxyIpHeader);
+  };
+
+  /** Wallet-signature login. Only mounted when AUTH_MODE=wallet; see wallet-auth.ts. */
+  if (walletAuth !== undefined) {
+    app.post("/api/auth/challenge", async (c) => {
+      limit(`c:${clientIp(c)}`);
+      const { wallet } = await readJson<{ wallet?: unknown }>(c);
+      return c.json(walletAuth.challenge(wallet));
+    });
+    app.post("/api/auth/verify", async (c) => {
+      limit(`v:${clientIp(c)}`);
+      const { wallet, nonce, signature } = await readJson<{ wallet?: unknown; nonce?: unknown; signature?: unknown }>(c);
+      return c.json(walletAuth.verifyLogin(wallet, nonce, signature));
     });
   }
 

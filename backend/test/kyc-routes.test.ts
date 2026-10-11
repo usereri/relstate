@@ -62,7 +62,7 @@ function fakeChain() {
 const NOW = Date.UTC(2026, 9, 10, 10, 0, 0);
 const CREATED_AT = "2026-10-10 10:00:00.000";
 
-function build(opts: { sumsub?: boolean; maxStarts?: number } = {}) {
+function build(opts: { sumsub?: boolean; maxStarts?: number; mockBudget?: KycConfig["mockBudget"] } = {}) {
   const { chain, calls } = fakeChain();
   const sumsub = {
     appToken: "tok",
@@ -75,7 +75,11 @@ function build(opts: { sumsub?: boolean; maxStarts?: number } = {}) {
     maxEventAgeSeconds: 600,
   };
   const kyc = createKyc({
-    config: kycConfig({ ...(opts.sumsub ? { provider: "sumsub" as const, sumsub } : {}), ...(opts.maxStarts === undefined ? {} : { maxStartsPerWalletPerHour: opts.maxStarts }) }),
+    config: kycConfig({
+      ...(opts.sumsub ? { provider: "sumsub" as const, sumsub } : {}),
+      ...(opts.maxStarts === undefined ? {} : { maxStartsPerWalletPerHour: opts.maxStarts }),
+      ...(opts.mockBudget === undefined ? {} : { mockBudget: opts.mockBudget }),
+    }),
     chain: async () => chain,
     provider: opts.sumsub ? createSumsubKyc(sumsub, { now: () => NOW, fetch: (async () => Response.json({ url: "https://in.sumsub.test/l" })) as unknown as typeof fetch }) : undefined,
     now: () => NOW,
@@ -163,6 +167,18 @@ describe("POST /api/webhooks/kyc (mock)", () => {
     assert.equal(calls.attest.length, 1);
 
     assert.equal((await json(await get(app, "/api/kyc/status", bearer(WALLET)))).verified, true);
+  });
+
+  it("the mock-attest budget is enforced over HTTP: a 429 once the hourly cap is reached", async () => {
+    const { app, calls } = build({ mockBudget: { maxPerHour: 1, maxLamportsPerDay: 1_000_000_000n, lamportsPerAttest: 1n } });
+    const { session: s1 } = await json(await post(app, "/api/kyc/start", {}, bearer(WALLET)));
+    assert.equal((await post(app, "/api/webhooks/kyc", { session: s1, decision: "approve" })).status, 200);
+
+    const { session: s2 } = await json(await post(app, "/api/kyc/start", {}, bearer(WALLET)));
+    const res = await post(app, "/api/webhooks/kyc", { session: s2, decision: "approve" });
+    assert.equal(res.status, 429);
+    assert.equal((await json(res)).code, "attest-budget");
+    assert.equal(calls.attest.length, 1);
   });
 
   it("answers an unknown session with 400 session-unknown and writes nothing", async () => {
@@ -313,6 +329,9 @@ describe("assertEnvConsistent: identity rules", () => {
     return { ...env, ...rest, kyc: { ...env.kyc, ...kyc } } as unknown as Env;
   };
   const sumsubFull = { provider: "sumsub", sumsubAppToken: "t", sumsubSecretKey: "k", sumsubWebhookSecret: "w", sumsubLevelName: "lvl" } as const;
+  // Strong enough to pass weakSecret (>=32 chars, >=10 distinct): this block is about KYC rules,
+  // not secret strength, which has its own tests in boot-matrix.test.ts.
+  const STRONG_SECRET = "9f3a7c1e5b8d2f0a4c6e9b1d3f5a7c9e1b3d5f7a";
   // Live mode refuses the mock verifier, so a valid live config is a Sumsub one.
   const liveBase = {
     mode: "live",
@@ -321,8 +340,8 @@ describe("assertEnvConsistent: identity rules", () => {
     treasuryKeypair: "tr",
     attestationIssuerKeypair: "iss",
     rusdcMint: "mint",
-    sessionSecret: "s",
-    adminToken: "a",
+    sessionSecret: STRONG_SECRET,
+    adminToken: STRONG_SECRET,
     kyc: { ...sumsubFull, subjectSalt: "salt" },
   };
   const message = (e: Env): string => {

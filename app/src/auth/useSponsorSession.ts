@@ -6,11 +6,12 @@
 
 import { useEffect } from "react";
 import { SPONSORED, requestRentDust, setSessionTokenSource } from "@/lib/sponsor";
-import { obtainSession } from "./session";
+import { obtainSession, registerSigner } from "./session";
 
-export function useSponsorSession(address: string | null): void {
+export function useSponsorSession(address: string | null, signMessage?: (message: Uint8Array) => Promise<Uint8Array>): void {
   useEffect(() => {
     if (!SPONSORED || !address) return;
+    registerSigner(address, signMessage);
     // A source rather than a token: `postSponsored` calls it per request, so a session that
     // expired mid-session is renewed instead of failing.
     setSessionTokenSource(async () => (await obtainSession(address)).token);
@@ -18,6 +19,9 @@ export function useSponsorSession(address: string | null): void {
     // acquires SOL. Best-effort and idempotent: a refusal (already granted, already funded, backend
     // without a treasury) changes nothing the user can see.
     void requestRentDust().catch(() => {});
-    return () => setSessionTokenSource(null);
-  }, [address]);
+    return () => {
+      setSessionTokenSource(null);
+      registerSigner(address, undefined);
+    };
+  }, [address, signMessage]);
 }

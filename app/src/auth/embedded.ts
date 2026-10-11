@@ -20,4 +20,4 @@ export { activeBackend, registerPrivySdk } from "./backends";
 export { looksLikeEmail, normalizeEmail, type EmbeddedBackend, type EmbeddedStatus } from "./backend";
 export { mockAddressFor, mockKeypair, mockWalletFor } from "./mock";
 export { privyBackend, type PrivySdk } from "./privy";
-export { clearSession, obtainSession, heldToken, type BackendSession } from "./session";
+export { clearSession, obtainSession, registerSigner, heldToken, type BackendSession } from "./session";

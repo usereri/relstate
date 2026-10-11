@@ -132,6 +132,8 @@ export type KycConfig = {
   subjectSalt: string;
   /** Verification links one wallet may start per hour. */
   maxStartsPerWalletPerHour?: number;
+  /** Global cap on attestations the mock verifier may write (live mode only; the fee payer pays). */
+  mockBudget?: { maxPerHour: number; maxLamportsPerDay: bigint; lamportsPerAttest: bigint };
   /** Absolute base URL of this backend, for the mock page. */
   backendUrl: string;
   /** Absolute base URL of the app, for the hosted page's return. */
@@ -365,6 +367,9 @@ export function createKyc(deps: KycDeps) {
       return keep({ ...base, decision, status: "revoked", reason: event.reason, signatures: signatures.map(String) });
     }
 
+    // The mock verifier lets anyone with a wallet reach this line, and the fee payer pays for the
+    // account, so it gets a global budget like the sponsor's. A real provider is not budgeted here.
+    if (config.provider === "mock" && config.mockBudget !== undefined) bookMockAttest(config.mockBudget);
     const hash = subjectHash(event.applicantId);
     const expiresAt = expiryFrom(at);
     const { signatures, attestation } = await chain.attest({ wallet, level: config.level, expiresAt, subjectHash: hash });
@@ -380,6 +385,20 @@ export function createKyc(deps: KycDeps) {
       attestation,
       signatures: signatures.map(String),
     });
+  }
+
+  const mockAttests: number[] = [];
+  function bookMockAttest(b: NonNullable<KycConfig["mockBudget"]>): void {
+    const t = now();
+    while (mockAttests.length > 0 && t - (mockAttests[0] as number) > 24 * HOUR_MS) mockAttests.shift();
+    const lastHour = mockAttests.filter((x) => t - x <= HOUR_MS).length;
+    if (lastHour >= b.maxPerHour) {
+      throw new KycError(`mock KYC attestation budget exhausted (${b.maxPerHour} per hour); try again later`, "attest-budget", 429);
+    }
+    if (BigInt(mockAttests.length + 1) * b.lamportsPerAttest > b.maxLamportsPerDay) {
+      throw new KycError("mock KYC daily attestation budget exhausted; try again tomorrow", "attest-budget", 429);
+    }
+    mockAttests.push(t);
   }
 
   /** Reads the chain, which is the only source of truth for "verified". */

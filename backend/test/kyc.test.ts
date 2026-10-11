@@ -7,6 +7,7 @@ import type { Address, Signature } from "@solana/kit";
 const { KycError, KycUnavailable, createKyc, mockVerificationPage } = await import("../src/providers/kyc.ts");
 const { NO_ISSUER } = await import("../src/providers/kyc-chain.ts");
 const { WebhookError } = await import("../src/providers/stripe.ts");
+const { kycConfigFromEnv } = await import("../src/providers/index.ts");
 import type { KycConfig } from "../src/providers/kyc.ts";
 import type { AttestationAccount, AttestationChain, KycPolicy } from "../src/providers/kyc-chain.ts";
 
@@ -485,6 +486,95 @@ describe("construction", () => {
   it("accepts the same config when a provider is injected", () => {
     const provider = { start: async () => ({ url: "u" }), webhook: async () => ({}) as never };
     assert.doesNotThrow(() => createKyc({ config: config({ provider: "sumsub" }), chain: async () => fakeChain().chain, provider, log: () => {} }));
+  });
+});
+
+describe("kycConfigFromEnv", () => {
+  it("always includes a mock budget (every backend mode), with conservative defaults", () => {
+    const cfg = kycConfigFromEnv();
+    assert.deepEqual(cfg.mockBudget, { maxPerHour: 30, maxLamportsPerDay: 400_000_000n, lamportsPerAttest: 4_000_000n });
+    // The daily lamport cap is exactly 100 attests' worth, well under what 30/hour would allow over
+    // a full day (720): the daily cap, not the hourly rate, is what actually bounds sustained abuse.
+    assert.equal(cfg.mockBudget!.maxLamportsPerDay / cfg.mockBudget!.lamportsPerAttest, 100n);
+  });
+});
+
+describe("mock attest budget", () => {
+  const HOUR = 3_600_000;
+  type MockBudget = NonNullable<KycConfig["mockBudget"]>;
+
+  function clocked(mockBudget: MockBudget | undefined) {
+    let t = NOW;
+    const fake = fakeChain();
+    const kyc = createKyc({ config: config({ mockBudget }), chain: async () => fake.chain, now: () => t, log: () => {} });
+    return { kyc, fake, advance: (ms: number) => void (t += ms) };
+  }
+  const budgetExhausted = (e: unknown) => e instanceof KycError && e.code === "attest-budget" && e.status === 429;
+
+  it("refuses once the hourly cap is reached, and the attest call (so the on-chain write) never happens", async () => {
+    const { kyc, fake } = clocked({ maxPerHour: 2, maxLamportsPerDay: 1_000_000_000n, lamportsPerAttest: 1n });
+    for (let i = 0; i < 2; i++) {
+      const { session } = await kyc.start({ wallet: WALLET });
+      await hook(kyc, approve(session));
+    }
+    const { session } = await kyc.start({ wallet: WALLET });
+    await assert.rejects(() => hook(kyc, approve(session)), budgetExhausted);
+    assert.equal(fake.calls.attest.length, 2);
+  });
+
+  it("the hourly window slides with the injected clock, like the start-rate limiter", async () => {
+    const { kyc, fake, advance } = clocked({ maxPerHour: 1, maxLamportsPerDay: 1_000_000_000n, lamportsPerAttest: 1n });
+    const s1 = await kyc.start({ wallet: WALLET });
+    await hook(kyc, approve(s1.session));
+    const s2 = await kyc.start({ wallet: WALLET });
+    await assert.rejects(() => hook(kyc, approve(s2.session)), budgetExhausted);
+    advance(HOUR + 1);
+    const s3 = await kyc.start({ wallet: WALLET });
+    await assert.doesNotReject(() => hook(kyc, approve(s3.session)));
+    assert.equal(fake.calls.attest.length, 2);
+  });
+
+  it("refuses once the daily lamport cap would be exceeded, independent of the hourly cap", async () => {
+    const { kyc, fake } = clocked({ maxPerHour: 100, maxLamportsPerDay: 10n, lamportsPerAttest: 6n });
+    const s1 = await kyc.start({ wallet: WALLET });
+    await hook(kyc, approve(s1.session)); // 1st: running total 6 <= 10, ok
+    const s2 = await kyc.start({ wallet: WALLET });
+    await assert.rejects(() => hook(kyc, approve(s2.session)), budgetExhausted); // 2nd would be 12 > 10
+    assert.equal(fake.calls.attest.length, 1);
+  });
+
+  it("is not applied when the provider is sumsub, even if mockBudget is configured", async () => {
+    const fake = fakeChain();
+    const tinyBudget: MockBudget = { maxPerHour: 1, maxLamportsPerDay: 1n, lamportsPerAttest: 1n };
+    const sumsubLike = (ref: string) =>
+      createKyc({
+        config: config({ provider: "sumsub", mockBudget: tinyBudget }),
+        chain: async () => fake.chain,
+        provider: { start: async () => ({ url: "u" }), webhook: async () => ({ kind: "kyc.approved", wallet: WALLET, ref, applicantId: ref }) },
+        now: () => NOW,
+        log: () => {},
+      });
+    await sumsubLike("r1").handleWebhook({}, "{}");
+    await sumsubLike("r2").handleWebhook({}, "{}"); // a budget of 1/hour would have refused this on the mock provider
+    assert.equal(fake.calls.attest.length, 2);
+  });
+
+  it("is not applied when mockBudget is undefined (createKyc's own default; kycConfigFromEnv now always sets one, in every backend mode)", async () => {
+    const { kyc, fake } = clocked(undefined);
+    for (let i = 0; i < 5; i++) {
+      const { session } = await kyc.start({ wallet: WALLET });
+      await assert.doesNotReject(() => hook(kyc, approve(session)));
+    }
+    assert.equal(fake.calls.attest.length, 5);
+  });
+
+  it("a rejection (revoke path) is never budgeted: only approvals book an attest", async () => {
+    const { kyc, fake } = clocked({ maxPerHour: 1, maxLamportsPerDay: 1_000_000_000n, lamportsPerAttest: 1n });
+    const s1 = await kyc.start({ wallet: WALLET });
+    await hook(kyc, decline(s1.session)); // nothing-to-revoke; must not count against the budget
+    const s2 = await kyc.start({ wallet: WALLET });
+    await assert.doesNotReject(() => hook(kyc, approve(s2.session)));
+    assert.equal(fake.calls.attest.length, 1);
   });
 });
 
