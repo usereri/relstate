@@ -81,17 +81,7 @@ describe("createWalletAuth: challenge shape", () => {
 });
 
 describe("createWalletAuth: per-wallet and global eviction (never refuses, degrades the oldest)", () => {
-  // BUG (reported, not fixed here — see the test report): challenge()'s per-wallet eviction snapshots
-  // `mine` from `byWallet` *before* the while loop, then calls `drop(mine[0])` on every iteration.
-  // `drop` updates `byWallet` with a *new* array, but the loop keeps reading the stale `mine`
-  // reference, whose `.length` never changes — so once a wallet's pending count reaches
-  // `maxPendingPerWallet`, the *next* challenge() call for that same wallet spins forever
-  // (confirmed: a tight synchronous loop that pegs one CPU core at 100% and never returns).
-  // This is a full process hang, trivially triggered by any unauthenticated caller requesting a 4th
-  // login challenge for the same wallet (the default maxPendingPerWallet is 3). Skipped so the test
-  // suite does not hang; un-skip once wallet-auth.ts's `challenge()` re-reads `byWallet` on each
-  // iteration instead of reusing the initial snapshot.
-  it.skip("per-wallet cap: the 4th challenge for one wallet evicts the oldest (1st), which then fails to verify; the newer three remain valid", () => {
+  it("per-wallet cap: the 4th challenge for one wallet evicts the oldest (1st), which then fails to verify; the newer three remain valid", () => {
     const { privateKey, wallet } = makeKeypair();
     const auth = wa({ maxPendingPerWallet: 3 });
     const c1 = auth.challenge(wallet);

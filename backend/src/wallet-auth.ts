@@ -71,8 +71,10 @@ export function createWalletAuth(options: WalletAuthOptions = {}) {
     // Full store or too many for one wallet: evict the oldest rather than refuse, so a flood
     // degrades the flooder's own entries first and never locks a new user out.
     while (pending.size >= maxPending) drop(pending.keys().next().value as string);
-    const mine = byWallet.get(wallet) ?? [];
-    while (mine.length >= maxPendingPerWallet) drop(mine[0] as string);
+    // Re-read each pass: drop() installs a new array, so a hoisted reference would never shrink.
+    for (let mine = byWallet.get(wallet); mine !== undefined && mine.length >= maxPendingPerWallet; mine = byWallet.get(wallet)) {
+      drop(mine[0] as string);
+    }
     const issued = now();
     const expiresAt = issued + challengeTtlMs;
     const nonce = randomBytes(24).toString("base64url");
