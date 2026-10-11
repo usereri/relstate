@@ -336,6 +336,7 @@ describe("assertEnvConsistent: identity rules", () => {
   const liveBase = {
     mode: "live",
     authMode: "privy",
+    corsOrigin: "https://app.example",
     feePayerKeypair: "fp",
     treasuryKeypair: "tr",
     attestationIssuerKeypair: "iss",

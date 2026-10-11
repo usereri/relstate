@@ -22,6 +22,7 @@ const liveWallet = {
   authMode: "wallet",
   appUrlExplicit: true,
   appUrl: "https://app.example",
+  corsOrigin: "https://app.example",
   feePayerKeypair: "fp",
   treasuryKeypair: "tr",
   attestationIssuerKeypair: "iss",
@@ -70,6 +71,26 @@ describe("assertEnvConsistent: auth mode", () => {
 
   it("does not require an explicit APP_URL outside live mode, even with AUTH_MODE=wallet", () => {
     assert.equal(message(withEnv({ authMode: "wallet", appUrlExplicit: false })), "");
+  });
+});
+
+describe("assertEnvConsistent: CORS_ORIGIN in live mode", () => {
+  it("BACKEND_MODE=live refuses the default CORS_ORIGIN (*)", () => {
+    const msg = message(withEnv({ ...liveWallet, corsOrigin: "*" }));
+    assert.ok(msg.includes("CORS_ORIGIN must be set to the app's origin when BACKEND_MODE=live"), msg);
+  });
+
+  it("BACKEND_MODE=live refuses an empty CORS_ORIGIN", () => {
+    const msg = message(withEnv({ ...liveWallet, corsOrigin: "" }));
+    assert.ok(msg.includes("CORS_ORIGIN must be set"), msg);
+  });
+
+  it("BACKEND_MODE=live accepts a real origin", () => {
+    assert.equal(message(withEnv({ ...liveWallet, corsOrigin: "https://app.example" })), "");
+  });
+
+  it("CORS_ORIGIN=* is fine outside live mode", () => {
+    assert.equal(message(withEnv({ corsOrigin: "*" })), "");
   });
 });
 
