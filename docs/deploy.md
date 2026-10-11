@@ -6,12 +6,12 @@ devnet. Written for someone doing this once, by hand, in order. Read
 [`docs/env-checklist.md`](env-checklist.md) alongside this — it has every variable this page tells
 you to set, with its exact name and format.
 
-**Update (wallet login):** live mode now works with `AUTH_MODE=wallet` and, on devnet only, `ALLOW_MOCK_KYC=devnet` with `KYC_PROVIDER=mock` — see [env-checklist.md](env-checklist.md). The text below describes the older mock-only limit.
-
-**The headline limit (mock-only deployments):** a hosted backend only runs `BACKEND_MODE=mock` today (the app's only
-sign-in path is the mock one, and `live` mode refuses it). See "What works today" in the checklist
-before you promise a fully live demo. This runbook still gets you real on-chain sponsorship and
-minting in that mode — see step 3.4.
+**Live mode:** a hosted backend can run `BACKEND_MODE=live` with `AUTH_MODE=wallet` (wallet-signature
+login; set `APP_URL`) and, on devnet only, `KYC_PROVIDER=mock` with `ALLOW_MOCK_KYC=devnet` — see
+[env-checklist.md](env-checklist.md). `BACKEND_MODE=mock` with `AUTH_MODE=mock` still works for a
+no-keys demo, but **never share `SESSION_SECRET` between a mock and a live deployment**. The step
+that follows (3.4) and `fly.toml` currently ship `BACKEND_MODE=mock`; switch them to live only after
+the live variables in the checklist are set.
 
 ## 0. Prerequisites and accounts
 

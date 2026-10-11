@@ -40,9 +40,9 @@ on-chain Attestation; it only skips document verification. Anything else refuses
 | `BACKEND_MODE` | Fly env | public | `mock` or `live` | `live` |
 | `AUTH_MODE` | Fly env | public | optional (default `mock`; `live` mode refuses `mock`; use `wallet` for real login) | `wallet` |
 | `WALLET_SESSION_TTL_SECONDS` / `AUTH_CHALLENGE_TTL_SECONDS` / `AUTH_RATE_PER_MINUTE` | Fly env | public | optional, `AUTH_MODE=wallet` only (defaults `43200` / `300` / `20` per IP per route) | `43200` |
-| `SESSION_SECRET` | Fly secret | **secret** | required when `BACKEND_MODE=live`; a random per-process one is used in mock mode | 32+ random bytes, base64 |
+| `SESSION_SECRET` | Fly secret | **secret** | required when `BACKEND_MODE=live`; a random per-process one is used in mock mode | 32+ random bytes, base64 (live refuses <32 chars or trivial values). **Never share it between a mock and a live deployment** (tokens are also domain-separated by `AUTH_MODE`, as defence in depth) |
 | `SESSION_TTL_SECONDS` | Fly env | public | optional (default `3600`) | `3600` |
-| `ADMIN_TOKEN` | Fly secret | **secret** | required when `BACKEND_MODE=live`; guards `/api/treasury/wrap` and `/credit-reserve` | 32+ random bytes |
+| `ADMIN_TOKEN` | Fly secret | **secret** | required when `BACKEND_MODE=live`; guards `/api/treasury/wrap` and `/credit-reserve`; live refuses <32 chars or trivial values | 32+ random bytes |
 | `CORS_ORIGIN` | Fly env | public | **set to `https://<your domain>`** (never leave as `*` once live) | `https://relstate.example` |
 | `RELSTATE_IDL` | Fly env (baked into `backend/Dockerfile`) | public | set by the image, not by you | `/app/app/idl/relstate.json` |
 | `APP_URL` | Fly env | public | **set to `https://<your domain>/app/`** — Stripe's return redirect and the mock on-ramp page both use it | `https://relstate.example/app/` |
@@ -86,6 +86,8 @@ All optional with working defaults (`backend/src/env.ts`); set only to tune them
 | Variable | Where | Public? | Required | Example |
 |---|---|---|---|---|
 | `KYC_PROVIDER` | Fly env | public | optional (default `mock`; `live` backend mode refuses `mock` unless `ALLOW_MOCK_KYC=devnet`) | `mock` |
+| `KYC_MOCK_MAX_ATTESTS_PER_HOUR` / `KYC_MOCK_MAX_LAMPORTS_PER_DAY` / `KYC_MOCK_LAMPORTS_PER_ATTEST` | Fly env | public | optional; global fee-payer budget for mock-KYC attestations in live mode (defaults `20` / `20000000` / `4000000`) | `20` |
+| `TRUST_PROXY_IP_HEADER` | Fly env | public | set `1` only if behind a proxy that sets `fly-client-ip`; automatic on Fly (`FLY_APP_NAME`) | `1` |
 | `ALLOW_MOCK_KYC` | Fly env | public | only to run mock KYC in live mode; must be exactly `devnet`, requires `SOLANA_CLUSTER=devnet` and a devnet RPC (genesis-hash checked at boot) | `devnet` |
 | `KYC_LEVEL` | Fly env | public | optional (default `1`) | `1` |
 | `KYC_VALIDITY_DAYS` | Fly env | public | optional (default `365`) | `365` |

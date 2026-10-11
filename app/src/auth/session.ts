@@ -105,18 +105,44 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 const toBase64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
 
 /** Wallet-signature login: sign the backend's one-time challenge, trade the signature for a session. */
+const CHALLENGE_STATEMENT = "Sign in to relstate. This proves you control the wallet and costs nothing.";
+const MAX_CHALLENGE_LIFETIME_MS = 10 * 60_000;
+const MAX_CLOCK_SKEW_MS = 5 * 60_000;
+
+/**
+ * Signs nothing but the exact login template for THIS wallet and THIS site: a compromised or
+ * hostile API cannot get a signature over arbitrary text (a transfer memo, a terms-of-service
+ * clause...) out of the user. Throws on any extra, missing or reordered line.
+ */
+export function assertChallenge(message: string, wallet: string, nonce: string, nowMs = Date.now()): void {
+  const bad = () => new Error("The login challenge does not match the expected format for this wallet and site, so it was not signed.");
+  const lines = message.split("\n");
+  if (lines.length !== 9) throw bad();
+  const [header, addr, blank1, statement, blank2, uri, nonceLine, issuedLine, expiryLine] = lines as [string, string, string, string, string, string, string, string, string];
+  if (header !== `${window.location.host} wants you to sign in with your Solana account:`) throw bad();
+  if (addr !== wallet || blank1 !== "" || statement !== CHALLENGE_STATEMENT || blank2 !== "") throw bad();
+  if (uri !== `URI: ${window.location.origin}`) throw bad();
+  if (!/^Nonce: [A-Za-z0-9_-]{32}$/.test(nonceLine) || nonceLine !== `Nonce: ${nonce}`) throw bad();
+  const iso = /^(Issued At|Expiration Time): (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)$/;
+  const issuedM = iso.exec(issuedLine);
+  const expiryM = iso.exec(expiryLine);
+  if (!issuedM || issuedM[1] !== "Issued At" || !expiryM || expiryM[1] !== "Expiration Time") throw bad();
+  const issued = Date.parse(issuedM[2] as string);
+  const expiry = Date.parse(expiryM[2] as string);
+  if (!Number.isFinite(issued) || !Number.isFinite(expiry)) throw bad();
+  if (Math.abs(issued - nowMs) > MAX_CLOCK_SKEW_MS || expiry <= nowMs || expiry - issued > MAX_CHALLENGE_LIFETIME_MS) throw bad();
+}
+
 async function requestWalletSession(wallet: string): Promise<BackendSession> {
   const sign = signers.get(wallet);
   if (!sign) throw new Error("This wallet cannot sign messages, so it cannot log in to the backend.");
-  const { message } = await postJson<{ message?: string }>("/api/auth/challenge", { wallet });
-  if (typeof message !== "string") throw new Error("The backend sent no login challenge.");
-  // Phishing guard: sign only a challenge that names this wallet and the origin we are running on.
-  const lines = message.split("\n");
-  if (lines[1] !== wallet || !lines.includes(`URI: ${window.location.origin}`))
-    throw new Error("The login challenge does not match this wallet and site, so it was not signed.");
+  const { message, nonce } = await postJson<{ message?: string; nonce?: string }>("/api/auth/challenge", { wallet });
+  if (typeof message !== "string" || typeof nonce !== "string") throw new Error("The backend sent no login challenge.");
+  assertChallenge(message, wallet, nonce);
   const signature = await sign(new TextEncoder().encode(message));
   const body = await postJson<{ token?: string; wallet?: string; expiresAt?: number }>("/api/auth/verify", {
     wallet,
+    nonce,
     signature: toBase64(signature),
   });
   if (!body.token || typeof body.expiresAt !== "number") throw new Error("The backend did not return a session token.");

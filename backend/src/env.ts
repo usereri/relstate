@@ -91,6 +91,8 @@ export const env = {
   walletSessionTtlSeconds: num("WALLET_SESSION_TTL_SECONDS", 43_200),
   /** How long a login challenge stays valid. */
   challengeTtlSeconds: num("AUTH_CHALLENGE_TTL_SECONDS", 300),
+  /** Trust the `fly-client-ip` header: only true on Fly (FLY_APP_NAME is set by the platform) or when explicitly asked. */
+  trustProxyIpHeader: str("FLY_APP_NAME") !== "" || str("TRUST_PROXY_IP_HEADER") === "1",
   /** Requests per minute per client IP to /api/auth/challenge and /api/auth/verify (each). */
   authRatePerMinute: num("AUTH_RATE_PER_MINUTE", 20),
   sessionSecret: str("SESSION_SECRET"),
@@ -185,6 +187,11 @@ export const env = {
      * value `devnet` counts, and boot additionally checks the RPC's genesis hash (see boot.ts).
      */
     allowMock: str("ALLOW_MOCK_KYC"),
+    /** Global budget for the mock verifier's attestations (each one is paid for by the fee payer). */
+    mockMaxAttestsPerHour: num("KYC_MOCK_MAX_ATTESTS_PER_HOUR", 20),
+    mockMaxLamportsPerDay: bigintOf("KYC_MOCK_MAX_LAMPORTS_PER_DAY", 20_000_000n),
+    /** Booked per attest: ~0.0035 SOL rent for a new account plus fees, rounded up. */
+    mockLamportsPerAttest: bigintOf("KYC_MOCK_LAMPORTS_PER_ATTEST", 4_000_000n),
     /** Verification links one wallet may start per hour; each one costs a vendor API call in sumsub mode. */
     maxStartsPerWalletPerHour: num("KYC_MAX_STARTS_PER_WALLET_PER_HOUR", 10),
   },
@@ -239,6 +246,11 @@ export const env = {
 
 export type Env = typeof env;
 
+/** Under 32 characters, or so repetitive it carries little entropy ("aaaa…", "1234…"). */
+export function weakSecret(v: string): boolean {
+  return v.length < 32 || new Set(v).size < 10;
+}
+
 /** URL with the Helius key removed, safe for logs and /health. */
 export function redactedRpcUrl(url = env.rpcUrl): string {
   return url.replace(/([?&]api-key=)[^&]+/i, "$1<redacted>");
@@ -261,6 +273,9 @@ export function assertEnvConsistent(e: Env = env): void {
     if (e.kyc.subjectSalt === "") problems.push("KYC_SUBJECT_SALT is required when BACKEND_MODE=live (any high-entropy string; keep it secret and stable)");
     if (e.rusdcMint === "") problems.push("RUSDC_MINT is required when BACKEND_MODE=live (run scripts/make-rusdc.ts)");
     if (e.authMode === "mock") problems.push("AUTH_MODE=mock is refused when BACKEND_MODE=live");
+    if (e.authMode === "hmac") problems.push("AUTH_MODE=hmac has no login route and is refused when BACKEND_MODE=live (use AUTH_MODE=wallet)");
+    if (weakSecret(e.sessionSecret) && e.sessionSecret !== "") problems.push("SESSION_SECRET is too weak: use at least 32 characters with real entropy (e.g. openssl rand -base64 32)");
+    if (weakSecret(e.adminToken) && e.adminToken !== "") problems.push("ADMIN_TOKEN is too weak: use at least 32 characters with real entropy (e.g. openssl rand -base64 32)");
     // Live mode forces a real issuer key into place, so the mock verifier's unsigned "Approve"
     // button would write real attestations signed by it. KYC_PROVIDER defaults to mock, so this
     // has to be refused by name rather than hoped for.
@@ -286,6 +301,9 @@ export function assertEnvConsistent(e: Env = env): void {
     problems.push("TREASURY_KEYPAIR and ATTESTATION_ISSUER_KEYPAIR must be different keys");
   }
   if (e.kyc.allowMock !== "" && e.kyc.allowMock !== "devnet") problems.push(`ALLOW_MOCK_KYC must be exactly "devnet" or unset, not "${e.kyc.allowMock}"`);
+  if (!(e.kyc.mockMaxAttestsPerHour > 0) || !(e.kyc.mockMaxLamportsPerDay > 0n) || !(e.kyc.mockLamportsPerAttest > 0n)) {
+    problems.push("KYC_MOCK_MAX_ATTESTS_PER_HOUR, KYC_MOCK_MAX_LAMPORTS_PER_DAY and KYC_MOCK_LAMPORTS_PER_ATTEST must be greater than zero");
+  }
   if (!(e.walletSessionTtlSeconds > 0) || !(e.challengeTtlSeconds > 0) || !(e.authRatePerMinute > 0)) {
     problems.push("WALLET_SESSION_TTL_SECONDS, AUTH_CHALLENGE_TTL_SECONDS and AUTH_RATE_PER_MINUTE must be greater than zero");
   }

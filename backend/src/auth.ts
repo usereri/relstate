@@ -22,8 +22,11 @@ const b64url = (b: Buffer): string => b.toString("base64url");
  */
 let ephemeralSecret: Buffer | undefined;
 export function sessionSecret(): Buffer {
-  if (env.sessionSecret !== "") return Buffer.from(env.sessionSecret, "utf8");
-  return (ephemeralSecret ??= randomBytes(32));
+  const base = env.sessionSecret !== "" ? Buffer.from(env.sessionSecret, "utf8") : (ephemeralSecret ??= randomBytes(32));
+  // Domain-separate by auth mode: a token minted by a mock-mode instance is not valid in wallet
+  // mode even if an operator reuses SESSION_SECRET across the two (mock mode hands out sessions
+  // for any wallet, so it must never be able to speak to a live deployment).
+  return createHmac("sha256", base).update(`relstate/session/v1/${env.authMode}`).digest();
 }
 
 function sign(payload: string, secret: Buffer): Buffer {

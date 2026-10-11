@@ -18,7 +18,7 @@ import { OnrampError, WebhookError, formatRate, mockCheckoutPage } from "./provi
 import { StripeApiError } from "./providers/stripe.ts";
 import { ServiceUnavailable, createServices, type Services } from "./services.ts";
 import { InvariantViolation, reportForLog, type InvariantReport } from "./treasury.ts";
-import { createIpLimiter, createWalletAuth, RateLimited, type WalletAuth } from "./wallet-auth.ts";
+import { clientIpOf, createIpLimiter, createWalletAuth, RateLimited, type WalletAuth } from "./wallet-auth.ts";
 import { RejectedTransaction } from "./txinspect.ts";
 
 const asInvariantView = (report: InvariantReport): TreasuryInvariantView => reportForLog(report);
@@ -167,25 +167,25 @@ export function createApp(services: Services = createServices(), walletAuth: Wal
   /** Wallet-signature login. Only mounted when AUTH_MODE=wallet; see wallet-auth.ts. */
   if (walletAuth !== undefined) {
     const limit = createIpLimiter(env.authRatePerMinute);
-    // Behind Fly the proxy sets fly-client-ip; a client cannot choose it there. Elsewhere we use the socket.
     const clientIp = (c: Parameters<typeof getConnInfo>[0]): string => {
-      const fly = c.req.header("fly-client-ip");
-      if (fly !== undefined && fly !== "") return fly;
+      let socket: string | undefined;
       try {
-        return getConnInfo(c).remote.address ?? "unknown";
+        socket = getConnInfo(c).remote.address;
       } catch {
-        return "unknown";
+        socket = undefined;
       }
+      return clientIpOf((n) => c.req.header(n), socket, env.trustProxyIpHeader);
     };
     app.post("/api/auth/challenge", async (c) => {
       limit(`c:${clientIp(c)}`);
       const { wallet } = await readJson<{ wallet?: unknown }>(c);
+      if (typeof wallet === "string") limit(`w:${wallet}`);
       return c.json(walletAuth.challenge(wallet));
     });
     app.post("/api/auth/verify", async (c) => {
       limit(`v:${clientIp(c)}`);
-      const { wallet, signature } = await readJson<{ wallet?: unknown; signature?: unknown }>(c);
-      return c.json(walletAuth.verifyLogin(wallet, signature));
+      const { wallet, nonce, signature } = await readJson<{ wallet?: unknown; nonce?: unknown; signature?: unknown }>(c);
+      return c.json(walletAuth.verifyLogin(wallet, nonce, signature));
     });
   }
 

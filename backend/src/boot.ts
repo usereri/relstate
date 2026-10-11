@@ -24,5 +24,5 @@ export async function assertMockKycAllowed(
   if (hash !== DEVNET_GENESIS_HASH) {
     throw new Error("the configured RPC is not devnet (genesis hash mismatch); refusing to run the mock KYC verifier");
   }
-  warn("!!! WARNING: ALLOW_MOCK_KYC=devnet — live backend is using the MOCK KYC verifier (no document check). Anyone who signs in can obtain a real on-chain attestation. DEVNET ONLY; never use on mainnet.");
+  warn("!!! WARNING: ALLOW_MOCK_KYC=devnet — live backend is using the MOCK KYC verifier (no document check). Anyone who signs in can obtain a real on-chain attestation, and there is NO uniqueness or sybil resistance (one person can attest unlimited wallets; only a global budget limits the fee payer's spend). DEVNET ONLY; never use on mainnet.");
 }
