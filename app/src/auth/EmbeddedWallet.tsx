@@ -8,7 +8,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { SPONSORED } from "@/lib/sponsor";
 import { activeBackend } from "./backends";
-import { clearSession, obtainSession } from "./session";
+import { clearSession, obtainSession, registerSigner } from "./session";
 import { looksLikeEmail, type EmbeddedBackend, type EmbeddedStatus, type Role, type WalletProvider } from "./backend";
 
 export interface EmbeddedWalletState {
@@ -64,6 +64,7 @@ export function EmbeddedWalletProvider({ role, children }: { role: Role; childre
   const link = useCallback(async (w: WalletProvider) => {
     if (!SPONSORED) return null;
     try {
+      registerSigner(w.publicKey.toBase58(), w.signMessage);
       await obtainSession(w.publicKey.toBase58());
       return null;
     } catch (e) {

@@ -69,8 +69,69 @@ export function clearSession(wallet: string): void {
   }
 }
 
-/** Asks the backend for a session. Separated out so the real issuance endpoint can replace it. */
+type Signer = (message: Uint8Array) => Promise<Uint8Array>;
+const signers = new Map<string, Signer>();
+
+/**
+ * Tells the session layer how to sign the login challenge for a wallet. Only the wallet's generic
+ * `signMessage` is ever passed here, which already refuses the confidential-balance derivation
+ * message, so a login prompt can never be turned into that key material.
+ */
+export function registerSigner(wallet: string, sign: Signer | undefined): void {
+  if (sign) signers.set(wallet, sign);
+  else signers.delete(wallet);
+}
+
+/** The backend's auth mode from /health. Cached for the page's life; unknown reads as "mock". */
+let authModeCache: Promise<string> | null = null;
+async function backendAuthMode(): Promise<string> {
+  authModeCache ??= fetch(`${API}/health`)
+    .then((r) => r.json() as Promise<{ authMode?: string }>)
+    .then((b) => b.authMode ?? "mock")
+    .catch(() => {
+      authModeCache = null;
+      return "mock";
+    });
+  return authModeCache;
+}
+
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const parsed = (await res.json().catch(() => ({}))) as T & { error?: string };
+  if (!res.ok) throw new Error(parsed.error ?? `${path} failed (${res.status})`);
+  return parsed;
+}
+
+const toBase64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
+
+/** Wallet-signature login: sign the backend's one-time challenge, trade the signature for a session. */
+async function requestWalletSession(wallet: string): Promise<BackendSession> {
+  const sign = signers.get(wallet);
+  if (!sign) throw new Error("This wallet cannot sign messages, so it cannot log in to the backend.");
+  const { message } = await postJson<{ message?: string }>("/api/auth/challenge", { wallet });
+  if (typeof message !== "string") throw new Error("The backend sent no login challenge.");
+  // Phishing guard: sign only a challenge that names this wallet and the origin we are running on.
+  const lines = message.split("\n");
+  if (lines[1] !== wallet || !lines.includes(`URI: ${window.location.origin}`))
+    throw new Error("The login challenge does not match this wallet and site, so it was not signed.");
+  const signature = await sign(new TextEncoder().encode(message));
+  const body = await postJson<{ token?: string; wallet?: string; expiresAt?: number }>("/api/auth/verify", {
+    wallet,
+    signature: toBase64(signature),
+  });
+  if (!body.token || typeof body.expiresAt !== "number") throw new Error("The backend did not return a session token.");
+  if (body.wallet !== wallet) throw new Error(`The backend issued a session for ${body.wallet} instead of ${wallet}.`);
+  return { token: body.token, wallet, expiresAt: body.expiresAt };
+}
+
+/** Asks the backend for a session: wallet-signature login when it offers one, else the mock endpoint. */
 async function requestSession(wallet: string): Promise<BackendSession> {
+  if (!API) throw new Error("No backend configured (VITE_API), so there is no session to obtain.");
+  if ((await backendAuthMode()) === "wallet") return requestWalletSession(wallet);
+  return requestMockSession(wallet);
+}
+
+async function requestMockSession(wallet: string): Promise<BackendSession> {
   if (!API) throw new Error("No backend configured (VITE_API), so there is no session to obtain.");
   const res = await fetch(`${API}/api/auth/mock`, {
     method: "POST",
