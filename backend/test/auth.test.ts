@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 process.env.ADMIN_TOKEN = "";
 const auth = await import("../src/auth.ts");
 const { AuthError, assertAdmin, createSessionToken, sessionFromAuthorizationHeader, verifySessionToken } = auth;
+const { env } = await import("../src/env.ts");
 
 const secret = Buffer.from("test-secret-test-secret-test-secret");
 const NOW = 1_700_000_000_000;
@@ -83,6 +84,48 @@ describe("Authorization header", () => {
 
   it("rejects a token signed with another secret", () => {
     assert.throws(() => sessionFromAuthorizationHeader(`Bearer ${token}`, opts), AuthError);
+  });
+});
+
+describe("sessionSecret is domain-separated by AUTH_MODE", () => {
+  // env.authMode is read live by sessionSecret() on every call, so a token minted under one mode
+  // must not verify under another even when SESSION_SECRET (or the ephemeral per-process secret)
+  // is unchanged — a mock-mode instance's tokens must never speak to a wallet-mode deployment.
+  const withMode = (mode: string, fn: () => void) => {
+    const original = env.authMode;
+    try {
+      (env as unknown as { authMode: string }).authMode = mode;
+      fn();
+    } finally {
+      (env as unknown as { authMode: string }).authMode = original;
+    }
+  };
+
+  it("a token minted under AUTH_MODE=mock is rejected once the process is AUTH_MODE=wallet", () => {
+    let token!: string;
+    withMode("mock", () => {
+      token = createSessionToken("WalletA").token;
+    });
+    withMode("wallet", () => {
+      assert.throws(() => verifySessionToken(token), AuthError);
+    });
+  });
+
+  it("and vice versa: a token minted under AUTH_MODE=wallet is rejected under AUTH_MODE=mock", () => {
+    let token!: string;
+    withMode("wallet", () => {
+      token = createSessionToken("WalletA").token;
+    });
+    withMode("mock", () => {
+      assert.throws(() => verifySessionToken(token), AuthError);
+    });
+  });
+
+  it("round-trips normally when the mode does not change", () => {
+    withMode("wallet", () => {
+      const { token } = createSessionToken("WalletA");
+      assert.equal(verifySessionToken(token).wallet, "WalletA");
+    });
   });
 });
 
