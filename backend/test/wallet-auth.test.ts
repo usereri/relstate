@@ -1,6 +1,7 @@
 import "./noenv.ts";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign as nodeSign, type KeyObject } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { getAddressDecoder, type Address } from "@solana/kit";
 
@@ -13,6 +14,9 @@ import type { Services } from "../src/services.ts";
 
 const NOW = 1_700_000_000_000;
 const ORIGIN = "http://localhost:5173";
+
+type ChallengeFixture = { host: string; origin: string; wallet: string; nonce: string; statement: string; issuedAt: string; expiresAt: string; message: string };
+const challengeFixture = JSON.parse(readFileSync(new URL("./fixtures/challenge.json", import.meta.url), "utf8")) as ChallengeFixture;
 
 function makeKeypair(): { privateKey: KeyObject; wallet: Address } {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -37,6 +41,40 @@ describe("verifyEd25519", () => {
     assert.equal(verifyEd25519(wallet, message, sig), true);
     assert.equal(verifyEd25519(wallet, message, sig.subarray(0, 63)), false);
     assert.equal(verifyEd25519("not-an-address", message, sig), false);
+  });
+});
+
+describe("verifyEd25519: degenerate keys", () => {
+  const addrFromRaw = (raw: Uint8Array) => getAddressDecoder().decode(raw) as Address;
+  const message = Buffer.from("hello relstate", "utf8");
+
+  it("an all-zero public key never verifies, for an all-zero or random signature", () => {
+    const wallet = addrFromRaw(new Uint8Array(32));
+    assert.equal(verifyEd25519(wallet, message, Buffer.alloc(64)), false);
+    assert.equal(verifyEd25519(wallet, message, Buffer.alloc(64, 7)), false);
+  });
+
+  it("small-order / identity-like point encodings never verify, and never crash", () => {
+    const candidates: Uint8Array[] = [
+      // 0x01 followed by zeros: a common "identity" encoding among small-order Ed25519 test points.
+      new Uint8Array([1, ...new Array(31).fill(0)]),
+      // A classic order-2 small-order point from standard Ed25519 test-vector lists.
+      new Uint8Array([0xec, ...new Array(30).fill(0xff), 0x7f]),
+      // Not a valid curve point at all.
+      new Uint8Array(32).fill(0xff),
+    ];
+    for (const raw of candidates) {
+      const wallet = addrFromRaw(raw);
+      assert.equal(verifyEd25519(wallet, message, Buffer.alloc(64)), false, Buffer.from(raw).toString("hex"));
+      assert.equal(verifyEd25519(wallet, message, Buffer.alloc(64, 1)), false, Buffer.from(raw).toString("hex"));
+    }
+  });
+
+  it("a wrong-length signature is false regardless of key validity", () => {
+    const { wallet } = makeKeypair();
+    assert.equal(verifyEd25519(wallet, message, Buffer.alloc(63)), false);
+    assert.equal(verifyEd25519(wallet, message, Buffer.alloc(65)), false);
+    assert.equal(verifyEd25519(wallet, message, Buffer.alloc(0)), false);
   });
 });
 
@@ -80,19 +118,37 @@ describe("createWalletAuth: challenge shape", () => {
   });
 });
 
+describe("challenge() against the shared fixture (backend/test/fixtures/challenge.json)", () => {
+  // The nonce is random and cannot be injected without a source change, so this pins everything
+  // else exactly and checks the nonce only by shape, then substitutes it back in and compares the
+  // whole message against the fixture's template — the same template the app's test suite pins.
+  it("produces exactly the fixture's template once its own random nonce is substituted back in", () => {
+    const issuedAtMs = Date.parse(challengeFixture.issuedAt);
+    const expiresAtMs = Date.parse(challengeFixture.expiresAt);
+    const auth = createWalletAuth({
+      origin: challengeFixture.origin,
+      now: () => issuedAtMs,
+      challengeTtlMs: expiresAtMs - issuedAtMs,
+    });
+    const { message, nonce, expiresAt } = auth.challenge(challengeFixture.wallet);
+    assert.equal(expiresAt, expiresAtMs);
+    assert.match(nonce, /^[A-Za-z0-9_-]{32}$/);
+    const substituted = message.replace(`Nonce: ${nonce}`, `Nonce: ${challengeFixture.nonce}`);
+    assert.equal(substituted, challengeFixture.message);
+  });
+});
+
 describe("createWalletAuth: per-wallet and global eviction (never refuses, degrades the oldest)", () => {
-  it("per-wallet cap: the 4th challenge for one wallet evicts the oldest (1st), which then fails to verify; the newer three remain valid", () => {
+  it("per-wallet cap (default 5): a 6th challenge evicts the newest existing one, not the oldest; the older four plus the new one all stay valid", () => {
     const { privateKey, wallet } = makeKeypair();
-    const auth = wa({ maxPendingPerWallet: 3 });
-    const c1 = auth.challenge(wallet);
-    const c2 = auth.challenge(wallet);
-    const c3 = auth.challenge(wallet);
-    const c4 = auth.challenge(wallet);
+    const auth = wa(); // default maxPendingPerWallet = 5
+    const cs = [auth.challenge(wallet), auth.challenge(wallet), auth.challenge(wallet), auth.challenge(wallet), auth.challenge(wallet)];
+    const c6 = auth.challenge(wallet); // over quota: evicts c5 (the newest existing one at that point)
 
-    const sig1 = signMessage(c1.message, privateKey).toString("base64");
-    assert.throws(() => auth.verifyLogin(wallet, c1.nonce, sig1), /login failed/);
+    const sig5 = signMessage(cs[4]!.message, privateKey).toString("base64");
+    assert.throws(() => auth.verifyLogin(wallet, cs[4]!.nonce, sig5), /login failed/);
 
-    for (const c of [c2, c3, c4]) {
+    for (const c of [...cs.slice(0, 4), c6]) {
       const sig = signMessage(c.message, privateKey).toString("base64");
       assert.doesNotThrow(() => auth.verifyLogin(wallet, c.nonce, sig));
     }
@@ -111,6 +167,33 @@ describe("createWalletAuth: per-wallet and global eviction (never refuses, degra
     // The newest wallet's challenge, which caused the eviction, works fine.
     const sig3 = signMessage(challenges[3]!.message, keys[3]!.privateKey).toString("base64");
     assert.doesNotThrow(() => auth.verifyLogin(keys[3]!.wallet, challenges[3]!.nonce, sig3));
+  });
+
+  it("a zero global cap (maxPending: 0) never hangs and keeps functioning (effectively one live challenge at a time)", () => {
+    const auth = wa({ maxPending: 0 });
+    for (let i = 0; i < 10; i++) {
+      const keys = makeKeypair();
+      assert.doesNotThrow(() => auth.challenge(keys.wallet));
+      assert.ok(auth.pendingCount() <= 1, `pendingCount after request ${i}: ${auth.pendingCount()}`);
+    }
+  });
+
+  it("a zero per-wallet cap (maxPendingPerWallet: 0) never hangs and keeps functioning for repeat requests on one wallet", () => {
+    const { privateKey, wallet } = makeKeypair();
+    const auth = wa({ maxPendingPerWallet: 0 });
+    let last: { message: string; nonce: string } | undefined;
+    for (let i = 0; i < 10; i++) {
+      assert.doesNotThrow(() => (last = auth.challenge(wallet)));
+    }
+    // Whatever survived the churn is still a genuinely usable challenge.
+    const sig = signMessage(last!.message, privateKey).toString("base64");
+    assert.doesNotThrow(() => auth.verifyLogin(wallet, last!.nonce, sig));
+  });
+
+  it("an invalid wallet creates no pending entry at all", () => {
+    const auth = wa();
+    assert.throws(() => auth.challenge("not-an-address"), AuthError);
+    assert.equal(auth.pendingCount(), 0);
   });
 });
 
@@ -301,6 +384,15 @@ describe("createIpLimiter", () => {
     // ...and now "a" is exhausted again, like any fresh key would be.
     assert.throws(() => limit("a"), RateLimited);
   });
+
+  it("a zero maxKeys never hangs and still enforces the per-minute cap for a single key", () => {
+    const limit = createIpLimiter(2, () => 0, 0);
+    assert.doesNotThrow(() => limit("a"));
+    assert.doesNotThrow(() => limit("a"));
+    assert.throws(() => limit("a"), RateLimited);
+    // A different key still works (effectively one live bucket at a time).
+    assert.doesNotThrow(() => limit("b"));
+  });
 });
 
 describe("clientIpOf", () => {
@@ -369,9 +461,7 @@ describe("wallet-auth routes via createApp", () => {
   });
 
   it("429s past the per-IP rate limit on the login routes", async () => {
-    // maxPendingPerWallet raised well above authRatePerMinute: see the note on the per-wallet test
-    // below about a confirmed hang in challenge()'s eviction once that (default: 3) cap is reached.
-    const { app } = freshApp({ maxPendingPerWallet: env.authRatePerMinute + 10 });
+    const { app } = freshApp();
     const { wallet } = makeKeypair();
     for (let i = 0; i < env.authRatePerMinute; i++) {
       assert.equal((await post(app, "/api/auth/challenge", { wallet })).status, 200, `request ${i}`);
@@ -381,23 +471,22 @@ describe("wallet-auth routes via createApp", () => {
     assert.equal((await json(limited)).code, "rate-limited");
   });
 
-  it("429s past the per-wallet rate limit even across different client IPs", async () => {
-    // Isolate the `w:` limiter from the `c:` one: distinct fly-client-ip values keep the per-IP
-    // bucket fresh on every request, so only the shared wallet hitting its own cap can explain a 429.
+  it("flooding challenge requests for a victim's wallet from another IP does not 429 the victim's own IP", async () => {
+    // There is no per-wallet rate limiter any more (a shared wallet bucket was itself a
+    // targeted-lockout primitive: anyone could 429 a victim's IP merely by naming their wallet).
+    // Rate limiting is per IP only, so an attacker hammering a victim's wallet from their own
+    // address must never affect what the victim's own IP can still do.
     const original = env.trustProxyIpHeader;
     (env as unknown as { trustProxyIpHeader: boolean }).trustProxyIpHeader = true;
     try {
-      // maxPendingPerWallet raised well above authRatePerMinute: this test is about the route-level
-      // rate limiter, not the per-wallet pending-challenge cap (which has its own, skipped, test
-      // above due to a confirmed hang in challenge()'s eviction when that cap is actually reached).
-      const { app } = freshApp({ maxPendingPerWallet: env.authRatePerMinute + 10 });
+      const { app } = freshApp();
       const { wallet } = makeKeypair();
       for (let i = 0; i < env.authRatePerMinute; i++) {
-        const res = await post(app, "/api/auth/challenge", { wallet }, { "fly-client-ip": `10.0.0.${i}` });
-        assert.equal(res.status, 200, `request ${i}`);
+        assert.equal((await post(app, "/api/auth/challenge", { wallet }, { "fly-client-ip": "10.0.0.1" })).status, 200, `attacker request ${i}`);
       }
-      const limited = await post(app, "/api/auth/challenge", { wallet }, { "fly-client-ip": "10.0.0.250" });
-      assert.equal(limited.status, 429);
+      assert.equal((await post(app, "/api/auth/challenge", { wallet }, { "fly-client-ip": "10.0.0.1" })).status, 429); // the attacker's own IP is now limited
+      // The victim, from a different IP, is unaffected.
+      assert.equal((await post(app, "/api/auth/challenge", { wallet }, { "fly-client-ip": "10.0.0.2" })).status, 200);
     } finally {
       (env as unknown as { trustProxyIpHeader: boolean }).trustProxyIpHeader = original;
     }
@@ -453,6 +542,22 @@ describe("wallet-auth routes via createApp", () => {
     try {
       const app = createApp(fakeServices);
       assert.equal((await post(app, "/api/auth/mock", { wallet: "W" })).status, 404);
+    } finally {
+      (env as unknown as { authMode: string }).authMode = original;
+    }
+  });
+
+  it("POST /api/auth/mock is rate-limited per IP: the 21st request in the window is 429", async () => {
+    const original = env.authMode;
+    (env as unknown as { authMode: string }).authMode = "mock";
+    try {
+      const app = createApp(fakeServices);
+      for (let i = 0; i < env.authRatePerMinute; i++) {
+        assert.equal((await post(app, "/api/auth/mock", { wallet: `W${i}` })).status, 200, `request ${i}`);
+      }
+      const limited = await post(app, "/api/auth/mock", { wallet: "Woverflow" });
+      assert.equal(limited.status, 429);
+      assert.equal((await json(limited)).code, "rate-limited");
     } finally {
       (env as unknown as { authMode: string }).authMode = original;
     }
