@@ -60,3 +60,22 @@ describe("RPC / IS_LOCAL defaults", () => {
     expect(RPC).toMatch(/^http:\/\/.*:8899$/);
   });
 });
+
+describe("DEFAULT_PUBLIC_HOLDBACK", () => {
+  it("defaults to 100,000,000 base units (100 rUSDC) with no override", async () => {
+    const { DEFAULT_PUBLIC_HOLDBACK } = await load();
+    expect(DEFAULT_PUBLIC_HOLDBACK).toBe(100_000_000);
+  });
+
+  it("VITE_DEFAULT_PUBLIC_HOLDBACK='0' overrides it to 0, not the default", async () => {
+    vi.stubEnv("VITE_DEFAULT_PUBLIC_HOLDBACK", "0");
+    const { DEFAULT_PUBLIC_HOLDBACK } = await load();
+    expect(DEFAULT_PUBLIC_HOLDBACK).toBe(0);
+  });
+
+  it("an explicit override is honoured", async () => {
+    vi.stubEnv("VITE_DEFAULT_PUBLIC_HOLDBACK", "25000000");
+    const { DEFAULT_PUBLIC_HOLDBACK } = await load();
+    expect(DEFAULT_PUBLIC_HOLDBACK).toBe(25_000_000);
+  });
+});

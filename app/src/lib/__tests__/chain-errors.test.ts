@@ -108,4 +108,23 @@ describe("errorMessage", () => {
     expect(errorMessage(err)).toMatch(/User rejected/);
     expect(errorMessage(err)).toMatch(/WalletSignTransactionError/);
   });
+
+  it("explains the Token-2022 0x1 (insufficient public balance for the deposit) in plain language", async () => {
+    const { errorMessage } = await load();
+    const err = {
+      simulationResponse: {
+        err: { InstructionError: [0, "Custom"] },
+        logs: ["Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb failed: custom program error: 0x1"],
+      },
+    };
+    expect(errorMessage(err)).toMatch(/^Not enough public balance for the deposit/);
+  });
+
+  it("still explains the System program's 0x1 (rent) as an unfunded wallet, not the deposit message", async () => {
+    const { errorMessage } = await load();
+    const err = { message: "11111111111111111111111111111111 failed: custom program error: 0x1" };
+    const message = errorMessage(err);
+    expect(message).toMatch(/too little SOL to cover the storage rent/);
+    expect(message).not.toMatch(/public balance for the deposit/);
+  });
 });
