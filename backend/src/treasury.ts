@@ -585,6 +585,7 @@ export function createTreasury(deps: TreasuryDeps) {
       // the spend stays booked until the window rolls.
       if (isKnownNotLanded(e)) throw e;
       reservation.commit(booked);
+      log(`treasury: send of ${signature} failed with an unknown outcome: ${e instanceof Error ? e.message : String(e)}`);
       throw new SendOutcomeUnknown(signature, e);
     }
     // Committed only once the send succeeded, so a definitely-failed send leaves the caller's budget alone.
