@@ -112,7 +112,7 @@ export function createApp(
   rpcProxy: RpcProxy = createRpcProxy({ upstreamUrl: () => env.rpcUrl }),
 ) {
   const app = new Hono();
-  app.use("*", cors({ origin: env.corsOrigin, allowHeaders: ["content-type", "authorization"], allowMethods: ["GET", "POST", "OPTIONS"] }));
+  app.use("*", cors({ origin: env.corsOrigin, allowHeaders: ["content-type", "authorization", "solana-client"], allowMethods: ["GET", "POST", "OPTIONS"] }));
 
   app.onError((error, c) => {
     const { status, body } = problem(error);
