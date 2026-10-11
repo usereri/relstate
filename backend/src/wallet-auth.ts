@@ -87,6 +87,7 @@ export function createWalletAuth(options: WalletAuthOptions = {}) {
       "Sign in to relstate. This proves you control the wallet and costs nothing.",
       "",
       `URI: ${origin}`,
+      "Version: 1",
       `Nonce: ${nonce}`,
       `Issued At: ${new Date(issued).toISOString()}`,
       `Expiration Time: ${new Date(expiresAt).toISOString()}`,

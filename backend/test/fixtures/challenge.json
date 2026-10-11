@@ -6,5 +6,5 @@
   "statement": "Sign in to relstate. This proves you control the wallet and costs nothing.",
   "issuedAt": "2026-01-01T00:00:00.000Z",
   "expiresAt": "2026-01-01T00:05:00.000Z",
-  "message": "localhost:5173 wants you to sign in with your Solana account:\nEBMibFLTvr5GDpgxNqt5Gqp9B1xLMr32aNwGDJV2oGJ6\n\nSign in to relstate. This proves you control the wallet and costs nothing.\n\nURI: http://localhost:5173\nNonce: abcdefghijklmnopqrstuvwxyzABCDEF\nIssued At: 2026-01-01T00:00:00.000Z\nExpiration Time: 2026-01-01T00:05:00.000Z"
+  "message": "localhost:5173 wants you to sign in with your Solana account:\nEBMibFLTvr5GDpgxNqt5Gqp9B1xLMr32aNwGDJV2oGJ6\n\nSign in to relstate. This proves you control the wallet and costs nothing.\n\nURI: http://localhost:5173\nVersion: 1\nNonce: abcdefghijklmnopqrstuvwxyzABCDEF\nIssued At: 2026-01-01T00:00:00.000Z\nExpiration Time: 2026-01-01T00:05:00.000Z"
 }

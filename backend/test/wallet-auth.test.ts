@@ -88,7 +88,7 @@ describe("createWalletAuth: challenge shape", () => {
     assert.equal(lines[0], "localhost:5173 wants you to sign in with your Solana account:");
     assert.equal(lines[1], wallet);
     assert.ok(message.includes(`URI: ${ORIGIN}`));
-    assert.equal(lines[6], `Nonce: ${nonce}`);
+    assert.equal(lines[7], `Nonce: ${nonce}`);
     assert.ok(message.includes(`Issued At: ${new Date(NOW).toISOString()}`));
     assert.ok(message.includes(`Expiration Time: ${new Date(expiresAt).toISOString()}`));
     assert.equal(expiresAt, NOW + 300_000);

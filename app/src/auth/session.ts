@@ -116,11 +116,11 @@ const MAX_CHALLENGE_LIFETIME_MS = 10 * 60_000;
 export function assertChallenge(message: string, wallet: string, nonce: string): void {
   const bad = () => new Error("The login challenge does not match the expected format for this wallet and site, so it was not signed.");
   const lines = message.split("\n");
-  if (lines.length !== 9) throw bad();
-  const [header, addr, blank1, statement, blank2, uri, nonceLine, issuedLine, expiryLine] = lines as [string, string, string, string, string, string, string, string, string];
+  if (lines.length !== 10) throw bad();
+  const [header, addr, blank1, statement, blank2, uri, version, nonceLine, issuedLine, expiryLine] = lines as [string, string, string, string, string, string, string, string, string, string];
   if (header !== `${window.location.host} wants you to sign in with your Solana account:`) throw bad();
   if (addr !== wallet || blank1 !== "" || statement !== CHALLENGE_STATEMENT || blank2 !== "") throw bad();
-  if (uri !== `URI: ${window.location.origin}`) throw bad();
+  if (uri !== `URI: ${window.location.origin}` || version !== "Version: 1") throw bad();
   if (!/^Nonce: [A-Za-z0-9_-]{32}$/.test(nonceLine) || nonceLine !== `Nonce: ${nonce}`) throw bad();
   const iso = /^(Issued At|Expiration Time): (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)$/;
   const issuedM = iso.exec(issuedLine);
