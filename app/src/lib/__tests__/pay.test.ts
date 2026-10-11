@@ -279,6 +279,21 @@ describe("withBalanceLock", () => {
     await p2;
     expect(order).toEqual(["first", "second"]);
   });
+
+  // 233bb8b: a hung plan must not strand every future Retry behind a promise that never settles.
+  it("a work that never resolves is abandoned at the deadline, with a PayError, and the lock is free for the next call", async () => {
+    const order: string[] = [];
+    const neverResolves = () => new Promise<void>(() => {});
+    const p1 = withBalanceLock("owner", "mint", neverResolves, 20);
+    await expect(p1).rejects.toThrow(PayError);
+    await expect(p1).rejects.toThrow(/longer than expected/);
+
+    const p2 = withBalanceLock("owner", "mint", async () => {
+      order.push("retry-ran");
+    });
+    await p2;
+    expect(order).toEqual(["retry-ran"]);
+  });
 });
 
 describe("enablePrivateReceiving", () => {

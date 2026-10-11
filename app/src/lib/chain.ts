@@ -5,6 +5,7 @@ import idl from "@target/idl/relstate.json";
 import type { Relstate } from "@target/types/relstate";
 import { GRACE_SECS, IS_LOCAL, MINT, PERIOD_SECS, RPC, TERM_PERIODS } from "./config";
 import { retryingFetch } from "./rpc";
+import { invalidateReads, sharedRead } from "./reads";
 import { jsonSafe } from "./utils";
 import { API, SPONSORED, postSponsored, sponsorFeePayer } from "./sponsor";
 import { asWalletProvider, localKeypair, localWallet, readOnlyWallet } from "./wallet";
@@ -281,25 +282,29 @@ const applicationView = (address: PubKey, a: Acc<"application">): ApplicationVie
 
 const newestFirst = <T extends { id: string }>(rows: T[]) => rows.sort((a, b) => Number(b.id) - Number(a.id));
 
-export async function loadListings(): Promise<ListingView[]> {
-  return newestFirst((await reader.account.listing.all()).map((r) => listingView(r.publicKey, r.account)));
+export function loadListings(): Promise<ListingView[]> {
+  return sharedRead("listings", async () => newestFirst((await reader.account.listing.all()).map((r) => listingView(r.publicKey, r.account))));
 }
 
 // Key offsets in an application: landlord 40, tenant 72. Applications for a landlord's listings, or made by a tenant.
-export async function loadApplications(who: { landlord: string } | { tenant: string }): Promise<ApplicationView[]> {
+export function loadApplications(who: { landlord: string } | { tenant: string }): Promise<ApplicationView[]> {
   const [offset, wallet] = "landlord" in who ? [40, who.landlord] : [72, who.tenant];
-  const rows = await reader.account.application.all([{ memcmp: { offset, bytes: new PublicKey(wallet).toBase58() } }]);
-  return rows.map((r) => applicationView(r.publicKey, r.account));
+  return sharedRead(`applications:${offset}:${wallet}`, async () => {
+    const rows = await reader.account.application.all([{ memcmp: { offset, bytes: new PublicKey(wallet).toBase58() } }]);
+    return rows.map((r) => applicationView(r.publicKey, r.account));
+  });
 }
 
-export async function loadLeases(wallet: string, role: Role): Promise<LeaseView[]> {
-  const bytes = new PublicKey(wallet).toBase58();
-  const rows = await reader.account.lease.all([{ memcmp: { offset: role === "landlord" ? 8 : 40, bytes } }]);
-  return newestFirst(rows.map((r) => leaseView(r.publicKey, r.account)));
+export function loadLeases(wallet: string, role: Role): Promise<LeaseView[]> {
+  return sharedRead(`leases:${role}:${wallet}`, async () => {
+    const bytes = new PublicKey(wallet).toBase58();
+    const rows = await reader.account.lease.all([{ memcmp: { offset: role === "landlord" ? 8 : 40, bytes } }]);
+    return newestFirst(rows.map((r) => leaseView(r.publicKey, r.account)));
+  });
 }
 
-export async function loadProfile(address: string): Promise<ProfileView | null> {
-  return profileView(await reader.account.profile.fetchNullable(profilePda(new PublicKey(address))));
+export function loadProfile(address: string): Promise<ProfileView | null> {
+  return sharedRead(`profile:${address}`, async () => profileView(await reader.account.profile.fetchNullable(profilePda(new PublicKey(address)))));
 }
 
 export async function loadNow(): Promise<number> {
@@ -362,11 +367,16 @@ type Call = {
  * wallet with 0 SOL cannot be the fee payer of a client-side simulation.
  */
 async function send(me: Me, call: Call) {
-  if (!SPONSORED) {
-    await call.simulate();
-    return call.rpc();
+  try {
+    if (!SPONSORED) {
+      await call.simulate();
+      return await call.rpc();
+    }
+    return await sendSponsored(me, await call.transaction());
+  } finally {
+    // What the shared reads hold is stale once a transaction has been tried.
+    invalidateReads();
   }
-  return sendSponsored(me, await call.transaction());
 }
 
 export function createListing(me: Me, id: string, f: NewListing) {

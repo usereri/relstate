@@ -332,7 +332,8 @@ function ReceivedCard({ lease }: { lease: LeaseView }) {
  *
  * One state, one sentence, no crypto words.
  */
-const SECURE_TIMEOUT_MS = 180_000;
+// Longer than the balance lock's own deadline (pay.ts), which is what actually frees a hung run.
+const SECURE_TIMEOUT_MS = 200_000;
 
 export function SecurePrivateBalance({ credit }: { credit: OnrampCredit }) {
   const me = useSigner();

@@ -1,10 +1,19 @@
 import "./noenv.ts";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { getBase58Decoder } from "@solana/kit";
 import { env } from "../src/env.ts";
 import { ASSOCIATED_TOKEN_PROGRAM, RELSTATE_PROGRAM, TOKEN_2022_PROGRAM } from "../src/contracts.ts";
 import { createRpcLimiter, createRpcProxy, RpcRateLimited, RPC_PROXY_MAX_BODY_BYTES, type RpcProxyOptions } from "../src/rpcproxy.ts";
+
+// The tracked IDL copy (app/idl/relstate.json), read directly rather than through backend/src/layout.ts's
+// loadIdl(): that one prefers the untracked `target/idl/relstate.json` build output, which this
+// worktree does not have. Reading the JSON straight here is also exactly what the task asks for: a
+// drift between this file and RELSTATE_PROGRAM, or in any account's discriminator, must fail a test.
+type Idl = { address: string; accounts: { name: string; discriminator: number[] }[] };
+const IDL = JSON.parse(readFileSync(resolve(import.meta.dirname, "../../app/idl/relstate.json"), "utf8")) as Idl;
 
 const { createApp } = await import("../src/server.ts");
 
@@ -176,6 +185,63 @@ describe("createRpcProxy: getProgramAccounts (F1)", () => {
   });
 });
 
+describe("createRpcProxy: getProgramAccounts against the IDL's own discriminators (R5)", () => {
+  const gpa = (params: unknown[]) => req("getProgramAccounts", params);
+  const b58ofBytes = (bytes: number[]) => getBase58Decoder().decode(Uint8Array.from(bytes));
+
+  it("pins app/idl/relstate.json's address to RELSTATE_PROGRAM: the allowlisted program and the IDL must agree", () => {
+    assert.equal(IDL.address, RELSTATE_PROGRAM);
+  });
+
+  it("accepts a memcmp carrying the Listing discriminator when `discriminators` is given the IDL's set", async () => {
+    const listing = IDL.accounts.find((a) => a.name === "Listing")!;
+    assert.deepEqual(listing.discriminator, [218, 32, 50, 73, 43, 134, 26, 58]);
+    const bytes = b58ofBytes(listing.discriminator);
+    const { fn } = fakeFetch([new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: [] }), { status: 200 })]);
+    const proxy = createRpcProxy({
+      upstreamUrl: () => UPSTREAM,
+      fetch: fn,
+      discriminators: () => IDL.accounts.map((a) => Uint8Array.from(a.discriminator)),
+    });
+    const res = await proxy.handle(gpa([RELSTATE_PROGRAM, { filters: [{ memcmp: { offset: 0, bytes } }] }]), noAdmit);
+    assert.equal(res.status, 200);
+  });
+
+  it("refuses a different, otherwise-well-formed 8-byte value that is not one of the known discriminators", async () => {
+    const bytes = b58ofBytes([1, 2, 3, 4, 5, 6, 7, 8]); // not any account's real discriminator
+    const { fn, calls } = fakeFetch([]);
+    const proxy = createRpcProxy({
+      upstreamUrl: () => UPSTREAM,
+      fetch: fn,
+      discriminators: () => IDL.accounts.map((a) => Uint8Array.from(a.discriminator)),
+    });
+    const res = await proxy.handle(gpa([RELSTATE_PROGRAM, { filters: [{ memcmp: { offset: 0, bytes } }] }]), noAdmit);
+    assert.equal(res.status, 400);
+    assert.equal(calls.length, 0);
+  });
+
+  it("accepts any 8-byte value when `discriminators` is omitted or returns null (shape-only check)", async () => {
+    const bytes = b58ofBytes([9, 9, 9, 9, 9, 9, 9, 9]);
+    for (const discriminators of [undefined, () => null]) {
+      const { fn } = fakeFetch([new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: [] }), { status: 200 })]);
+      const proxy = createRpcProxy({ upstreamUrl: () => UPSTREAM, fetch: fn, ...(discriminators ? { discriminators } : {}) });
+      const res = await proxy.handle(gpa([RELSTATE_PROGRAM, { filters: [{ memcmp: { offset: 0, bytes } }] }]), noAdmit);
+      assert.equal(res.status, 200);
+    }
+  });
+
+  it("every account discriminator in the IDL is individually accepted when passed as `discriminators`", async () => {
+    const known = () => IDL.accounts.map((a) => Uint8Array.from(a.discriminator));
+    for (const account of IDL.accounts) {
+      const bytes = b58ofBytes(account.discriminator);
+      const { fn } = fakeFetch([new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: [] }), { status: 200 })]);
+      const proxy = createRpcProxy({ upstreamUrl: () => UPSTREAM, fetch: fn, discriminators: known });
+      const res = await proxy.handle(gpa([RELSTATE_PROGRAM, { filters: [{ memcmp: { offset: 0, bytes } }] }]), noAdmit);
+      assert.equal(res.status, 200, account.name);
+    }
+  });
+});
+
 describe("createRpcProxy: simulateTransaction (F10)", () => {
   const sim = (params: unknown[]) => req("simulateTransaction", params);
   const tx = "A".repeat(200); // content does not matter to validate(), only shape and length
@@ -333,11 +399,12 @@ describe("createRpcLimiter (F3, unit)", () => {
     assert.throws(() => admit("c", 1), (e) => e instanceof RpcRateLimited && e.scope === "global");
   });
 
-  it("gives a key ending :unknown only a tenth of the per-IP budget", () => {
+  it("gives a key ending :unknown three times the per-IP budget (it may be a whole venue behind one proxy)", () => {
     const admit = createRpcLimiter({ perIpPerMinute: 100, globalPerMinute: 10_000 });
-    admit("rpc:unknown", 10);
+    admit("rpc:unknown", 300);
     assert.throws(() => admit("rpc:unknown", 1), (e) => e instanceof RpcRateLimited && e.scope === "ip");
-    admit("rpc:1.2.3.4", 99); // a resolved key keeps the full budget
+    admit("rpc:1.2.3.4", 100); // a resolved key keeps exactly the configured budget, no multiplier
+    assert.throws(() => admit("rpc:1.2.3.4", 1), (e) => e instanceof RpcRateLimited && e.scope === "ip");
   });
 
   it("reports retryAfterSeconds counting down to the window's end", () => {
@@ -353,6 +420,62 @@ describe("createRpcLimiter (F3, unit)", () => {
       assert.ok(e instanceof RpcRateLimited);
       assert.equal(e.retryAfterSeconds, 30);
     }
+  });
+});
+
+describe("createRpcLimiter: N-tabs simulation under the default env budgets (R1)", () => {
+  // One open app tab's load every 10s: three getProgramAccounts scans (weight 50 each, see
+  // GPA_WEIGHT) plus ten small reads (weight 1 each) — the shape env.ts's own comment sizes the
+  // defaults around ("about 1,300 a minute"; this simulation's own tally is noted per test below).
+  const TICK_MS = 10_000;
+  const TICKS = 6; // 60s of simulated time
+  const oneTabTick = (admit: (key: string, weight: number) => void, key: string) => {
+    for (let i = 0; i < 3; i++) admit(key, 50);
+    for (let i = 0; i < 10; i++) admit(key, 1);
+  };
+
+  it("15 tabs behind one IP, for 60s, never hit 429 under the default per-IP budget", () => {
+    let t = 0;
+    const admit = createRpcLimiter({ perIpPerMinute: env.rpcProxyRatePerMinute, globalPerMinute: env.rpcProxyGlobalPerMinute, now: () => t });
+    for (let tick = 0; tick < TICKS; tick++) {
+      t = tick * TICK_MS;
+      for (let tab = 0; tab < 15; tab++) {
+        assert.doesNotThrow(() => oneTabTick(admit, "rpc:1.2.3.4"), `tick ${tick}, tab ${tab}`);
+      }
+    }
+    // 15 tabs * 6 ticks * 160/tick = 14,400, under the 20,000 default per-IP budget.
+  });
+
+  it("60 distinct IPs, one tab each, for 60s, stay under both the per-IP and the global budget", () => {
+    let t = 0;
+    const admit = createRpcLimiter({ perIpPerMinute: env.rpcProxyRatePerMinute, globalPerMinute: env.rpcProxyGlobalPerMinute, now: () => t });
+    for (let tick = 0; tick < TICKS; tick++) {
+      t = tick * TICK_MS;
+      for (let ip = 0; ip < 60; ip++) {
+        assert.doesNotThrow(() => oneTabTick(admit, `rpc:10.0.0.${ip}`), `tick ${tick}, ip ${ip}`);
+      }
+    }
+    // One tab per IP never approaches the 20,000 per-IP budget (960 over 60s); the shared total,
+    // 60 * 960 = 57,600, stays under the 80,000 global budget too.
+  });
+
+  it("100 tabs (distinct IPs), one tab each, eventually exceed the global budget over 60s", () => {
+    let t = 0;
+    const admit = createRpcLimiter({ perIpPerMinute: env.rpcProxyRatePerMinute, globalPerMinute: env.rpcProxyGlobalPerMinute, now: () => t });
+    let hitGlobal = false;
+    for (let tick = 0; tick < TICKS && !hitGlobal; tick++) {
+      t = tick * TICK_MS;
+      for (let ip = 0; ip < 100 && !hitGlobal; ip++) {
+        try {
+          oneTabTick(admit, `rpc:10.1.0.${ip}`);
+        } catch (e) {
+          if (e instanceof RpcRateLimited && e.scope === "global") hitGlobal = true;
+          else throw e;
+        }
+      }
+    }
+    // 100 * 960 = 96,000 over 60s, above the 80,000 global budget: some caller must eventually see it.
+    assert.ok(hitGlobal, "100 one-tab IPs over 60s should exceed the global budget");
   });
 });
 
@@ -450,21 +573,38 @@ describe("createRpcProxy: upstream key never leaks (incl. configured secrets)", 
     }
   });
 
-  it("scrubs a short path-embedded key (/v2/<key> style)", async () => {
+  it("does NOT guess a path segment as a secret any more: a /v2/<key>-shaped value survives a 200 body", async () => {
     const upstream = "https://x.test/v2/shortkey";
     const { fn } = fakeFetch([new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: "leaked shortkey here" }), { status: 200 })]);
     const proxy = createRpcProxy({ upstreamUrl: () => upstream, fetch: fn });
     const res = await proxy.handle(req("getSlot"), noAdmit);
+    assert.ok(res.body.includes("shortkey"), "a path segment is no longer scrubbed by shape");
+  });
+
+  it("a legitimate base58 address equal to a URL path segment survives in a 200 body (not scrubbed by shape)", async () => {
+    const address = "G4iMjveQKXztnGoxigAeWPrb5evT9yt6qaLkgQEp2dXm"; // RELSTATE_PROGRAM, a real base58 address
+    const upstream = `https://x.test/v2/${address}`;
+    const { fn } = fakeFetch([new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { owner: address } }), { status: 200 })]);
+    const proxy = createRpcProxy({ upstreamUrl: () => upstream, fetch: fn });
+    const res = await proxy.handle(req("getSlot"), noAdmit);
+    assert.ok(res.body.includes(address), "a legitimate address must not be treated as a secret merely for sharing a shape with the URL path");
+  });
+
+  it("still scrubs a /v2/<key> path segment when it is named via the configured secrets()", async () => {
+    const upstream = "https://x.test/v2/shortkey";
+    const { fn } = fakeFetch([new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: "leaked shortkey here" }), { status: 200 })]);
+    const proxy = createRpcProxy({ upstreamUrl: () => upstream, secrets: () => ["shortkey"], fetch: fn });
+    const res = await proxy.handle(req("getSlot"), noAdmit);
     assert.ok(!res.body.includes("shortkey"));
   });
 
-  it("scrubs userinfo credentials embedded in the URL", async () => {
+  it("scrubs the URL's password, but no longer guesses the username as a secret", async () => {
     const upstream = "https://someuser:somepassword@x.test/";
     const { fn } = fakeFetch([new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: "leaked somepassword and someuser" }), { status: 200 })]);
     const proxy = createRpcProxy({ upstreamUrl: () => upstream, fetch: fn });
     const res = await proxy.handle(req("getSlot"), noAdmit);
     assert.ok(!res.body.includes("somepassword"));
-    assert.ok(!res.body.includes("someuser"));
+    assert.ok(res.body.includes("someuser"), "the username is not scrubbed any more (only the URL, its query values and its password are)");
   });
 
   it("scrubs a configured secret() value that the URL alone would not reveal", async () => {
@@ -625,9 +765,12 @@ describe("POST /api/rpc through createApp", () => {
     });
 
     it("429s once the per-minute limit is exceeded, with a JSON-RPC body that never mentions login", async () => {
-      (env as unknown as { rpcProxyRatePerMinute: number }).rpcProxyRatePerMinute = 20; // no socket in app.request => the "unknown" key, which gets a tenth: 2
+      // app.request has no socket, so clientIp resolves to "unknown", which gets 3x the configured
+      // per-IP budget (createRpcLimiter, rpcproxy.ts). perIpPerMinute=1 => a budget of 3 for "unknown".
+      (env as unknown as { rpcProxyRatePerMinute: number }).rpcProxyRatePerMinute = 1;
       (env as unknown as { rpcProxyGlobalPerMinute: number }).rpcProxyGlobalPerMinute = 1000;
       const { fn } = fakeFetch([
+        new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: 1 }), { status: 200 }),
         new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: 1 }), { status: 200 }),
         new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: 1 }), { status: 200 }),
       ]);
@@ -636,10 +779,11 @@ describe("POST /api/rpc through createApp", () => {
         app.request("/api/rpc", { method: "POST", headers: { "content-type": "application/json" }, body: req("getSlot") });
       assert.equal((await send()).status, 200);
       assert.equal((await send()).status, 200);
-      const third = await send();
-      assert.equal(third.status, 429);
-      assert.equal(third.headers.get("retry-after") !== null, true);
-      const text = await third.text();
+      assert.equal((await send()).status, 200);
+      const fourth = await send();
+      assert.equal(fourth.status, 429);
+      assert.equal(fourth.headers.get("retry-after") !== null, true);
+      const text = await fourth.text();
       assert.doesNotMatch(text.toLowerCase(), /login/);
       const body = JSON.parse(text) as { jsonrpc: string; error: { code: number } };
       assert.equal(body.jsonrpc, "2.0");
