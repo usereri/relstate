@@ -13,6 +13,7 @@ import { IS_LOCAL, RPC } from "@/lib/config";
 import { Doc } from "@/lib/hash";
 import { ReadErrors, Tick, useChain } from "@/lib/useChain";
 import { invalidateReads } from "@/lib/reads";
+import { depositShortfall, isShortPublicBalance, type TopUpNeed } from "@/lib/holdback";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -211,6 +212,8 @@ function Shell({
     setNeedsKyc(false);
     setTab("identity");
   };
+  // accepting a lease needs a PUBLIC deposit the wallet does not hold: sends the user to top up with it kept public
+  const [topUpNeed, setTopUpNeed] = useState<TopUpNeed | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [now, setNow] = useState<number>();
 
@@ -257,6 +260,13 @@ function Shell({
     }
   };
 
+  const fundRun = (l: chain.LeaseView, doc: Doc) =>
+    run("Funding deposit…", async (m) => {
+      // tidying up applications is a nicety: never let a failed lookup block accepting the lease
+      const open = await chain.loadApplications({ tenant: m.key.toBase58() }).catch(() => []);
+      return chain.fundDeposit(m, l, doc.hash, open.filter((a) => a.landlord === l.landlord));
+    });
+
   const h: Handlers = {
     busy,
     createListing: (f) => run("Publishing listing…", (m) => chain.createListing(m, chain.newId(), f)),
@@ -276,12 +286,22 @@ function Shell({
       }
       return run("Proposing lease…", (m) => chain.proposeLease(m, id, l, tenant, doc.hash, application));
     },
-    fund: (l, doc) =>
-      run("Funding deposit…", async (m) => {
-        // tidying up applications is a nicety: never let a failed lookup block accepting the lease
-        const open = await chain.loadApplications({ tenant: m.key.toBase58() }).catch(() => []);
-        return chain.fundDeposit(m, l, doc.hash, open.filter((a) => a.landlord === l.landlord));
-      }),
+    fund: async (l, doc) => {
+      if (address) {
+        const pub = await chain.loadBalances(address).then((b) => b.usdc, () => null);
+        // A null balance (no token account) or a read failure is left to the program to judge.
+        if (pub !== null) {
+          const shortfall = depositShortfall(pub, l.deposit);
+          if (shortfall > 0) {
+            setTopUpNeed({ shortfall, rent: l.rent });
+            setTab("wallet");
+            return false;
+          }
+        }
+      }
+      const ok = await fundRun(l, doc);
+      return ok;
+    },
     pay: (l) => run("Paying rent…", (m) => chain.payRent(m, l)),
     release: (l, deduction) => run("Releasing deposit…", (m) => chain.releaseDeposit(m, l, deduction)),
     markDefault: (l) => run("Declaring default…", (m) => chain.markDefault(m, l)),
@@ -360,6 +380,11 @@ function Shell({
         {error && (
           <p role="alert" className="rounded-xl border border-destructive/30 bg-danger-soft p-3 text-sm text-destructive">
             {error}
+            {role === "tenant" && isShortPublicBalance(error) && (
+              <Button size="sm" className="ml-3" onClick={() => (setTopUpNeed(null), setError(null), setTab("wallet"))}>
+                Add funds
+              </Button>
+            )}
           </p>
         )}
 
@@ -408,7 +433,7 @@ function Shell({
             connectFirst
           ))}
         {tab === "wallet" &&
-          (role === "tenant" ? <TopUp wallet={address} onCredited={bump} /> : <Payout wallet={address} balanceBase={balances?.usdc} />)}
+          (role === "tenant" ? <TopUp wallet={address} onCredited={bump} need={topUpNeed} /> : <Payout wallet={address} balanceBase={balances?.usdc} />)}
         {tab === "identity" && (
           <>
             {kycFor && (

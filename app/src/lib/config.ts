@@ -35,3 +35,10 @@ export const MINT: string = import.meta.env.VITE_MINT ?? "Gco8ivBzZTq9U4iBLEApWx
  */
 export const RUSDC_MINT: string = import.meta.env.VITE_RUSDC_MINT ?? "";
 export const MAX_TEXT = { title: 60, city: 40, blurb: 120, photo: 120 };
+
+/**
+ * Base units of a plain top-up (no lease in view) that stay public, so the tenant can always fund a
+ * deposit afterwards. Default 100 rUSDC covers the demo's deposits; a top-up smaller than it keeps
+ * the whole amount public. Override with VITE_DEFAULT_PUBLIC_HOLDBACK. (docs/contracts/treasury.md)
+ */
+export const DEFAULT_PUBLIC_HOLDBACK: number = Number(import.meta.env.VITE_DEFAULT_PUBLIC_HOLDBACK ?? 100_000_000) || 0;

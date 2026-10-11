@@ -6,6 +6,7 @@ import type { Relstate } from "@target/types/relstate";
 import { GRACE_SECS, IS_LOCAL, MINT, PERIOD_SECS, RPC, TERM_PERIODS } from "./config";
 import { retryingFetch } from "./rpc";
 import { invalidateReads, sharedRead } from "./reads";
+import { isShortPublicBalance } from "./holdback";
 import { jsonSafe } from "./utils";
 import { API, SPONSORED, postSponsored, sponsorFeePayer } from "./sponsor";
 import { asWalletProvider, localKeypair, localWallet, readOnlyWallet } from "./wallet";
@@ -696,6 +697,8 @@ export function errorMessage(e: unknown): string {
   const sim = err?.simulationResponse;
   const known = programErrorMessage([err?.message, err?.error?.errorMessage, ...(sim?.logs ?? []), sim ? jsonSafe(sim.err) : ""].filter(Boolean).join(" "));
   if (known) return known;
+  if (isShortPublicBalance([err?.message, ...(sim?.logs ?? []), sim ? jsonSafe(sim.err) : ""].filter(Boolean).join(" ")))
+    return "Not enough public balance for the deposit. Add funds and keep part of it public.";
   // System program "custom program error: 0x1" is InsufficientFunds: the wallet cannot pay the rent
   // of the account this action creates (the sponsor covers fees, not account storage).
   if (/11111111111111111111111111111111 failed: custom program error: 0x1\b/.test([err?.message, ...(sim?.logs ?? [])].filter(Boolean).join(" ")))

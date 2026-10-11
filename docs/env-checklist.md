@@ -128,6 +128,7 @@ whether you hide it or not, so the Variables tab is the honest place for it.
 | `VITE_RPC` | public | **leave unset** | the app reads through the backend's `/api/rpc` (read-only, rate limited), so no RPC key is in the bundle. Setting it ships that URL, key included, to every visitor |
 | `VITE_RUSDC_MINT` | public | **required** | the mint `scripts/make-rusdc.ts` printed |
 | `VITE_MINT` | public | **required** | the mint leases are settled in. For the confidential (private rent) demo it **must equal `VITE_RUSDC_MINT`**: the tenant holds and pays rUSDC, so a lease in another mint fails at "fund deposit" with `tenant_ata AccountNotInitialized`. The code default is a different machine's mint and will not exist on your network |
+| `VITE_DEFAULT_PUBLIC_HOLDBACK` | public | optional | base units of every plain top-up kept public for the lease deposit; default `100000000` (100 rUSDC). See docs/contracts/treasury.md |
 | `VITE_FEE_PAYER` | public | optional | blank is fine — the app then asks `GET /api/sponsor` for it |
 | `VITE_EMBEDDED_WALLET` | public | fixed by the workflow to `mock` | not a repository variable — `.github/workflows/pages.yml` always builds with it set to `mock`, since Privy's SDK binding is not wired up yet (`app/.env.example`) |
 | `SITE_APP_URL` | public | **required** | `https://<your domain>/app/` — this is the site's link to the app, must include the trailing `/app/` |

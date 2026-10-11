@@ -91,3 +91,12 @@ The registry is in memory, so a restart (or the 5 minute TTL) between tx 1 and t
 ## Auditing a rent payment
 
 `pay_rent` credits `lease.rent_amount` whatever was actually sent, because it cannot see a hidden amount (`docs/privacy.md`). `verifyRentPayment(rpc, signature, { relstateProgram, expectedAmount, auditorSecret })` is the after-the-fact check the auditor key exists for: it pairs the confidential `Transfer` directly before the `pay_rent` instruction — the program's own layout rule — decrypts the auditor ciphertext, and compares. `auditTransaction` returns every transfer in a transaction with its decrypted amount.
+
+## App behaviour: who sets the public holdback (decision)
+
+The app always sends `depositHoldbackUsdc` on checkout, so a tenant is never left with an all-private balance:
+
+- **From "Accept lease" with too little public rUSDC:** the app checks the wallet's public balance first. If it is below the lease deposit, nothing is sent; the tenant is taken to the top-up screen with the shortfall pre-set as the holdback and a suggested amount that covers the deposit plus one rent. A top-up smaller than the shortfall is refused client-side (the backend also rejects holdback > top-up).
+- **Plain top-up (no lease in view):** the holdback is `min(VITE_DEFAULT_PUBLIC_HOLDBACK, top-up)`, default 100 rUSDC (100000000 base units), enough for the demo deposits. Set it to 0 only if every deposit is funded some other way.
+- **If it still fails:** Token-2022 `0x1` (InsufficientFunds) from `fund_deposit` is shown as "Not enough public balance for the deposit" with an Add funds button.
+- **Already fully private wallets:** the app has no confidential withdraw, so there is no "move private to public" action; such a wallet tops up again (with a holdback) to get a public balance.

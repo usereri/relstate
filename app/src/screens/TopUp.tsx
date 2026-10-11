@@ -13,7 +13,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import * as fiat from "@/lib/fiat";
 import { SecurePrivateBalance } from "@/screens/Pay";
-import { USDC } from "@/lib/config";
+import { DEFAULT_PUBLIC_HOLDBACK, USDC } from "@/lib/config";
+import { holdbackFor, holdbackParam, plnToCover, type TopUpNeed } from "@/lib/holdback";
+import * as pay from "@/lib/pay";
 
 const PRESETS_PLN = ["400", "1200", "2500"];
 
@@ -48,7 +50,7 @@ const Row = ({ label, value, strong }: { label: string; value: string; strong?: 
  * read the chain itself, it tells the shell to refresh when the backend confirms
  * the webhook landed.
  */
-export function TopUp({ wallet, onCredited }: { wallet: string | null; onCredited?: () => void }) {
+export function TopUp({ wallet, onCredited, need }: { wallet: string | null; onCredited?: () => void; need?: TopUpNeed | null }) {
   const [config, setConfig] = useState<fiat.OnrampConfig | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
   const [amount, setAmount] = useState(PRESETS_PLN[1]!);
@@ -104,15 +106,30 @@ export function TopUp({ wallet, onCredited }: { wallet: string | null; onCredite
     else void follow(back.intent, "", "");
   }, [wallet, follow]);
 
+  // Arriving from "Accept lease" with a shortfall: suggest an amount that covers deposit + first rent.
+  useEffect(() => {
+    if (!need || !config) return;
+    setAmount(String(plnToCover(need.shortfall + need.rent, Number(config.plnPerUsdc), Number(config.minPln) || 10)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [need?.shortfall, need?.rent, config]);
+
   const preview = useMemo(() => (config ? fiat.previewUsdc(amount, config.plnPerUsdc) : null), [amount, config]);
   const valid = fiat.normalisePln(amount) !== null;
 
   const start = async () => {
     const normalised = fiat.normalisePln(amount);
     if (!wallet || normalised === null) return;
+    // Part of what is bought stays public: a lease deposit is paid from the public balance.
+    const rate = Number(config?.plnPerUsdc);
+    const topUpBase = Number.isFinite(rate) && rate > 0 ? Math.floor((Number(normalised) / rate) * 100) * 10_000 : 0;
+    if (need && topUpBase < need.shortfall) {
+      setPhase({ at: "error", message: `Your lease deposit needs ${pay.format(need.shortfall)} rUSDC more in your public balance: top up at least ${plnToCover(need.shortfall, rate, 0)} PLN.` });
+      return;
+    }
+    const holdback = holdbackFor(topUpBase, need ?? null, DEFAULT_PUBLIC_HOLDBACK);
     setPhase({ at: "starting" });
     try {
-      const checkout = await fiat.startTopUp(wallet, normalised);
+      const checkout = await fiat.startTopUp(wallet, normalised, holdback > 0 ? holdbackParam(holdback) : undefined);
       // Same tab on purpose: a popup blocked by the browser is the single most
       // common way a demo stalls, and the hosted page returns us here anyway.
       globalThis.location.assign(checkout.url);
@@ -179,6 +196,12 @@ export function TopUp({ wallet, onCredited }: { wallet: string | null; onCredite
                 </button>
               ))}
             </div>
+            {need && (
+              <p className="rounded-lg border border-primary/30 bg-secondary/60 p-3 text-sm">
+                Your lease deposit needs <b>{pay.format(need.shortfall)} rUSDC</b> in your public balance. That part of this top-up stays visible so the
+                deposit can be paid; the rest is made private.
+              </p>
+            )}
             {!valid && <p className="text-sm text-destructive">Enter an amount in złoty, up to two decimal places.</p>}
             {config && (
               <p id="topup-rate" className="text-sm text-muted-foreground">
