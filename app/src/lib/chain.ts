@@ -686,6 +686,10 @@ export function errorMessage(e: unknown): string {
   const sim = err?.simulationResponse;
   const known = programErrorMessage([err?.message, err?.error?.errorMessage, ...(sim?.logs ?? []), sim ? jsonSafe(sim.err) : ""].filter(Boolean).join(" "));
   if (known) return known;
+  // System program "custom program error: 0x1" is InsufficientFunds: the wallet cannot pay the rent
+  // of the account this action creates (the sponsor covers fees, not account storage).
+  if (/11111111111111111111111111111111 failed: custom program error: 0x1\b/.test([err?.message, ...(sim?.logs ?? [])].filter(Boolean).join(" ")))
+    return "This wallet has too little SOL to cover the storage rent of the account this creates. The sponsor pays fees but not rent; send the wallet a little devnet SOL and try again.";
   if (err?.error?.errorMessage) return err.error.errorMessage;
   if (sim) {
     const why = jsonSafe(sim.err);
