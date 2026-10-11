@@ -54,6 +54,7 @@ import { env } from "./env.ts";
 import type { ConfidentialKeyPair } from "./keys.ts";
 import { ZK_ELGAMAL_PROOF_PROGRAM } from "./contracts.ts";
 import { accountLayout, type Layout } from "./layout.ts";
+import { contextUse, createRentPlanRegistry } from "./rentplan.ts";
 import { RANGE_PROOF_CONTEXT_SPACE, RENT_PAYMENT_ALLOWLIST, assertRentPaymentShape } from "./rentshape.ts";
 import { getTransferSolInstruction } from "@solana-program/system";
 import { createHash } from "node:crypto";
@@ -484,9 +485,8 @@ export function createTreasury(deps: TreasuryDeps) {
       maxCuPriceMicroLamports: env.sponsor.maxCuPriceMicroLamports,
       maxFeeLamports: env.sponsor.maxFeeLamports,
     });
-    if (wallet === deps.treasury.address || !tx.accounts.some((a) => a.isSigner && a.address === wallet && a.address !== deps.treasury.address)) {
-      throw new RejectedTransaction(`the session wallet ${wallet} is not a signer of this transaction`, "wallet-mismatch");
-    }
+    if (wallet === deps.treasury.address) throw new RejectedTransaction("the treasury cannot be the session wallet", "wallet-mismatch");
+    const walletSigns = tx.accounts.some((a) => a.isSigner && a.address === wallet);
     let reservation;
     try {
       reservation = setupLimiter.reserve(wallet, maxRentLamports + worstCaseFee);
@@ -581,6 +581,7 @@ export function createTreasury(deps: TreasuryDeps) {
     maxLamportsPerWalletPerDay: env.rentPayment.maxLamportsPerWalletPerDay,
     maxLamportsGlobalPerDay: env.rentPayment.maxLamportsGlobalPerDay,
   });
+  const rentPlans = createRentPlanRegistry();
   /** Message hashes already cosigned, for the length of a blockhash's life. */
   const seenMessages = new Map<string, number>();
   const REPLAY_WINDOW_MS = 5 * 60_000;
@@ -618,19 +619,26 @@ export function createTreasury(deps: TreasuryDeps) {
     assertProgramsAllowed(tx, RENT_PAYMENT_ALLOWLIST);
     assertOnlySponsorSignatureMissing(tx, deps.treasury.address);
     await assertPresentSignaturesValid(tx);
-    if (wallet === deps.treasury.address || !tx.accounts.some((a) => a.isSigner && a.address === wallet && a.address !== deps.treasury.address)) {
-      throw new RejectedTransaction(`the session wallet ${wallet} is not a signer of this transaction`, "wallet-mismatch");
-    }
+    if (wallet === deps.treasury.address) throw new RejectedTransaction("the treasury cannot be the session wallet", "wallet-mismatch");
+    const walletSigns = tx.accounts.some((a) => a.isSigner && a.address === wallet);
+    const walletToken = await associatedTokenAddress(wallet as Address, deps.mint);
     assertRentPaymentShape(tx, {
       treasury: deps.treasury.address,
       wallet,
       mint: deps.mint,
-      walletToken: await associatedTokenAddress(wallet as Address, deps.mint),
+      walletToken,
       maxContextLamports: env.rentPayment.maxContextLamports,
       maxContextSpace: env.rentPayment.maxContextSpace,
       maxCreateAccounts: env.rentPayment.maxCreateAccounts,
       rangeContextLamports: await rangeContextRent(),
     });
+    if (!walletSigns) {
+      // A preparation transaction is not signed by the wallet, so the wallet has to be tied to it
+      // some other way (rentplan.ts). First, the wallet must actually be a rUSDC holder: its token
+      // account exists. That account costs real setup, so it is not free to rotate wallets.
+      const info = await deps.rpc.getAccountInfo(walletToken, { encoding: "base64", commitment: "confirmed" }).send();
+      if (info.value === null) throw new RejectedTransaction(`the session wallet ${wallet} has no rUSDC account`, "wallet-mismatch");
+    }
     const worstCaseFee = assertComputeBudgetWithinPolicy(tx, {
       allowlist: RENT_PAYMENT_ALLOWLIST,
       maxComputeUnits: env.sponsor.maxComputeUnits,
@@ -652,6 +660,15 @@ export function createTreasury(deps: TreasuryDeps) {
       if (e instanceof LimitError) throw new RejectedTransaction(e.message, "rate-limited");
       throw e;
     }
+    // Context bookkeeping happens last and synchronously (no await between admit and the map write
+    // beyond this point), so concurrent requests cannot both claim one context.
+    let undoPlan: () => void;
+    try {
+      undoPlan = rentPlans.admit(wallet, contextUse(tx), walletSigns);
+    } catch (e) {
+      reservation.cancel();
+      throw e;
+    }
     seenMessages.set(key, now);
     try {
       return await cosignAndSend(tx, txBase64, worstCaseFee, reservation, {
@@ -662,6 +679,7 @@ export function createTreasury(deps: TreasuryDeps) {
     } catch (e) {
       // Nothing landed, so a corrected retry of the same message is legitimate.
       seenMessages.delete(key);
+      undoPlan();
       reservation.cancel();
       throw e;
     }
