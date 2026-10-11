@@ -1,0 +1,49 @@
+# Relstate backend on Fly.io. See docs/deploy.md for the full runbook.
+#
+# Build context is the repo root (backend/Dockerfile copies app/idl/ as well as backend/), so this
+# file lives at the repo root and every `fly` command below is run from there, not from backend/.
+#
+# SINGLE INSTANCE ONLY -- do not raise min_machines_running or scale this app past one machine.
+# The backend keeps per-user/global rate limits, the replay guard and session lookups in memory
+# (docs/contracts/pay.md, "Residual risks" #3: "Limiters are per process. Fine for one demo
+# backend; a second instance needs shared state."). A second machine would double every cap
+# silently and could let a request replay by landing on the other instance.
+app = "relstate-backend"          # pick your own app name; must be globally unique on Fly. `fly launch` will ask.
+primary_region = "waw"            # Warsaw. "fra" (Frankfurt) is the other low-latency pick from Poland.
+
+[build]
+  dockerfile = "backend/Dockerfile"
+
+# Non-secret config. Secrets (FEE_PAYER_KEYPAIR, TREASURY_KEYPAIR, ...) are never here -- see
+# `fly secrets set` in docs/deploy.md. CORS_ORIGIN and APP_URL depend on your custom domain, so fill
+# them in (or override with `fly secrets set` / the Fly dashboard if you'd rather not commit them).
+[env]
+  PORT = "8787"
+  SOLANA_CLUSTER = "devnet"
+  BACKEND_MODE = "mock"            # flip to "live" only once every secret in docs/env-checklist.md is set
+  AUTH_MODE = "mock"               # live mode refuses AUTH_MODE=mock; see docs/env-checklist.md's known blocker
+  ONRAMP_PROVIDER = "mock"         # set to "stripe" once STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET are set
+  KYC_PROVIDER = "mock"
+  CORS_ORIGIN = "https://CHANGE-ME.example"
+  APP_URL = "https://CHANGE-ME.example/app/"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = false       # always on: see the single-instance note above
+  auto_start_machines = true
+  min_machines_running = 1         # always on, never 0 -- a demo that naps between visitors is worse than a $2/month machine
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  # Smallest size that runs the backend. @solana/zk-sdk's wasm and the confidential-transfer proof
+  # plans need real headroom over the 256 MB default, so this starts at 512 MB. If `fly logs` shows
+  # the machine OOM-killed, resize with `fly scale memory 1024` (no code change needed).
+  size = "shared-cpu-1x"
+  memory = "512mb"
