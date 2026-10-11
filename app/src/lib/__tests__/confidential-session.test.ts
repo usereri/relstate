@@ -40,7 +40,7 @@ describe("openSession", () => {
     // its instructions (configure/deposit/apply/transfer), with the wallet filling in the real
     // signature afterwards exactly like the sponsored fee payer.
     expect(typeof session.authority).toBe("object");
-    const authority = session.authority as kit.TransactionSigner;
+    const authority = session.authority as unknown as kit.TransactionSigner & { signTransactions: (t: unknown[]) => Promise<unknown[]> };
     expect(authority.address).toBe(kit.address(wallet.publicKey.toBase58()));
     expect(typeof authority.signTransactions).toBe("function");
 

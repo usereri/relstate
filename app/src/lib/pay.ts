@@ -71,9 +71,28 @@ export interface SecureResult {
  * Idempotent in effect: with nothing public to move it reports `secured: 0n` and sends nothing, so
  * the caller can run it on every visit without checking first.
  */
-export async function securePrivateBalance(opts: {
+export function securePrivateBalance(opts: {
   wallet: WalletProvider;
   /** Defaults to the configured rUSDC mint, or the one the backend reports. */
+  mint?: string;
+  holdback?: bigint;
+  onProgress?: OnProgress;
+}): Promise<SecureResult> {
+  // One run per wallet at a time. React re-mounts an effect in development, and a second tab or a
+  // Retry can overlap a slow run too; two concurrent runs both see "no account yet" and the loser's
+  // transactions fail on chain (a second ConfigureAccount, a double deposit).
+  const key = opts.wallet.publicKey.toBase58();
+  const running = secureInFlight.get(key);
+  if (running) return running;
+  const run = secureOnce(opts).finally(() => secureInFlight.delete(key));
+  secureInFlight.set(key, run);
+  return run;
+}
+
+const secureInFlight = new Map<string, Promise<SecureResult>>();
+
+async function secureOnce(opts: {
+  wallet: WalletProvider;
   mint?: string;
   holdback?: bigint;
   onProgress?: OnProgress;
