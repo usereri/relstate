@@ -7,11 +7,12 @@ by file, since that's the question this checklist exists to answer. Read with
 [`docs/deploy.md`](deploy.md), which is the step-by-step procedure; this page is the reference you
 come back to when a route 500s with "invalid configuration" or a build ships the wrong default.
 
-**The known blocker, up front:** `BACKEND_MODE=live` refuses `AUTH_MODE=mock` and `KYC_PROVIDER=mock`
-(`backend/src/env.ts`, `assertEnvConsistent`), and the app's only sign-in path today is
-`POST /api/auth/mock`. So **a hosted backend cannot run `BACKEND_MODE=live` until a separate task
-wires up a real login** (the embedded-wallet / session exchange workstream). Until then, deploy with
-`BACKEND_MODE=mock`. See "What works in mock mode" at the bottom before promising anything on stage.
+**Live mode on the hosted demo:** `BACKEND_MODE=live` refuses `AUTH_MODE=mock`. Use
+`AUTH_MODE=wallet` (users sign a one-time challenge with their wallet; no third party) and set
+`APP_URL` (challenges are bound to its origin). `KYC_PROVIDER=mock` is refused in live mode unless
+**both** `ALLOW_MOCK_KYC=devnet` and `SOLANA_CLUSTER=devnet` are set, and the RPC's genesis hash
+confirms devnet at boot; the backend then logs a loud warning. Mock KYC still writes the real
+on-chain Attestation; it only skips document verification. Anything else refuses to boot.
 
 ## Legend
 
@@ -36,8 +37,9 @@ wires up a real login** (the embedded-wallet / session exchange workstream). Unt
 | Variable | Where | Public? | Required | Example |
 |---|---|---|---|---|
 | `PORT` | Fly env (also hardcoded in `backend/Dockerfile`) | public | optional (default `8787`) | `8787` |
-| `BACKEND_MODE` | Fly env | public | **set to `mock`** — see the blocker above | `mock` |
-| `AUTH_MODE` | Fly env | public | optional (default `mock`; `live` mode refuses `mock`) | `mock` |
+| `BACKEND_MODE` | Fly env | public | `mock` or `live` | `live` |
+| `AUTH_MODE` | Fly env | public | optional (default `mock`; `live` mode refuses `mock`; use `wallet` for real login) | `wallet` |
+| `WALLET_SESSION_TTL_SECONDS` / `AUTH_CHALLENGE_TTL_SECONDS` / `AUTH_RATE_PER_MINUTE` | Fly env | public | optional, `AUTH_MODE=wallet` only (defaults `43200` / `300` / `20` per IP per route) | `43200` |
 | `SESSION_SECRET` | Fly secret | **secret** | required when `BACKEND_MODE=live`; a random per-process one is used in mock mode | 32+ random bytes, base64 |
 | `SESSION_TTL_SECONDS` | Fly env | public | optional (default `3600`) | `3600` |
 | `ADMIN_TOKEN` | Fly secret | **secret** | required when `BACKEND_MODE=live`; guards `/api/treasury/wrap` and `/credit-reserve` | 32+ random bytes |
@@ -83,7 +85,8 @@ All optional with working defaults (`backend/src/env.ts`); set only to tune them
 
 | Variable | Where | Public? | Required | Example |
 |---|---|---|---|---|
-| `KYC_PROVIDER` | Fly env | public | optional (default `mock`; `live` backend mode refuses `mock`) | `mock` |
+| `KYC_PROVIDER` | Fly env | public | optional (default `mock`; `live` backend mode refuses `mock` unless `ALLOW_MOCK_KYC=devnet`) | `mock` |
+| `ALLOW_MOCK_KYC` | Fly env | public | only to run mock KYC in live mode; must be exactly `devnet`, requires `SOLANA_CLUSTER=devnet` and a devnet RPC (genesis-hash checked at boot) | `devnet` |
 | `KYC_LEVEL` | Fly env | public | optional (default `1`) | `1` |
 | `KYC_VALIDITY_DAYS` | Fly env | public | optional (default `365`) | `365` |
 | `SUMSUB_APP_TOKEN` | Fly secret | **secret** | required when `KYC_PROVIDER=sumsub` | vendor token |
