@@ -7,6 +7,7 @@ import type { Address, Signature } from "@solana/kit";
 const { KycError, KycUnavailable, createKyc, mockVerificationPage } = await import("../src/providers/kyc.ts");
 const { NO_ISSUER } = await import("../src/providers/kyc-chain.ts");
 const { WebhookError } = await import("../src/providers/stripe.ts");
+const { kycConfigFromEnv } = await import("../src/providers/index.ts");
 import type { KycConfig } from "../src/providers/kyc.ts";
 import type { AttestationAccount, AttestationChain, KycPolicy } from "../src/providers/kyc-chain.ts";
 
@@ -488,6 +489,16 @@ describe("construction", () => {
   });
 });
 
+describe("kycConfigFromEnv", () => {
+  it("always includes a mock budget (every backend mode), with conservative defaults", () => {
+    const cfg = kycConfigFromEnv();
+    assert.deepEqual(cfg.mockBudget, { maxPerHour: 30, maxLamportsPerDay: 400_000_000n, lamportsPerAttest: 4_000_000n });
+    // The daily lamport cap is exactly 100 attests' worth, well under what 30/hour would allow over
+    // a full day (720): the daily cap, not the hourly rate, is what actually bounds sustained abuse.
+    assert.equal(cfg.mockBudget!.maxLamportsPerDay / cfg.mockBudget!.lamportsPerAttest, 100n);
+  });
+});
+
 describe("mock attest budget", () => {
   const HOUR = 3_600_000;
   type MockBudget = NonNullable<KycConfig["mockBudget"]>;
@@ -548,7 +559,7 @@ describe("mock attest budget", () => {
     assert.equal(fake.calls.attest.length, 2);
   });
 
-  it("is not applied when mockBudget is undefined (today's default outside live mode)", async () => {
+  it("is not applied when mockBudget is undefined (createKyc's own default; kycConfigFromEnv now always sets one, in every backend mode)", async () => {
     const { kyc, fake } = clocked(undefined);
     for (let i = 0; i < 5; i++) {
       const { session } = await kyc.start({ wallet: WALLET });
