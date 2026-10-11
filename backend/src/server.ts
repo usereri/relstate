@@ -4,6 +4,7 @@
 import { isAddress, type Address, type Signature } from "@solana/kit";
 import { Hono } from "hono";
 import { getConnInfo } from "@hono/node-server/conninfo";
+import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { AuthError, assertAdmin, createSessionToken, sessionFromAuthorizationHeader } from "./auth.ts";
 import { verifyRentPayment } from "./confidential.ts";
@@ -20,6 +21,7 @@ import { ServiceUnavailable, createServices, type Services } from "./services.ts
 import { InvariantViolation, reportForLog, type InvariantReport } from "./treasury.ts";
 import { clientIpOf, createIpLimiter, createWalletAuth, RateLimited, type WalletAuth } from "./wallet-auth.ts";
 import { RejectedTransaction } from "./txinspect.ts";
+import { createRpcProxy, RPC_PROXY_MAX_BODY_BYTES, type RpcProxy } from "./rpcproxy.ts";
 
 const asInvariantView = (report: InvariantReport): TreasuryInvariantView => reportForLog(report);
 
@@ -104,7 +106,11 @@ export function safeReturnBase(requested: string | undefined, appUrl = env.appUr
   }
 }
 
-export function createApp(services: Services = createServices(), walletAuth: WalletAuth | undefined = env.authMode === "wallet" ? createWalletAuth() : undefined) {
+export function createApp(
+  services: Services = createServices(),
+  walletAuth: WalletAuth | undefined = env.authMode === "wallet" ? createWalletAuth() : undefined,
+  rpcProxy: RpcProxy = createRpcProxy({ upstreamUrl: () => env.rpcUrl }),
+) {
   const app = new Hono();
   app.use("*", cors({ origin: env.corsOrigin, allowHeaders: ["content-type", "authorization"], allowMethods: ["GET", "POST", "OPTIONS"] }));
 
@@ -177,6 +183,27 @@ export function createApp(services: Services = createServices(), walletAuth: Wal
     }
     return clientIpOf((n) => c.req.header(n), socket, env.trustProxyIpHeader);
   };
+
+  /**
+   * Read-only JSON-RPC proxy for the browser (see rpcproxy.ts). Public on purpose: it carries no
+   * session and does only what the allowlist there permits. The limiter counts one hit per call.
+   */
+  const rpcLimit = createIpLimiter(env.rpcProxyRatePerMinute);
+  app.post(
+    "/api/rpc",
+    bodyLimit({
+      maxSize: RPC_PROXY_MAX_BODY_BYTES,
+      onError: (c) => c.json({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "request too large" } }, 413),
+    }),
+    async (c) => {
+      const ip = clientIp(c);
+      const result = await rpcProxy.handle(await c.req.text(), (calls) => {
+        for (let i = 0; i < calls; i++) rpcLimit(`rpc:${ip}`);
+      });
+      if (result.retryAfter) c.header("retry-after", result.retryAfter);
+      return c.body(result.body, result.status as 200, { "content-type": "application/json" });
+    },
+  );
 
   /** Wallet-signature login. Only mounted when AUTH_MODE=wallet; see wallet-auth.ts. */
   if (walletAuth !== undefined) {

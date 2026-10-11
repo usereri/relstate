@@ -97,6 +97,8 @@ export const env = {
   authRatePerMinute: num("AUTH_RATE_PER_MINUTE", 20),
   /** Per IP, across the treasury-key routes: failing requests would otherwise cost nothing. */
   treasuryRatePerMinute: num("TREASURY_RATE_PER_MINUTE", 60),
+  /** Per IP, JSON-RPC calls per minute through the read-only `/api/rpc` proxy (a batch counts once per item). */
+  rpcProxyRatePerMinute: num("RPC_PROXY_RATE_PER_MINUTE", 600),
   sessionSecret: str("SESSION_SECRET"),
   sessionTtlSeconds: num("SESSION_TTL_SECONDS", 3600),
   adminToken: str("ADMIN_TOKEN"),
