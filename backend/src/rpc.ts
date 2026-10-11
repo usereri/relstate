@@ -218,7 +218,7 @@ export async function sendAndConfirmByPolling(
     const status = value[0];
     if (status != null) {
       if (status.err != null) {
-        throw new Error(`transaction ${signature} failed: ${JSON.stringify(status.err)}`);
+        throw new Error(`transaction ${signature} failed: ${jsonSafe(status.err)}`);
       }
       if (status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized") return signature;
     } else if (poll % o.resendEveryPolls === 0) {
@@ -271,3 +271,6 @@ export function createPlanRunner(
     return signatures.slice(before);
   };
 }
+
+/** JSON.stringify that survives the bigints RPC errors carry (InstructionError custom codes). */
+export const jsonSafe = (v: unknown): string => JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x));

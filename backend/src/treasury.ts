@@ -69,6 +69,7 @@ import {
   type InspectedTransaction,
 } from "./txinspect.ts";
 import { createRateLimiter, LimitError, type RateLimiter } from "./limits.ts";
+import { jsonSafe } from "./rpc.ts";
 
 export type TreasuryRpc = Rpc<
   GetAccountInfoApi & GetBalanceApi & GetMinimumBalanceForRentExemptionApi & GetTokenAccountBalanceApi & SimulateTransactionApi & SendTransactionApi
@@ -532,7 +533,7 @@ export function createTreasury(deps: TreasuryDeps) {
       })
       .send();
     if (simulation.value.err !== null) {
-      throw new RejectedTransaction(`simulation failed: ${JSON.stringify(simulation.value.err)}`, "simulation-failed");
+      throw new RejectedTransaction(`simulation failed: ${jsonSafe(simulation.value.err)}`, "simulation-failed");
     }
 
     // Simulation does not charge the fee, so this delta is exactly what the

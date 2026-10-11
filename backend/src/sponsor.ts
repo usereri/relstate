@@ -38,6 +38,7 @@ import {
   readComputeBudget,
   type SponsorPolicy,
 } from "./txinspect.ts";
+import { jsonSafe } from "./rpc.ts";
 
 export type SponsorRpc = Pick<Rpc<SimulateTransactionApi & SendTransactionApi>, "simulateTransaction" | "sendTransaction">;
 
@@ -137,7 +138,7 @@ export function createSponsorService(deps: SponsorDeps) {
 
         if (simulation.value.err !== null) {
           throw new RejectedTransaction(
-            `simulation failed: ${JSON.stringify(simulation.value.err)}${
+            `simulation failed: ${jsonSafe(simulation.value.err)}${
               simulation.value.logs ? ` — ${simulation.value.logs.slice(-3).join(" | ")}` : ""
             }`,
             "simulation-failed",
