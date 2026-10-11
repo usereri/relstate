@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stubLocalStorage } from "./storage";
 import { assertChallenge } from "../session";
+// Shared with the backend's test suite (backend/test/fixtures/challenge.json and
+// backend/test/wallet-auth.test.ts): one template, pinned from both ends, so the two sides of the
+// wire can never silently drift apart on what a login challenge looks like.
+import challengeFixture from "../../../../backend/test/fixtures/challenge.json";
 
 // session.ts takes API from sponsor.ts, which reads VITE_API at load, so each case re-imports.
 async function load(env: { api?: string } = { api: "http://b" }) {
@@ -431,26 +435,26 @@ describe("assertChallenge", () => {
     ];
   }
   const msg = (opts: Parameters<typeof lines>[0] = {}) => lines(opts).join("\n");
-  const check = (message: string, nonce = VALID_NONCE) => () => assertChallenge(message, WALLET, nonce, NOW * 1000);
+  const check = (message: string, nonce = VALID_NONCE) => () => assertChallenge(message, WALLET, nonce);
 
   it("passes a well-formed challenge for this wallet, site and nonce", () => {
     expect(check(msg())).not.toThrow();
   });
 
   it("rejects an extra line", () => {
-    expect(() => assertChallenge([...lines(), "extra"].join("\n"), WALLET, VALID_NONCE, NOW * 1000)).toThrow(/does not match the expected format/);
+    expect(() => assertChallenge([...lines(), "extra"].join("\n"), WALLET, VALID_NONCE)).toThrow(/does not match the expected format/);
   });
 
   it("rejects a missing line", () => {
     const l = lines();
     l.splice(2, 1); // drop the blank line after the wallet
-    expect(() => assertChallenge(l.join("\n"), WALLET, VALID_NONCE, NOW * 1000)).toThrow(/does not match the expected format/);
+    expect(() => assertChallenge(l.join("\n"), WALLET, VALID_NONCE)).toThrow(/does not match the expected format/);
   });
 
   it("rejects reordered lines", () => {
     const l = lines();
     [l[6], l[7]] = [l[7]!, l[6]!]; // swap the Nonce and Issued At lines
-    expect(() => assertChallenge(l.join("\n"), WALLET, VALID_NONCE, NOW * 1000)).toThrow(/does not match the expected format/);
+    expect(() => assertChallenge(l.join("\n"), WALLET, VALID_NONCE)).toThrow(/does not match the expected format/);
   });
 
   it("rejects a different statement", () => {
@@ -482,30 +486,71 @@ describe("assertChallenge", () => {
     }
   });
 
-  it("rejects an Issued At too far from now (clock skew)", () => {
-    expect(check(msg({ issuedAt: NOW * 1000 - 6 * 60_000, expiresAt: NOW * 1000 + 4 * 60_000 }))).toThrow(/does not match the expected format/);
-    expect(check(msg({ issuedAt: NOW * 1000 + 6 * 60_000, expiresAt: NOW * 1000 + 11 * 60_000 }))).toThrow(/does not match the expected format/);
+  // assertChallenge no longer compares against the device clock at all (a wrong device clock must
+  // not block login; the backend enforces real expiry independently). Only the challenge's own
+  // internal consistency — expiry strictly after issued, and a lifetime capped at 10 minutes — matters.
+
+  it("accepts a challenge issued and expiring far from the device's current time, as long as the lifetime is <= 10 minutes", () => {
+    const longAgo = NOW * 1000 - 1_000_000_000; // ages before "now", by any device clock
+    expect(check(msg({ issuedAt: longAgo, expiresAt: longAgo + 5 * 60_000 }))).not.toThrow();
+    const farFuture = NOW * 1000 + 1_000_000_000; // ages after "now"
+    expect(check(msg({ issuedAt: farFuture, expiresAt: farFuture + 10 * 60_000 }))).not.toThrow();
   });
 
-  it("rejects an expiry already in the past", () => {
-    expect(check(msg({ expiresAt: NOW * 1000 - 1 }))).toThrow(/does not match the expected format/);
+  it("accepts an expiry that is already 'in the past' relative to the device clock, as long as it is after issued and within the lifetime cap", () => {
+    const issuedAt = NOW * 1000 - 20 * 60_000; // 20 minutes before "now"
+    expect(check(msg({ issuedAt, expiresAt: issuedAt + 10 * 60_000 }))).not.toThrow(); // expiry itself is still 10 min before "now"
   });
 
-  it("rejects a lifetime longer than 10 minutes, even if issued just now", () => {
-    expect(check(msg({ issuedAt: NOW * 1000, expiresAt: NOW * 1000 + 10 * 60_000 + 1 }))).toThrow(/does not match the expected format/);
-    expect(check(msg({ issuedAt: NOW * 1000, expiresAt: NOW * 1000 + 10 * 60_000 }))).not.toThrow(); // exactly 10 minutes is fine
+  it("rejects an expiry at or before its own issued time, regardless of the device clock", () => {
+    expect(check(msg({ issuedAt: NOW * 1000, expiresAt: NOW * 1000 }))).toThrow(/does not match the expected format/); // equal
+    expect(check(msg({ issuedAt: NOW * 1000, expiresAt: NOW * 1000 - 1 }))).toThrow(/does not match the expected format/); // before
+  });
+
+  it("rejects a lifetime longer than 10 minutes, regardless of the device clock", () => {
+    const issuedAt = NOW * 1000 - 1_000_000_000;
+    expect(check(msg({ issuedAt, expiresAt: issuedAt + 10 * 60_000 + 1 }))).toThrow(/does not match the expected format/);
+    expect(check(msg({ issuedAt, expiresAt: issuedAt + 10 * 60_000 }))).not.toThrow(); // exactly 10 minutes is fine
+  });
+
+  it("rejects a malformed Issued At or Expiration Time value, even with the right label", () => {
+    const l1 = lines();
+    l1[7] = "Issued At: not-a-date";
+    expect(() => assertChallenge(l1.join("\n"), WALLET, VALID_NONCE)).toThrow(/does not match the expected format/);
+    const l2 = lines();
+    l2[8] = "Expiration Time: not-a-date";
+    expect(() => assertChallenge(l2.join("\n"), WALLET, VALID_NONCE)).toThrow(/does not match the expected format/);
   });
 
   it("rejects other casings or labels for the Issued At / Expiration Time lines", () => {
     for (const bad of ["issued at", "ISSUED AT", "Issued-At", "Created At"]) {
       const l = lines();
       l[7] = `${bad}: ${new Date(NOW * 1000).toISOString()}`;
-      expect(() => assertChallenge(l.join("\n"), WALLET, VALID_NONCE, NOW * 1000)).toThrow(/does not match the expected format/);
+      expect(() => assertChallenge(l.join("\n"), WALLET, VALID_NONCE)).toThrow(/does not match the expected format/);
     }
     for (const bad of ["expiration time", "Expires", "EXPIRATION TIME"]) {
       const l = lines();
       l[8] = `${bad}: ${new Date(NOW * 1000 + 5 * 60_000).toISOString()}`;
-      expect(() => assertChallenge(l.join("\n"), WALLET, VALID_NONCE, NOW * 1000)).toThrow(/does not match the expected format/);
+      expect(() => assertChallenge(l.join("\n"), WALLET, VALID_NONCE)).toThrow(/does not match the expected format/);
+    }
+  });
+});
+
+describe("assertChallenge against the shared fixture (backend/test/fixtures/challenge.json)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("window", { location: { host: challengeFixture.host, origin: challengeFixture.origin } });
+  });
+
+  it("accepts the fixture message exactly as the backend would produce it", () => {
+    expect(() => assertChallenge(challengeFixture.message, challengeFixture.wallet, challengeFixture.nonce)).not.toThrow();
+  });
+
+  it("rejects every single-line mutation of the fixture message", () => {
+    const fixtureLines = challengeFixture.message.split("\n");
+    for (let i = 0; i < fixtureLines.length; i++) {
+      const mutated = [...fixtureLines];
+      mutated[i] = `${mutated[i]}-x`;
+      expect(() => assertChallenge(mutated.join("\n"), challengeFixture.wallet, challengeFixture.nonce)).toThrow(/does not match the expected format/);
     }
   });
 });
