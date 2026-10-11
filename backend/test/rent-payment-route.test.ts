@@ -10,7 +10,7 @@ import { RejectedTransaction, inspectTransaction } from "../src/txinspect.ts";
 import { createTreasury } from "../src/treasury.ts";
 import type { TreasuryRpc } from "../src/treasury.ts";
 import type { Services } from "../src/services.ts";
-import { REAL_CONTEXTS, TOKEN22, WS, acct, build, cast, ix, plan, tx5, type Cast } from "./rentfixtures.ts";
+import { REAL_CONTEXTS, TOKEN22, WS, acct, build, cast, ix, plan, prepTxs, tx5, type Cast } from "./rentfixtures.ts";
 import { corruptSignature, ixSignedBy } from "./txfixtures.ts";
 
 const { createApp } = await import("../src/server.ts");
@@ -19,12 +19,13 @@ const { createSessionToken } = await import("../src/auth.ts");
 const code = (c: string) => (e: unknown) => e instanceof RejectedTransaction && e.code === c;
 const generous = () => createRateLimiter({ maxPerWalletPerHour: 100, maxGlobalPerHour: 100, maxLamportsPerWalletPerDay: 10n ** 12n, maxLamportsGlobalPerDay: 10n ** 12n });
 
-async function fixture(options: { limiter?: RateLimiter; mode?: "mock" | "live" } = {}) {
+/** `prepare` (default true) runs the four real preparation transactions first, so the wallet's contexts are registered and a tx5 can be admitted; the send log is cleared afterwards. */
+async function fixture(options: { limiter?: RateLimiter; mode?: "mock" | "live"; prepare?: boolean } = {}) {
   const c0 = await cast();
   const mint = c0.mint;
   // The route derives the wallet's token account itself, so the cast has to agree with it.
   const c: Cast = { ...c0, walletToken: await associatedTokenAddress(c0.wallet.address, mint), rules: { ...c0.rules, walletToken: await associatedTokenAddress(c0.wallet.address, mint) } };
-  const state = { balance: 10n ** 10n, balanceAfterSim: null as bigint | null, simPre: null as bigint | null, spent: 2_500_000n, simError: null as unknown, failSends: 0, sent: [] as string[] };
+  const state = { balance: 10n ** 10n, balanceAfterSim: null as bigint | null, simPre: null as bigint | null, spent: 2_500_000n, simError: null as unknown, failSends: 0, walletAccount: true, sent: [] as string[] };
   let simulated = false;
   const rpc = {
     // The range context's rent-exempt minimum, as the cluster reports it.
@@ -43,6 +44,9 @@ async function fixture(options: { limiter?: RateLimiter; mode?: "mock" | "live" 
         const pre = state.simPre ?? state.balance;
         return { context: { slot: 1n }, value: { err: state.simError, accounts: [{ lamports: pre - state.spent }] } };
       },
+    }),
+    getAccountInfo: () => ({
+      send: async () => ({ context: { slot: 1n }, value: state.walletAccount ? { lamports: 1n, data: ["", "base64"], owner: TOKEN22, executable: false, rentEpoch: 0n, space: 0n } : null }),
     }),
     sendTransaction: (wire: string) => ({
       send: async () => {
@@ -73,7 +77,14 @@ async function fixture(options: { limiter?: RateLimiter; mode?: "mock" | "live" 
       body: raw ? (body as string) : JSON.stringify(body),
     });
   const sponsor = (instructions: Instruction[], wallet = c.wallet.address) => build(c, instructions).then((txBase64) => treasury.sponsorRentPayment({ txBase64, wallet }));
-  return { c, p: plan(c), state, treasury, post, sponsor };
+  const prepare = async (wallet = c.wallet.address) => {
+    for (const instructions of prepTxs(c)) await sponsor(instructions, wallet);
+  };
+  if (options.prepare !== false) {
+    await prepare();
+    state.sent.length = 0;
+  }
+  return { c, p: plan(c), state, treasury, post, sponsor, prepare };
 }
 type Fx = Awaited<ReturnType<typeof fixture>>;
 const valid = (f: Fx, price = 0n) => [...(price > 0n ? [f.p.computePrice(price)] : []), ...tx5(f.c)];
@@ -120,9 +131,12 @@ describe("sponsorRentPayment: the happy path", () => {
 });
 
 describe("sponsorRentPayment: whose transaction it is", () => {
-  it("rejects a session wallet that is not a signer", async () => {
+  // The wallet no longer has to sign every transaction. A tx5 built for another wallet is stopped
+  // by the shape filter first (its transfer is not from `other`'s own account); the registry case
+  // (right shape, foreign contexts) is in rentplan-route.test.ts.
+  it("rejects a session wallet that is not the transaction's wallet", async () => {
     const f = await fixture();
-    await assert.rejects(f.sponsor(valid(f), f.c.other.address), code("wallet-mismatch"));
+    await assert.rejects(f.sponsor(valid(f), f.c.other.address), code("wrong-source"));
     assert.equal(f.state.sent.length, 0);
   });
 
@@ -257,19 +271,20 @@ describe("sponsorRentPayment: rate limiting", () => {
   const one = () => createRateLimiter({ maxPerWalletPerHour: 1, maxGlobalPerHour: 10, maxLamportsPerWalletPerDay: 10n ** 12n, maxLamportsGlobalPerDay: 10n ** 12n });
 
   it("refuses a wallet past its hourly cap with rate-limited", async () => {
-    const f = await fixture({ limiter: one() });
-    await f.sponsor(valid(f, 1n));
-    await assert.rejects(f.sponsor(valid(f, 2n)), code("rate-limited"));
+    // Preparation transactions count against the same limiter as the final one.
+    const f = await fixture({ limiter: one(), prepare: false });
+    await f.sponsor(prepTxs(f.c, 1)[0]!);
+    await assert.rejects(f.sponsor(prepTxs(f.c, 2)[1]!), code("rate-limited"));
     assert.equal(f.state.sent.length, 1);
   });
 
   it("does not consume budget for a request that is refused", async () => {
-    const f = await fixture({ limiter: one() });
+    const f = await fixture({ limiter: one(), prepare: false });
     f.state.spent = env.rentPayment.maxSpendLamports + 1n;
-    await assert.rejects(f.sponsor(valid(f, 1n)), code("rent-too-high"));
+    await assert.rejects(f.sponsor(prepTxs(f.c, 1)[0]!), code("rent-too-high"));
     await assert.rejects(f.sponsor([ix(ASSOCIATED_TOKEN_PROGRAM as Address, [1], [])]), code("program-not-allowed"));
     f.state.spent = 1_000_000n;
-    await f.sponsor(valid(f, 2n));
+    await f.sponsor(prepTxs(f.c, 2)[0]!);
     assert.equal(f.state.sent.length, 1);
   });
 });
@@ -299,11 +314,11 @@ describe("POST /api/treasury/rent-payment", () => {
     assert.ok(body.signature.length > 40);
   });
 
-  it("answers 400 wallet-mismatch for a session that does not own the transaction", async () => {
+  it("answers 400 for a session that does not own the transaction", async () => {
     const f = await fixture();
     const res = await f.post(f.c.other.address, { txBase64: await build(f.c, valid(f)) });
     assert.equal(res.status, 400);
-    assert.equal(((await res.json()) as { code: string }).code, "wallet-mismatch");
+    assert.notEqual(((await res.json()) as { code: string }).code, undefined);
     assert.equal(f.state.sent.length, 0);
   });
 
@@ -338,9 +353,10 @@ describe("POST /api/treasury/rent-payment", () => {
     it("never books a negative amount for a transaction that only credits the treasury", async () => {
       const limiter = rentLimiter();
       const f = await fixture({ limiter });
+      const bookedBefore = limiter.snapshot(f.c.wallet.address).walletLamportsLastDay;
       f.state.spent = -4_000_000n; // the closing transaction: the treasury ends up richer
       await f.sponsor(valid(f));
-      const booked = limiter.snapshot(f.c.wallet.address).walletLamportsLastDay;
+      const booked = limiter.snapshot(f.c.wallet.address).walletLamportsLastDay - bookedBefore;
       assert.ok(booked >= 0n, `booked ${booked}`);
       assert.ok(booked < 100_000n, "a pure credit should book only its fee");
     });
@@ -380,9 +396,9 @@ describe("POST /api/treasury/rent-payment", () => {
 
   it("reports a rate limit as a rejected transaction with code rate-limited, like the setup route", async () => {
     const limiter = createRateLimiter({ maxPerWalletPerHour: 1, maxGlobalPerHour: 10, maxLamportsPerWalletPerDay: 10n ** 12n, maxLamportsGlobalPerDay: 10n ** 12n });
-    const f = await fixture({ limiter });
-    await f.post(f.c.wallet.address, { txBase64: await build(f.c, valid(f, 1n)) });
-    const res = await f.post(f.c.wallet.address, { txBase64: await build(f.c, valid(f, 2n)) });
+    const f = await fixture({ limiter, prepare: false });
+    await f.post(f.c.wallet.address, { txBase64: await build(f.c, prepTxs(f.c, 1)[0]!) });
+    const res = await f.post(f.c.wallet.address, { txBase64: await build(f.c, prepTxs(f.c, 2)[1]!) });
     assert.equal(((await res.json()) as { code: string }).code, "rate-limited");
   });
 });

@@ -97,3 +97,21 @@ export const build = (c: Cast, instructions: Instruction[]) => buildTx({ feePaye
 export const tx1 = (c: Cast) => { const p = plan(c); return [p.createContext(c.ctxA), p.verify(c.ctxA)]; };
 /** tx 5 of the real plan: transfer, pay_rent directly after it, then three closes. */
 export const tx5 = (c: Cast) => { const p = plan(c); return [p.transfer(), p.payRent(), p.close(c.ctxA.address), p.close(c.ctxB.address), p.close(c.ctxC.address)]; };
+
+/**
+ * The four preparation transactions of the real plan, in order:
+ * [createAccount A + verify A], [createAccount B + verify B], [createAccount range C], [verify C].
+ * `salt` changes the compute-unit limit so two builds of the same shape are different messages
+ * (the route refuses an identical message twice).
+ */
+export const prepTxs = (c: Cast, salt = 0) => {
+  const p = plan(c);
+  const budget = () => p.computeLimit(200_000 + salt);
+  const range = REAL_CONTEXTS.range;
+  return [
+    [budget(), p.createContext(c.ctxA), p.verify(c.ctxA, REAL_CONTEXTS.equality.verifyTag)],
+    [budget(), p.createContext(c.ctxB, { lamports: REAL_CONTEXTS.validity.lamports, space: REAL_CONTEXTS.validity.space }), p.verify(c.ctxB, REAL_CONTEXTS.validity.verifyTag)],
+    [budget(), p.createContext(c.ctxC, { lamports: range.lamports, space: range.space })],
+    [budget(), p.verify(c.ctxC, range.verifyTag)],
+  ];
+};
