@@ -234,7 +234,12 @@ function sponsoredSubmit(wallet: WalletProvider, l: Libs, post: (txBase64: strin
     const anchor = await import("@anchor-lang/core");
     const wire = Buffer.from(kit.getBase64EncodedWireTransaction(partial), "base64");
     const tx = anchor.web3.VersionedTransaction.deserialize(wire);
-    const signed = await wallet.signTransaction(tx);
+    // Several transactions of a rent-payment plan (the proof context-state ones) have only the
+    // treasury and ephemeral keys as signers; web3.js throws "Cannot sign with non signer key" if
+    // the wallet is asked to sign one, so only ask when its signature is actually required.
+    const required = tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures);
+    const walletKey = wallet.publicKey.toBase58();
+    const signed = required.some((k) => k.toBase58() === walletKey) ? await wallet.signTransaction(tx) : tx;
     const { signature, broadcast } = await post(Buffer.from(signed.serialize()).toString("base64"));
     // The backend returns as soon as it has SENT the transaction. A proof plan is a chain of
     // dependent transactions (each reads the context state the one before created), and so are
