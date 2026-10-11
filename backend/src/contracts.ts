@@ -148,7 +148,7 @@ export interface ConfidentialAccountSetupResponse {
 export interface HealthResponse {
   ok: boolean;
   mode: "mock" | "live";
-  authMode: "mock" | "hmac";
+  authMode: "mock" | "hmac" | "wallet";
   cluster: string;
   rpc: string;
   rpcIsHelius: boolean;

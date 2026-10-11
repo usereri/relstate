@@ -79,7 +79,20 @@ export const env = {
    * endpoint is enabled. `live` requires the keys below and refuses to boot without them.
    */
   mode: (str("BACKEND_MODE", "mock") === "live" ? "live" : "mock") as "mock" | "live",
-  authMode: (str("AUTH_MODE", "mock") === "hmac" ? "hmac" : "mock") as "mock" | "hmac",
+  /**
+   * `wallet` is real login: the user signs a one-time challenge with their wallet (wallet-auth.ts).
+   * `mock` hands a session to anyone and is refused in live mode.
+   */
+  authMode: ((): "mock" | "hmac" | "wallet" => {
+    const v = str("AUTH_MODE", "mock");
+    return v === "hmac" ? "hmac" : v === "wallet" ? "wallet" : "mock";
+  })(),
+  /** Wallet-login sessions live longer than the 1 h default: re-signing every hour is a bad demo. */
+  walletSessionTtlSeconds: num("WALLET_SESSION_TTL_SECONDS", 43_200),
+  /** How long a login challenge stays valid. */
+  challengeTtlSeconds: num("AUTH_CHALLENGE_TTL_SECONDS", 300),
+  /** Requests per minute per client IP to /api/auth/challenge and /api/auth/verify (each). */
+  authRatePerMinute: num("AUTH_RATE_PER_MINUTE", 20),
   sessionSecret: str("SESSION_SECRET"),
   sessionTtlSeconds: num("SESSION_TTL_SECONDS", 3600),
   adminToken: str("ADMIN_TOKEN"),
@@ -104,6 +117,8 @@ export const env = {
 
   /** Where the hosted checkout sends the user back to. The app is a hash router, so the return path lives inside the fragment. */
   appUrl: str("APP_URL", "http://localhost:5173"),
+  /** True when APP_URL was set explicitly; wallet login binds challenges to its origin. */
+  appUrlExplicit: str("APP_URL") !== "",
 
   /**
    * Fiat in (workstream E, docs/contracts/stripe.md). `mock` is the no-secrets
@@ -165,6 +180,11 @@ export const env = {
      * re-attesting a revoked wallet after the in-memory dedupe store is lost on restart.
      */
     sumsubMaxEventAgeSeconds: num("SUMSUB_WEBHOOK_MAX_AGE_SECONDS", 600),
+    /**
+     * Explicit devnet-only override that lets a live backend run the mock verifier. Only the exact
+     * value `devnet` counts, and boot additionally checks the RPC's genesis hash (see boot.ts).
+     */
+    allowMock: str("ALLOW_MOCK_KYC"),
     /** Verification links one wallet may start per hour; each one costs a vendor API call in sumsub mode. */
     maxStartsPerWalletPerHour: num("KYC_MAX_STARTS_PER_WALLET_PER_HOUR", 10),
   },
@@ -244,7 +264,10 @@ export function assertEnvConsistent(e: Env = env): void {
     // Live mode forces a real issuer key into place, so the mock verifier's unsigned "Approve"
     // button would write real attestations signed by it. KYC_PROVIDER defaults to mock, so this
     // has to be refused by name rather than hoped for.
-    if (e.kyc.provider === "mock") problems.push("KYC_PROVIDER=mock is refused when BACKEND_MODE=live (set KYC_PROVIDER=sumsub)");
+    if (e.kyc.provider === "mock" && !(e.kyc.allowMock === "devnet" && e.cluster === "devnet")) {
+      problems.push("KYC_PROVIDER=mock is refused when BACKEND_MODE=live (set KYC_PROVIDER=sumsub, or on devnet only ALLOW_MOCK_KYC=devnet with SOLANA_CLUSTER=devnet)");
+    }
+    if (e.authMode === "wallet" && !e.appUrlExplicit) problems.push("APP_URL is required when AUTH_MODE=wallet (login challenges are bound to its origin)");
     if (e.sessionSecret === "") problems.push("SESSION_SECRET is required when BACKEND_MODE=live");
     if (e.adminToken === "") problems.push("ADMIN_TOKEN is required when BACKEND_MODE=live");
   }
@@ -261,6 +284,10 @@ export function assertEnvConsistent(e: Env = env): void {
   // beyond "the backend's main key".
   if (e.treasuryKeypair !== "" && e.treasuryKeypair === e.attestationIssuerKeypair) {
     problems.push("TREASURY_KEYPAIR and ATTESTATION_ISSUER_KEYPAIR must be different keys");
+  }
+  if (e.kyc.allowMock !== "" && e.kyc.allowMock !== "devnet") problems.push(`ALLOW_MOCK_KYC must be exactly "devnet" or unset, not "${e.kyc.allowMock}"`);
+  if (!(e.walletSessionTtlSeconds > 0) || !(e.challengeTtlSeconds > 0) || !(e.authRatePerMinute > 0)) {
+    problems.push("WALLET_SESSION_TTL_SECONDS, AUTH_CHALLENGE_TTL_SECONDS and AUTH_RATE_PER_MINUTE must be greater than zero");
   }
   // A half-configured Sumsub is worse than no Sumsub: a verification the webhook can never verify
   // would send a user through a real document check and attest nobody.

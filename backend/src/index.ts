@@ -1,9 +1,12 @@
 // Entry point. `npm run dev` from backend/, or `node backend/src/index.ts`.
 import { serve } from "@hono/node-server";
+import { assertMockKycAllowed } from "./boot.ts";
+import { getSolanaClient } from "./rpc.ts";
 import { assertEnvConsistent, env, redactedRpcUrl } from "./env.ts";
 import { createApp } from "./server.ts";
 
 assertEnvConsistent();
+await assertMockKycAllowed(async () => String(await getSolanaClient().rpc.getGenesisHash().send()));
 
 serve({ fetch: createApp().fetch, port: env.port }, (info) => {
   console.log(`relstate backend on :${info.port}`);
