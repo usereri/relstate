@@ -12,6 +12,7 @@ import { Role } from "@/lib/chain";
 import { IS_LOCAL, RPC } from "@/lib/config";
 import { Doc } from "@/lib/hash";
 import { ReadErrors, Tick, useChain } from "@/lib/useChain";
+import { invalidateReads } from "@/lib/reads";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -152,8 +153,18 @@ const tabFromHash = (role: Role): Tab => {
 function Workspace({ role, switchRole, signOut }: { role: Role; switchRole: () => void; signOut: () => void }) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
-    const t = setInterval(() => setTick((x) => x + 1), 5000);
-    return () => clearInterval(t);
+    // A hidden tab polls nothing; coming back refreshes at once.
+    const t = setInterval(() => {
+      if (!document.hidden) setTick((x) => x + 1);
+    }, 5000);
+    const visible = () => {
+      if (!document.hidden) setTick((x) => x + 1);
+    };
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", visible);
+    };
   }, []);
   // a failed read is shown until reads stop failing: every tick re-reports it, so it fades out ~12s after the last failure
   const [readError, setReadError] = useState<string | null>(null);
@@ -166,7 +177,7 @@ function Workspace({ role, switchRole, signOut }: { role: Role; switchRole: () =
   return (
     <Tick.Provider value={tick}>
       <ReadErrors.Provider value={report}>
-        <Shell role={role} switchRole={switchRole} signOut={signOut} bump={() => setTick((x) => x + 1)} readError={readError} />
+        <Shell role={role} switchRole={switchRole} signOut={signOut} bump={() => (invalidateReads(), setTick((x) => x + 1))} readError={readError} />
       </ReadErrors.Provider>
     </Tick.Provider>
   );
