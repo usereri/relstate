@@ -87,7 +87,7 @@ describe("createWalletAuth: per-wallet and global eviction (never refuses, degra
     const c1 = auth.challenge(wallet);
     const c2 = auth.challenge(wallet);
     const c3 = auth.challenge(wallet);
-    const c4 = auth.challenge(wallet); // hangs the process today; see the BUG note above
+    const c4 = auth.challenge(wallet);
 
     const sig1 = signMessage(c1.message, privateKey).toString("base64");
     assert.throws(() => auth.verifyLogin(wallet, c1.nonce, sig1), /login failed/);
