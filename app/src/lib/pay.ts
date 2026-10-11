@@ -81,11 +81,11 @@ export function securePrivateBalance(opts: {
   // One run per wallet at a time. React re-mounts an effect in development, and a second tab or a
   // Retry can overlap a slow run too; two concurrent runs both see "no account yet" and the loser's
   // transactions fail on chain (a second ConfigureAccount, a double deposit).
-  const key = opts.wallet.publicKey.toBase58();
-  const running = secureInFlight.get(key);
+  const key = opts.wallet.publicKey?.toBase58() ?? "";
+  const running = key ? secureInFlight.get(key) : undefined;
   if (running) return running;
   const run = secureOnce(opts).finally(() => secureInFlight.delete(key));
-  secureInFlight.set(key, run);
+  if (key) secureInFlight.set(key, run);
   return run;
 }
 
