@@ -488,6 +488,85 @@ describe("construction", () => {
   });
 });
 
+describe("mock attest budget", () => {
+  const HOUR = 3_600_000;
+  type MockBudget = NonNullable<KycConfig["mockBudget"]>;
+
+  function clocked(mockBudget: MockBudget | undefined) {
+    let t = NOW;
+    const fake = fakeChain();
+    const kyc = createKyc({ config: config({ mockBudget }), chain: async () => fake.chain, now: () => t, log: () => {} });
+    return { kyc, fake, advance: (ms: number) => void (t += ms) };
+  }
+  const budgetExhausted = (e: unknown) => e instanceof KycError && e.code === "attest-budget" && e.status === 429;
+
+  it("refuses once the hourly cap is reached, and the attest call (so the on-chain write) never happens", async () => {
+    const { kyc, fake } = clocked({ maxPerHour: 2, maxLamportsPerDay: 1_000_000_000n, lamportsPerAttest: 1n });
+    for (let i = 0; i < 2; i++) {
+      const { session } = await kyc.start({ wallet: WALLET });
+      await hook(kyc, approve(session));
+    }
+    const { session } = await kyc.start({ wallet: WALLET });
+    await assert.rejects(() => hook(kyc, approve(session)), budgetExhausted);
+    assert.equal(fake.calls.attest.length, 2);
+  });
+
+  it("the hourly window slides with the injected clock, like the start-rate limiter", async () => {
+    const { kyc, fake, advance } = clocked({ maxPerHour: 1, maxLamportsPerDay: 1_000_000_000n, lamportsPerAttest: 1n });
+    const s1 = await kyc.start({ wallet: WALLET });
+    await hook(kyc, approve(s1.session));
+    const s2 = await kyc.start({ wallet: WALLET });
+    await assert.rejects(() => hook(kyc, approve(s2.session)), budgetExhausted);
+    advance(HOUR + 1);
+    const s3 = await kyc.start({ wallet: WALLET });
+    await assert.doesNotReject(() => hook(kyc, approve(s3.session)));
+    assert.equal(fake.calls.attest.length, 2);
+  });
+
+  it("refuses once the daily lamport cap would be exceeded, independent of the hourly cap", async () => {
+    const { kyc, fake } = clocked({ maxPerHour: 100, maxLamportsPerDay: 10n, lamportsPerAttest: 6n });
+    const s1 = await kyc.start({ wallet: WALLET });
+    await hook(kyc, approve(s1.session)); // 1st: running total 6 <= 10, ok
+    const s2 = await kyc.start({ wallet: WALLET });
+    await assert.rejects(() => hook(kyc, approve(s2.session)), budgetExhausted); // 2nd would be 12 > 10
+    assert.equal(fake.calls.attest.length, 1);
+  });
+
+  it("is not applied when the provider is sumsub, even if mockBudget is configured", async () => {
+    const fake = fakeChain();
+    const tinyBudget: MockBudget = { maxPerHour: 1, maxLamportsPerDay: 1n, lamportsPerAttest: 1n };
+    const sumsubLike = (ref: string) =>
+      createKyc({
+        config: config({ provider: "sumsub", mockBudget: tinyBudget }),
+        chain: async () => fake.chain,
+        provider: { start: async () => ({ url: "u" }), webhook: async () => ({ kind: "kyc.approved", wallet: WALLET, ref, applicantId: ref }) },
+        now: () => NOW,
+        log: () => {},
+      });
+    await sumsubLike("r1").handleWebhook({}, "{}");
+    await sumsubLike("r2").handleWebhook({}, "{}"); // a budget of 1/hour would have refused this on the mock provider
+    assert.equal(fake.calls.attest.length, 2);
+  });
+
+  it("is not applied when mockBudget is undefined (today's default outside live mode)", async () => {
+    const { kyc, fake } = clocked(undefined);
+    for (let i = 0; i < 5; i++) {
+      const { session } = await kyc.start({ wallet: WALLET });
+      await assert.doesNotReject(() => hook(kyc, approve(session)));
+    }
+    assert.equal(fake.calls.attest.length, 5);
+  });
+
+  it("a rejection (revoke path) is never budgeted: only approvals book an attest", async () => {
+    const { kyc, fake } = clocked({ maxPerHour: 1, maxLamportsPerDay: 1_000_000_000n, lamportsPerAttest: 1n });
+    const s1 = await kyc.start({ wallet: WALLET });
+    await hook(kyc, decline(s1.session)); // nothing-to-revoke; must not count against the budget
+    const s2 = await kyc.start({ wallet: WALLET });
+    await assert.doesNotReject(() => hook(kyc, approve(s2.session)));
+    assert.equal(fake.calls.attest.length, 1);
+  });
+});
+
 describe("start rate limit", () => {
   const HOUR = 3_600_000;
   function clocked(limit: number) {
