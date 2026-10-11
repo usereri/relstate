@@ -125,9 +125,9 @@ whether you hide it or not, so the Variables tab is the honest place for it.
 | Variable | Public? | Required | Example / notes |
 |---|---|---|---|
 | `VITE_API` | public | **required** | `https://<your-fly-app>.fly.dev` |
-| `VITE_RPC` | public | **required** | a Helius devnet URL — **this key is public in the bundle**, so use a **domain-restricted** Helius key (restrict it to your Pages domain in the Helius dashboard), never your unrestricted dev key |
+| `VITE_RPC` | public | **leave unset** | the app reads through the backend's `/api/rpc` (read-only, rate limited), so no RPC key is in the bundle. Setting it ships that URL, key included, to every visitor |
 | `VITE_RUSDC_MINT` | public | **required** | the mint `scripts/make-rusdc.ts` printed |
-| `VITE_MINT` | public | **required** | the test-USDC mint `make demo-setup` printed; the code default is a different machine's mint and will not exist on your network |
+| `VITE_MINT` | public | **required** | the mint leases are settled in. For the confidential (private rent) demo it **must equal `VITE_RUSDC_MINT`**: the tenant holds and pays rUSDC, so a lease in another mint fails at "fund deposit" with `tenant_ata AccountNotInitialized`. The code default is a different machine's mint and will not exist on your network |
 | `VITE_FEE_PAYER` | public | optional | blank is fine — the app then asks `GET /api/sponsor` for it |
 | `VITE_EMBEDDED_WALLET` | public | fixed by the workflow to `mock` | not a repository variable — `.github/workflows/pages.yml` always builds with it set to `mock`, since Privy's SDK binding is not wired up yet (`app/.env.example`) |
 | `SITE_APP_URL` | public | **required** | `https://<your domain>/app/` — this is the site's link to the app, must include the trailing `/app/` |

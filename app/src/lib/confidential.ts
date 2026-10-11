@@ -238,7 +238,8 @@ function sponsoredSubmit(wallet: WalletProvider, l: Libs, post: (txBase64: strin
     // treasury and ephemeral keys as signers; web3.js throws "Cannot sign with non signer key" if
     // the wallet is asked to sign one, so only ask when its signature is actually required.
     const required = tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures);
-    const walletKey = wallet.publicKey.toBase58();
+    // publicKey is typed non-null but an adapter reports null once disconnected mid-plan.
+    const walletKey = wallet.publicKey?.toBase58();
     const signed = required.some((k) => k.toBase58() === walletKey) ? await wallet.signTransaction(tx) : tx;
     const { signature, broadcast } = await post(Buffer.from(signed.serialize()).toString("base64"));
     // The backend returns as soon as it has SENT the transaction. A proof plan is a chain of

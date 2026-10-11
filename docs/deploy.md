@@ -207,6 +207,21 @@ git push origin deploy
 Watch the Actions tab; `pages.yml` fails fast with a named list of missing variables if you missed
 one.
 
+### Rent dust (what a new wallet costs the treasury)
+
+`POST /api/treasury/rent-dust` gives each wallet, once, enough SOL for the account rent the program
+charges it: two Applications, one Profile and one Listing at its maximum text length (about
+0.0086 SOL at devnet rent rates; sized from the IDL plus `LISTING_MAX_SIZE` in `treasury.ts`).
+`RENT_DUST_MAX_LAMPORTS_GLOBAL_PER_DAY` caps the total (default 500,000,000 lamports = 0.5 SOL,
+about 58 new wallets a day) and `RENT_DUST_MAX_GLOBAL_PER_HOUR` the count.
+
+### Proxy limits and CORS
+
+`CORS_ORIGIN` must be set (to the app's origin) when `BACKEND_MODE=live`; the backend refuses to
+boot with the default `*`. `/api/rpc` is limited in work units: `RPC_PROXY_RATE_PER_MINUTE` per IP
+(default 4000) and `RPC_PROXY_GLOBAL_PER_MINUTE` across all callers (default 30000); a plain read
+costs 1, a list method its length, `getProgramAccounts` 50.
+
 ## 4. Stripe webhook (test mode)
 
 The **Stripe CLI's** webhook secret (`stripe listen`) is for `localhost` only — it does not work for

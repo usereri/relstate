@@ -8,7 +8,7 @@ import idl from "@target/idl/relstate.json";
 // in local development only (a key set here ends up in the bundle).
 const API_BASE: string | undefined = import.meta.env.VITE_API;
 export const RPC: string =
-  import.meta.env.VITE_RPC ??
+  import.meta.env.VITE_RPC ||
   (API_BASE ? `${API_BASE.replace(/\/$/, "")}/api/rpc` : `http://${globalThis.location?.hostname ?? "localhost"}:8899`);
 
 // Local Surfpool can jump the clock, so a local run can show a realistic 30-day rent period.

@@ -81,7 +81,10 @@ export function securePrivateBalance(opts: {
   // One run per wallet at a time. React re-mounts an effect in development, and a second tab or a
   // Retry can overlap a slow run too; two concurrent runs both see "no account yet" and the loser's
   // transactions fail on chain (a second ConfigureAccount, a double deposit).
-  const key = opts.wallet.publicKey?.toBase58() ?? "";
+  const wallet = opts.wallet.publicKey?.toBase58() ?? "";
+  // The arguments that change the outcome are part of the key: a caller with another holdback must
+  // not be handed this run's result.
+  const key = wallet ? `${wallet}:${opts.mint ?? ""}:${opts.holdback ?? 0n}` : "";
   const running = key ? secureInFlight.get(key) : undefined;
   if (running) return running;
   const run = secureOnce(opts).finally(() => secureInFlight.delete(key));
@@ -90,6 +93,24 @@ export function securePrivateBalance(opts: {
 }
 
 const secureInFlight = new Map<string, Promise<SecureResult>>();
+
+/**
+ * Runs `work` after every earlier piece of private-balance work for the same wallet and mint has
+ * finished. Account setup, deposit and apply-pending all read the account's state and then act on
+ * it, so two of them overlapping (a top-up in one tab, rent in another) both see "no account yet"
+ * and the second fails on chain, or deposits twice. Held inside {@link secureWithin} and
+ * {@link enablePrivateReceiving}, which every path goes through.
+ */
+const locks = new Map<string, Promise<unknown>>();
+export function withBalanceLock<T>(owner: string, mint: string, work: () => Promise<T>): Promise<T> {
+  const key = `${owner}:${mint}`;
+  const run = (locks.get(key) ?? Promise.resolve()).catch(() => {}).then(work);
+  const tail = run.catch(() => {}).then(() => {
+    if (locks.get(key) === tail) locks.delete(key);
+  });
+  locks.set(key, tail);
+  return run;
+}
 
 async function secureOnce(opts: {
   wallet: WalletProvider;
@@ -122,7 +143,7 @@ export async function enablePrivateReceiving(opts: {
   const conf = await chain.confidential();
   report(opts.onProgress, "unlocking", "Setting up your private balance…");
   const session = await conf.openSession({ wallet: opts.wallet, mint: opts.mint });
-  const result = await ensureAccountWithin(session, opts.onProgress);
+  const result = await withBalanceLock(session.owner, session.mint, () => ensureAccountWithin(session, opts.onProgress));
   report(opts.onProgress, "done", "Ready to receive private payments.");
   return result;
 }
@@ -141,7 +162,11 @@ async function ensureAccountWithin(
 }
 
 /** The body of {@link securePrivateBalance}, reused by the rent flow so one session covers both. */
-async function secureWithin(session: ConfidentialSession, holdback: bigint, onProgress?: OnProgress): Promise<SecureResult> {
+function secureWithin(session: ConfidentialSession, holdback: bigint, onProgress?: OnProgress): Promise<SecureResult> {
+  return withBalanceLock(session.owner, session.mint, () => secureLocked(session, holdback, onProgress));
+}
+
+async function secureLocked(session: ConfidentialSession, holdback: bigint, onProgress?: OnProgress): Promise<SecureResult> {
   const conf = await chain.confidential();
   const account = await ensureAccountWithin(session, onProgress);
   const signatures = [...account.signatures];

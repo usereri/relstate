@@ -26,18 +26,17 @@ jobs:
       - uses: actions/checkout@v4
 
       # Fail fast and clearly, before spending time on a build that would ship broken defaults
-      # (e.g. VITE_RPC falling back to a local Surfpool URL that means nothing on Pages).
+      # (VITE_RPC is deliberately NOT required: the app reads through the backend's /api/rpc, so no RPC key ships in the bundle).
       - name: Check required repository variables
         env:
           VITE_API: ${{ vars.VITE_API }}
-          VITE_RPC: ${{ vars.VITE_RPC }}
           VITE_RUSDC_MINT: ${{ vars.VITE_RUSDC_MINT }}
           VITE_MINT: ${{ vars.VITE_MINT }}
           SITE_APP_URL: ${{ vars.SITE_APP_URL }}
           CUSTOM_DOMAIN: ${{ vars.CUSTOM_DOMAIN }}
         run: |
           missing=()
-          for name in VITE_API VITE_RPC VITE_RUSDC_MINT VITE_MINT SITE_APP_URL CUSTOM_DOMAIN; do
+          for name in VITE_API VITE_RUSDC_MINT VITE_MINT SITE_APP_URL CUSTOM_DOMAIN; do
             value="${!name}"
             if [ -z "$value" ]; then missing+=("$name"); fi
           done
@@ -63,7 +62,6 @@ jobs:
         env:
           BASE: /app/
           VITE_API: ${{ vars.VITE_API }}
-          VITE_RPC: ${{ vars.VITE_RPC }}
           VITE_RUSDC_MINT: ${{ vars.VITE_RUSDC_MINT }}
           VITE_MINT: ${{ vars.VITE_MINT }}
           VITE_FEE_PAYER: ${{ vars.VITE_FEE_PAYER }}

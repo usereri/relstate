@@ -171,7 +171,7 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
               }}
             >
               <Heading
-                title="Wallet connected"
+                title="Almost there"
                 text="Add a name if you'd like landlords and tenants to see one. Everything here is optional, kept on this device only and never written on-chain."
               />
               <Field id="name" label="Display name" hint="A first name or nickname is enough.">
@@ -235,11 +235,11 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
                 </>
               ) : (
                 <Heading
-                  title={EMBEDDED_ENABLED ? "Create your wallet" : "Connect your wallet"}
+                  title={EMBEDDED_ENABLED ? "Sign up with your email" : "Connect a wallet to continue"}
                   text={
                     EMBEDDED_ENABLED
-                      ? "An email is enough: we create the wallet that signs your leases and owns your rental record. Already have one? Connect it instead."
-                      : "Your wallet is your account. No email or password needed: it signs your leases and owns your rental record."
+                      ? "An email is enough: we set up the account that signs your leases and keeps your rental record. Already have a wallet? Connect it instead."
+                      : "No email or password needed: your wallet signs your leases and keeps your rental record."
                   }
                 />
               )}

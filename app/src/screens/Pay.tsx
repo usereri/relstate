@@ -250,6 +250,16 @@ function ReceivedCard({ lease }: { lease: LeaseView }) {
     void check();
   }, [check]);
 
+  // Setting up the receiving side is the landlord's own signature, but it needs no decision: do it
+  // the first time this card sees the account missing. The button below stays as the retry.
+  const autoSetup = useRef(false);
+  useEffect(() => {
+    if (ready !== false || !me || autoSetup.current) return;
+    autoSetup.current = true;
+    void enable();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, me]);
+
   const paid = lease.paidCount;
   return (
     <Card className="rise">
