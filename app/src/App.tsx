@@ -416,7 +416,7 @@ function Shell({
                   if (still) return;
                   setReturnAfterKyc(null);
                   setKycFor(null);
-                  setTab("listings");
+                  setTab(kycFor === "apply" ? "apartments" : "lease");
                 });
               }}
             />
