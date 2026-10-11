@@ -41,4 +41,22 @@ describe("RPC / IS_LOCAL defaults", () => {
     expect(RPC).toBe("https://api.devnet.solana.com");
     expect(IS_LOCAL).toBe(false);
   });
+
+  it("an explicitly empty VITE_RPC (a deploy that unsets it) still falls back to the proxy, not to ''", async () => {
+    // config.ts uses `||`, not `??`, so "" is treated the same as unset. A deploy pipeline that
+    // writes VITE_RPC= (empty) into the build env must not end up with RPC === "".
+    vi.stubEnv("VITE_API", "http://localhost:8787");
+    vi.stubEnv("VITE_RPC", "");
+    const { RPC, IS_LOCAL } = await load();
+    expect(RPC).toBe("http://localhost:8787/api/rpc");
+    expect(IS_LOCAL).toBe(false);
+  });
+
+  it("an explicitly empty VITE_RPC with no backend falls back to the local default, not ''", async () => {
+    vi.stubEnv("VITE_API", "");
+    vi.stubEnv("VITE_RPC", "");
+    const { RPC } = await load();
+    expect(RPC).not.toBe("");
+    expect(RPC).toMatch(/^http:\/\/.*:8899$/);
+  });
 });
