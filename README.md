@@ -217,7 +217,7 @@ Makefile               demo-chain, demo-setup, demo-app, test-demo
 This is a prototype, not audited, and it only accepts test tokens an admin has allowed.
 
 - **Mint.** Leases are only allowed on a mint in the program's `Config` allowlist, so a worthless token cannot build a reputation. Whoever calls `init_config` first on a network owns that list.
-- **Timing.** The `demo` build allows 1-second periods a 3-second claim window and a 5-second dispute window. Without it, a period is at least **28 days** and the landlord has **14 days** to release the deposit.
+- **Timing.** The `demo` build allows 1-second periods a 3-second claim window and a 15-second dispute window. Without it, a period is at least **28 days** and the landlord has **14 days** to release the deposit.
 - **Deductions are the landlord's call.** They are recorded on both profiles, but there is no dispute process yet.
 - **A wallet is not a person.** A bad tenant can start a fresh wallet. New wallets get no discount, but identity attestation is the real answer and is not built.
 - **Farming.** Two wallets you control can still lease to each other at real rent to earn a discount. It costs time and locked capital, not nothing.

@@ -78,7 +78,7 @@ pub const CLAIM_WINDOW_SECS: i64 = 1_209_600;
 // and short enough in the demo build to be shown on stage without waiting.
 #[cfg(feature = "demo")]
 #[constant]
-pub const DISPUTE_WINDOW_SECS: i64 = 5;
+pub const DISPUTE_WINDOW_SECS: i64 = 15;
 #[cfg(not(feature = "demo"))]
 #[constant]
 pub const DISPUTE_WINDOW_SECS: i64 = 1_209_600;
