@@ -1933,7 +1933,14 @@ describe("relstate", () => {
     expect(lease.status).to.have.property("active");
     // every stretch landed in the pause, so the tenant waits at least as long as it was
     // actually unavailable -- never shorter
-    expect(lease.claimPauseSecs.toNumber()).to.be.at.least(span1 + span2 + mediationSpan);
+    const spans = span1 + span2 + mediationSpan;
+    expect(lease.claimPauseSecs.toNumber()).to.be.at.least(spans);
+    // ...and *exactly* once, which is the half of invariant 5 a lower bound cannot see: a program
+    // that counted any stretch twice would still satisfy the line above, and the timeTravel below
+    // adapts to whatever pause it finds, so the claim would still succeed. The smallest stretch is
+    // span1, so anything at or above `spans + span1` means something was double-counted; the gap
+    // below that is the few seconds of real wall-clock the three instructions themselves take.
+    expect(lease.claimPauseSecs.toNumber()).to.be.below(spans + span1);
 
     await timeTravel(lease.claimPauseSecs.toNumber() + CLAIM_WINDOW);
     await env.claim();
