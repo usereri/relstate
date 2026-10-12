@@ -83,6 +83,13 @@ config fails inside Anchor's `init` (account already in use) — check with
 way to re-claim it, which is why `set_admin` exists: if the wrong wallet claims it, hand it over
 rather than redeploy. For the demo the backend treasury key should end up as admin.
 
+> **A lease does not point at its listing.** `propose_lease` copies the rent, deposit and region and
+> names no `Listing` account, so the app recovers an apartment's name by matching
+> (`app/src/lib/apartment.ts`). It labels a lease only when exactly one of the landlord's existing,
+> older listings fits, and is wrong in one case it cannot detect: two listings that agree on region,
+> rent and deposit, where the landlord closes the one the lease came from. A `listing` field on
+> `Lease` would remove the limit; it is a breaking account change and is not made.
+
 ### Effect on `propose_lease`
 
 ```

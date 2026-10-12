@@ -21,7 +21,7 @@ import {
   useAppraiserOptions,
 } from "@/screens/Mediation";
 import type { AppraiserOption } from "@/lib/appraisers";
-import { apartmentName, apartmentWhere, leaseListing } from "@/lib/apartment";
+import { apartmentName, apartmentWhere, depositFor, leaseListing } from "@/lib/apartment";
 import { Doc } from "@/lib/hash";
 import * as chain from "@/lib/chain";
 import { ApplicationView, DISCOUNT_PCT, DisputeView, LeaseView, ListingView, NewListing, Role, Snapshot, Status, isWallet, maxDiscountRent, qualifiesForDiscount } from "@/lib/chain";
@@ -149,7 +149,7 @@ export function ProposeLease({
 
   const discount = valid && qualifiesForDiscount(record, listing.rent);
   const tooBig = valid && chain.goodStanding(record) && !discount;
-  const deposit = discount ? (listing.deposit * (100 - DISCOUNT_PCT)) / 100 : listing.deposit;
+  const deposit = depositFor(listing.deposit, discount ? DISCOUNT_PCT : 0);
   const propose = () =>
     doc && valid && h.propose(chain.newId(), listing, who, doc, applicants.find((a) => a.tenant === who));
 

@@ -14,6 +14,30 @@ describe("depositFor", () => {
 });
 
 describe("leaseListing", () => {
+  it("a listing created after the lease was proposed is never its source", () => {
+    // Re-listing the flat later must not move an old lease onto the new advert.
+    const l = lease({ id: "1000" });
+    expect(leaseListing(l, [listing({ id: "2000" })])).toBeNull();
+    expect(leaseListing(l, [listing({ id: "1000" })])?.id).toBe("1000");
+    expect(leaseListing(l, [listing({ id: "900" })])?.id).toBe("900");
+  });
+
+  it("a newer sibling does not make an older, otherwise-unique listing ambiguous", () => {
+    const l = lease({ id: "1000" });
+    expect(leaseListing(l, [listing({ id: "900", address: "a" }), listing({ id: "5000", address: "b" })])?.address).toBe("a");
+  });
+
+  it("KNOWN LIMIT: two older identical listings, one closed, leaves the survivor", () => {
+    // Documented in apartment.ts and docs/contracts/program-interface.md: nothing on the lease
+    // tells A from B, so after A is closed the lease is labelled B. Pinned so a change here is a
+    // decision, not an accident.
+    const l = lease({ id: "1000" });
+    const a = listing({ id: "100", address: "a", title: "A" });
+    const b = listing({ id: "200", address: "b", title: "B" });
+    expect(leaseListing(l, [a, b])).toBeNull();
+    expect(leaseListing(l, [b])?.title).toBe("B");
+  });
+
   it("matches when landlord, region, rent and discounted deposit all agree", () => {
     const l = listing({ rent: 1_000_000, deposit: 101 });
     const lse = lease({ landlord: l.landlord, region: l.region, rent: l.rent, discountPct: 50, deposit: depositFor(101, 50) });
