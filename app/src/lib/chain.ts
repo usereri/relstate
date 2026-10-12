@@ -550,6 +550,35 @@ export interface NewListing {
   photo: string;
 }
 
+// The compute budget every sponsored transaction carries (docs/wallet-simulation.md, "Compute
+// budget"). A wallet that finds none may add its own while signing: Phantom prepended a limit and
+// a 375,000 micro-lamport priority fee on devnet, which the sponsor's default price cap refuses,
+// and its prompt took over 30 s to appear while it did. Setting both here leaves it nothing to add.
+//
+// Both stay inside the sponsor's default caps (`SPONSOR_MAX_COMPUTE_UNITS` 400,000,
+// `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` 10,000), so a backend running the defaults accepts them.
+// The limit is the runtime's own default for one or two instructions (200,000 each) and stops at
+// the sponsor's cap above that, which the sponsor's simulation already enforced on what a
+// transaction may consume; the price adds at most 400 lamports to the fee.
+export const SPONSORED_CU_PER_INSTRUCTION = 200_000;
+export const SPONSORED_MAX_COMPUTE_UNITS = 400_000;
+export const SPONSORED_CU_PRICE_MICRO_LAMPORTS = 1_000;
+
+const instructionKey = (ix: anchor.web3.TransactionInstruction) => `${ix.programId.toBase58()}:${ix.data.toString("base64")}`;
+
+/** Prepends a compute-unit limit and price, unless the transaction already sets a budget. */
+export function withComputeBudget(tx: anchor.web3.Transaction): anchor.web3.Transaction {
+  const { ComputeBudgetProgram } = anchor.web3;
+  if (tx.instructions.some((ix) => ix.programId.equals(ComputeBudgetProgram.programId))) return tx;
+  const units = Math.min(SPONSORED_CU_PER_INSTRUCTION * tx.instructions.length, SPONSORED_MAX_COMPUTE_UNITS);
+  tx.instructions = [
+    ComputeBudgetProgram.setComputeUnitLimit({ units }),
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: SPONSORED_CU_PRICE_MICRO_LAMPORTS }),
+    ...tx.instructions,
+  ];
+  return tx;
+}
+
 /**
  * Contract 2: hand a transaction to the backend, which pays the fee and submits it, so the
  * user never needs SOL.
@@ -558,17 +587,26 @@ export interface NewListing {
  * signature slot is left empty — that is what "fee payer empty" means on the wire.
  */
 export async function sendSponsored(me: Me, tx: anchor.web3.Transaction): Promise<string> {
+  withComputeBudget(tx);
   const [feePayer, latest] = await Promise.all([sponsorFeePayer(), connection.getLatestBlockhash("confirmed")]);
   tx.feePayer = new PublicKey(feePayer);
   tx.recentBlockhash = latest.blockhash;
   tx.lastValidBlockHeight = latest.lastValidBlockHeight;
-  const requestedBlockhash = tx.recentBlockhash;
+  const requested = { blockhash: tx.recentBlockhash, instructions: tx.instructions.map(instructionKey) };
   const requestedAt = Date.now();
   const signed = await me.wallet.signTransaction(tx);
-  // Diagnostic: some wallets (Phantom) rewrite the message while signing, adding compute-budget
-  // instructions and sometimes a blockhash of their own. Say so, with how long the prompt took.
-  if (signed.recentBlockhash !== requestedBlockhash) {
-    console.warn(`[sponsor] wallet replaced the blockhash: asked ${requestedBlockhash}, signed ${signed.recentBlockhash}`);
+  // Diagnostic: a wallet may rewrite the message while signing (compute budget, blockhash). The
+  // budget above should leave it nothing to change; say so if it changed something anyway.
+  const signedInstructions = signed.instructions.map(instructionKey);
+  if (
+    signed.recentBlockhash !== requested.blockhash ||
+    signedInstructions.length !== requested.instructions.length ||
+    signedInstructions.some((key, i) => key !== requested.instructions[i])
+  ) {
+    console.warn(
+      `[sponsor] wallet modified the transaction: blockhash ${requested.blockhash} -> ${signed.recentBlockhash}, ` +
+        `${requested.instructions.length} -> ${signedInstructions.length} instructions`,
+    );
   }
   console.info(`[sponsor] blockhash ${signed.recentBlockhash}, signed after ${Date.now() - requestedAt} ms, ${signed.instructions.length} instructions`);
   return postSponsored(signed.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64"));

@@ -109,3 +109,49 @@ describe("loadBalances", () => {
     expect(await chain.loadBalances(localKeypair("tenant").publicKey.toBase58())).toEqual({ sol: 2, usdc: null });
   });
 });
+
+describe("withComputeBudget", () => {
+  const { ComputeBudgetInstruction, ComputeBudgetProgram, SystemProgram, Transaction } = anchor.web3;
+  const transfer = () =>
+    SystemProgram.transfer({ fromPubkey: localKeypair("tenant").publicKey, toPubkey: localKeypair("landlord").publicKey, lamports: 1 });
+  // The sponsor's defaults (backend/src/env.ts): a budget above any of them is refused before
+  // the sponsor simulates, so the app must stay inside all three on a backend left at defaults.
+  const SPONSOR_DEFAULT_MAX_UNITS = 400_000;
+  const SPONSOR_DEFAULT_MAX_PRICE = 10_000;
+  const SPONSOR_DEFAULT_MAX_FEE = 200_000;
+
+  it("prepends a unit limit and a price, ahead of the program's instructions", async () => {
+    const { chain } = await load(null);
+    const tx = chain.withComputeBudget(new Transaction().add(transfer()));
+    expect(tx.instructions).toHaveLength(3);
+    expect(tx.instructions.slice(0, 2).every((ix) => ix.programId.equals(ComputeBudgetProgram.programId))).toBe(true);
+    expect(ComputeBudgetInstruction.decodeSetComputeUnitLimit(tx.instructions[0]).units).toBe(200_000);
+    expect(ComputeBudgetInstruction.decodeSetComputeUnitPrice(tx.instructions[1]).microLamports).toBe(BigInt(chain.SPONSORED_CU_PRICE_MICRO_LAMPORTS));
+    expect(tx.instructions[2].programId.equals(SystemProgram.programId)).toBe(true);
+  });
+
+  it("matches the runtime default for two instructions and stops at the sponsor's cap above that", async () => {
+    const { chain } = await load(null);
+    const units = (n: number) =>
+      ComputeBudgetInstruction.decodeSetComputeUnitLimit(chain.withComputeBudget(new Transaction().add(...Array.from({ length: n }, transfer))).instructions[0]).units;
+    expect(units(2)).toBe(400_000);
+    expect(units(5)).toBe(SPONSOR_DEFAULT_MAX_UNITS);
+  });
+
+  it("leaves a transaction that already sets a budget alone", async () => {
+    const { chain } = await load(null);
+    const own = ComputeBudgetProgram.setComputeUnitLimit({ units: 50_000 });
+    const tx = chain.withComputeBudget(new Transaction().add(own, transfer()));
+    expect(tx.instructions).toHaveLength(2);
+    expect(tx.instructions[0]).toBe(own);
+  });
+
+  it("stays inside the sponsor's default unit, price and worst-case fee caps", async () => {
+    const { chain } = await load(null);
+    expect(chain.SPONSORED_MAX_COMPUTE_UNITS).toBeLessThanOrEqual(SPONSOR_DEFAULT_MAX_UNITS);
+    expect(chain.SPONSORED_CU_PRICE_MICRO_LAMPORTS).toBeLessThanOrEqual(SPONSOR_DEFAULT_MAX_PRICE);
+    // Two signatures (sponsor + wallet) at 5,000 lamports, plus the priority fee rounded up.
+    const fee = 2 * 5_000 + Math.ceil((chain.SPONSORED_MAX_COMPUTE_UNITS * chain.SPONSORED_CU_PRICE_MICRO_LAMPORTS) / 1_000_000);
+    expect(fee).toBeLessThanOrEqual(SPONSOR_DEFAULT_MAX_FEE);
+  });
+});
