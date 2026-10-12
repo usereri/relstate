@@ -885,6 +885,7 @@ export const FRIENDLY_PROGRAM_ERRORS: Record<string, string> = {
   SelectionWindowOpen: "There is still time to agree on an appraiser together. The fallback can only be used after that.",
   VerdictWindowOpen: "The appraiser still has time to decide. You can end the mediation once their window passes.",
   VerdictWindowClosed: "The appraiser's window has passed, so no verdict can land. Either side can now end the mediation.",
+  BindingWindowClosed: "Too late to agree on an appraiser: the window has passed. Either side can now end the mediation and unlock the deposit.",
 };
 
 /** Finds the program error named, or coded, anywhere in a failure's text (message, logs, simulation error). */

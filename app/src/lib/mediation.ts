@@ -114,14 +114,24 @@ export const other = (role: Role): Role => (role === "landlord" ? "tenant" : "la
 export const canPropose = (d: DisputeView, role: Role): boolean => !d.appraiser && candidatesOf(d, role).length === 0;
 
 /**
- * Picking stays open until something is bound, past the selection deadline included, and a side
+ * Picking stays open until something is bound — past the selection deadline included — and a side
  * may change its pick: a side that picked badly must not be able to deadlock out of pride (§4).
+ *
+ * The upper bound is `verdict_deadline`, not `selection_deadline`: binding re-bases the verdict
+ * window onto the binding, so a pick that landed after the provisional deadline would push out an
+ * expiry the tenant is already entitled to (`BindingWindowClosed`, the S3 F2 finding). It is the
+ * exact complement of {@link canExpire} — no gap in which neither is possible, no overlap.
  */
-export const canPick = (d: DisputeView, role: Role): boolean =>
-  !d.appraiser && candidates(d).some((c) => c.wallet !== pickOf(d, role));
+export const canPick = (d: DisputeView, role: Role, now: number): boolean =>
+  !d.appraiser && now < d.verdictDeadline && candidates(d).some((c) => c.wallet !== pickOf(d, role));
 
-/** After the selection deadline with nothing bound, anyone may bind the registry's default (`SelectionWindowOpen`). */
-export const canBindDefault = (d: DisputeView, now: number): boolean => !d.appraiser && now >= d.selectionDeadline;
+/**
+ * After the selection deadline with nothing bound, anyone may bind the registry's default
+ * (`SelectionWindowOpen` before it) — and only until the verdict deadline, for the reason
+ * {@link canPick} gives (`BindingWindowClosed`).
+ */
+export const canBindDefault = (d: DisputeView, now: number): boolean =>
+  !d.appraiser && now >= d.selectionDeadline && now < d.verdictDeadline;
 
 /** After the verdict deadline either party ends the mediation, bound appraiser or not (`VerdictWindowOpen`). */
 export const canExpire = (d: DisputeView, now: number): boolean => now >= d.verdictDeadline;

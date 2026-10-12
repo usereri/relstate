@@ -54,6 +54,9 @@ export const nameHash = (name: string): string => hex(sha256(new TextEncoder().e
 export function directoryEntries(body: unknown): DirectoryEntry[] {
   const rows = Array.isArray(body) ? body : Array.isArray((body as { appraisers?: unknown })?.appraisers) ? (body as { appraisers: unknown[] }).appraisers : [];
   return rows.flatMap((row) => {
+    // A null or primitive element has to be skipped before any field is read: this function's
+    // whole job is to survive a body nobody here wrote, and `null.wallet` throws.
+    if (typeof row !== "object" || row === null) return [];
     const r = row as { wallet?: unknown; key?: unknown; name?: unknown };
     const wallet = typeof r.wallet === "string" ? r.wallet : typeof r.key === "string" ? r.key : "";
     return wallet ? [{ wallet, name: typeof r.name === "string" ? r.name : "" }] : [];

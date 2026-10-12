@@ -233,23 +233,23 @@ describe("canPropose / canPick / canBindDefault / canExpire", () => {
   });
 
   it("a bound appraiser closes picking too", () => {
-    expect(canPick(dispute({ appraiser: "A", tenantCandidates: ["T1"] }), "tenant")).toBe(false);
+    expect(canPick(dispute({ appraiser: "A", tenantCandidates: ["T1"] }), "tenant", 50)).toBe(false);
   });
 
   it("a side that proposed nothing may still pick from the other side's list", () => {
-    expect(canPick(dispute({ tenantCandidates: ["T1"] }), "landlord")).toBe(true);
+    expect(canPick(dispute({ tenantCandidates: ["T1"] }), "landlord", 50)).toBe(true);
   });
 
   it("canPick is false when the only candidate is already this side's pick", () => {
-    expect(canPick(dispute({ landlordCandidates: ["L1"], landlordPick: "L1" }), "landlord")).toBe(false);
+    expect(canPick(dispute({ landlordCandidates: ["L1"], landlordPick: "L1" }), "landlord", 50)).toBe(false);
   });
 
   it("canPick is true when a side's own pick could be changed to another candidate", () => {
-    expect(canPick(dispute({ landlordCandidates: ["L1", "L2"], landlordPick: "L1" }), "landlord")).toBe(true);
+    expect(canPick(dispute({ landlordCandidates: ["L1", "L2"], landlordPick: "L1" }), "landlord", 50)).toBe(true);
   });
 
   it("picking stays open past the selection deadline as long as nothing is bound", () => {
-    expect(canPick(dispute({ selectionDeadline: 10, tenantCandidates: ["T1"] }), "landlord")).toBe(true);
+    expect(canPick(dispute({ selectionDeadline: 10, tenantCandidates: ["T1"] }), "landlord", 50)).toBe(true);
   });
 
   it("canBindDefault is false before the selection deadline", () => {
