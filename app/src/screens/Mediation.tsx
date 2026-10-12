@@ -20,21 +20,30 @@ import { sharedRead } from "@/lib/reads";
 import { useChain } from "@/lib/useChain";
 import { cn, duration, short, usdc } from "@/lib/utils";
 
-/** The registry plus whatever names the off-chain directory knows, and why it has none when it has none. */
-export function useAppraiserOptions(): { options: AppraiserOption[] | undefined; directoryError: string } {
-  const registry = useChain(() => chain.loadAppraisers(), []);
+/**
+ * The registry plus whatever names the off-chain directory knows, and why it has none when it has
+ * none.
+ *
+ * `enabled` is false on every lease that is not in mediation, because the registry read is a
+ * discriminator scan and the lease screen would otherwise pay for it on every tick of every lease.
+ * A hook cannot be called conditionally, so the condition lives in here.
+ */
+export function useAppraiserOptions(enabled: boolean): { options: AppraiserOption[] | undefined; directoryError: string } {
+  const registry = useChain(() => (enabled ? chain.loadAppraisers() : Promise.resolve([])), [enabled]);
   // A broken or absent directory must never hide the registry: the picker falls back to wallet
   // addresses, which are what the instructions take anyway. So the failure is a value, not a
   // rejection — a rejected read would leave `useChain` undefined and the picker empty forever.
   const directory = useChain(
     () =>
-      sharedRead("appraiser-directory", () =>
-        loadAppraiserDirectory().then(
-          (rows) => ({ rows, error: "" }),
-          (e: unknown) => ({ rows: [], error: e instanceof Error ? e.message : String(e) }),
-        ),
-      ),
-    [],
+      enabled
+        ? sharedRead("appraiser-directory", () =>
+            loadAppraiserDirectory().then(
+              (rows) => ({ rows, error: "" }),
+              (e: unknown) => ({ rows: [], error: e instanceof Error ? e.message : String(e) }),
+            ),
+          )
+        : Promise.resolve({ rows: [], error: "" }),
+    [enabled],
   );
   return {
     options: registry && directory ? mergeDirectory(registry, directory.rows) : undefined,
@@ -130,14 +139,15 @@ export function MediationTimeline({ dispute, openedAt, now }: { dispute: Dispute
  * Loser pays, out of the deposit: no second escrow, and nobody posts a stake before the appraisal
  * starts (§6). `fee` is already the capped number — what the program would actually pay — and
  * `exact` says whether an appraiser is bound, because until one is, the fee is only an upper bound
- * across the names still in play.
+ * across the names still in play. With nobody in play at all the honest answer is neither a number
+ * nor "up to 0", which would read as free.
  */
 export function AppraiserFee({ deposit, fee, cap, exact }: { deposit: number; fee: number; cap: number; exact: boolean }) {
   return (
     <div className="flex flex-col gap-2">
       <Terms
         rows={[
-          ["Appraiser's fee", `${exact ? "" : "up to "}${usdc(fee)} USDC`],
+          ["Appraiser's fee", exact ? `${usdc(fee)} USDC` : fee > 0 ? `up to ${usdc(fee)} USDC` : "whatever the one you agree on charges"],
           ["Capped at", `${usdc(cap)} USDC · a tenth of the ${usdc(deposit)} USDC deposit`],
           ["Paid by", "the side the verdict goes against, out of the deposit"],
         ]}
@@ -331,7 +341,9 @@ export function BoundAppraiser({ dispute, options, now }: { dispute: DisputeView
           rows={[
             ["Deciding", nameOf(options, dispute.appraiser)],
             ["Wallet", short(dispute.appraiser, 8)],
-            ["Verdict due", when(dispute.verdictDeadline, now) || "—"],
+            // Past the deadline "due ... ago" reads as a mistake, and the fact that matters has
+            // changed: it is no longer a wait, it is an exit.
+            [dispute.verdictDeadline > now ? "Verdict due" : "Window closed", when(dispute.verdictDeadline, now) || "—"],
           ]}
         />
         <p className="flex items-start gap-2 text-xs text-muted-foreground">

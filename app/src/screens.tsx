@@ -20,6 +20,7 @@ import {
   optionFor,
   useAppraiserOptions,
 } from "@/screens/Mediation";
+import type { AppraiserOption } from "@/lib/appraisers";
 import { Doc } from "@/lib/hash";
 import * as chain from "@/lib/chain";
 import { ApplicationView, DISCOUNT_PCT, DisputeView, LeaseView, ListingView, NewListing, Role, Snapshot, Status, isWallet, maxDiscountRent, qualifiesForDiscount } from "@/lib/chain";
@@ -538,6 +539,10 @@ export function DisputedLease({ lease, now, role, h }: { lease: LeaseView; now: 
  * anyone binds the registry's fallback, and past the verdict deadline either party ends the
  * mediation and the deposit returns to the tenant through the usual claim. That is the property
  * the contract's §2 table asserts, and it is what these buttons are.
+ *
+ * The registry arrives as a prop rather than from a hook in here, so that every phase of this
+ * screen can be rendered against invented data with no chain at all — which is the only way to
+ * see it before the program is deployed (`app/mediation-preview.html`).
  */
 export function MediationLease({
   lease,
@@ -545,14 +550,17 @@ export function MediationLease({
   now,
   role,
   h,
+  options,
+  directoryError = "",
 }: {
   lease: LeaseView;
   dispute: DisputeView | null | undefined;
   now: number;
   role: Role;
   h: Handlers;
+  options: AppraiserOption[] | undefined;
+  directoryError?: string;
 }) {
-  const { options, directoryError } = useAppraiserOptions();
   const [chosen, setChosen] = useState<string[]>([]);
   const [pick, setPick] = useState("");
 
@@ -570,9 +578,12 @@ export function MediationLease({
   const bound = !!dispute.appraiser;
   const rows = med.candidates(dispute);
   const mine = med.pickOf(dispute, role);
+  const theirs = med.pickOf(dispute, med.other(role));
   const canPropose = med.canPropose(dispute, role);
   const fallback = options?.find((o) => o.isDefault && o.active);
   const target = pick || mine;
+  // `undefined` is "still loading", so it must not read as "empty registry" and hide the picker.
+  const anyActive = !options || options.some((o) => o.active);
 
   // The fee: exactly the bound appraiser's once there is one, otherwise the highest among the
   // names still in play — the whole active registry while nobody has proposed anything yet.
@@ -627,8 +638,10 @@ export function MediationLease({
                 <CardHeader>
                   <CardTitle>Name the appraisers you would accept</CardTitle>
                   <CardDescription>
-                    Up to {med.MAX_CANDIDATES}, from the platform's registry. Only registered, active companies can be named — that is what stops
-                    either side nominating their own.
+                    {/* Promising a registry and then saying it is empty reads as a contradiction. */}
+                    {anyActive
+                      ? `Up to ${med.MAX_CANDIDATES}, from the platform's registry. Only registered, active companies can be named — that is what stops either side nominating their own.`
+                      : "The platform's registry holds no active appraiser on this network."}
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -713,12 +726,18 @@ export function MediationLease({
             {canPropose && (
               <Button
                 size="lg"
-                disabled={chosen.length === 0 || !!h.busy}
+                disabled={chosen.length === 0 || !anyActive || !!h.busy}
                 onClick={async () => {
                   if (await h.proposeAppraisers(lease, chosen)) setChosen([]);
                 }}
               >
-                <Users /> {h.busy ?? (chosen.length ? `Put forward ${chosen.length === 1 ? "this appraiser" : `these ${chosen.length}`}` : `Choose up to ${med.MAX_CANDIDATES} appraisers`)}
+                <Users />{" "}
+                {h.busy ??
+                  (!anyActive
+                    ? "No appraiser is registered on this network"
+                    : chosen.length
+                      ? `Put forward ${chosen.length === 1 ? "this appraiser" : `these ${chosen.length}`}`
+                      : `Choose up to ${med.MAX_CANDIDATES} appraisers`)}
               </Button>
             )}
             {rows.length > 0 && (
@@ -735,7 +754,12 @@ export function MediationLease({
                   (!target
                     ? "Pick an appraiser above"
                     : target === mine
-                      ? `You picked ${nameOf(options, mine)}`
+                      ? // Both have picked and the picks differ: the move that ends this is to take
+                        // theirs, so the dead button says which name to tap rather than restating
+                        // what this side already did.
+                        theirs && theirs !== mine
+                        ? `Pick ${nameOf(options, theirs)} above to agree`
+                        : `You picked ${nameOf(options, mine)}`
                       : mine
                         ? `Change to ${nameOf(options, target)}`
                         : `Agree on ${nameOf(options, target)}`)}
@@ -838,6 +862,7 @@ export function LeaseTab({
     () => (lease?.status === "mediation" ? chain.loadDispute(lease.address) : Promise.resolve(null)),
     [lease?.address, lease?.status],
   );
+  const { options, directoryError } = useAppraiserOptions(lease?.status === "mediation");
 
   const parties = useChain(
     () => (lease ? Promise.all([chain.loadProfile(lease.landlord), chain.loadProfile(lease.tenant)]) : Promise.resolve(null)),
@@ -871,7 +896,8 @@ export function LeaseTab({
   else if (lease.status === "proposed") main = role === "tenant" ? <AcceptLease lease={lease} h={h} /> : <ProposedWaiting lease={lease} />;
   else if (lease.status === "active") main = <ActiveLease lease={lease} now={now} role={role} h={h} />;
   else if (lease.status === "disputed") main = <DisputedLease lease={lease} now={now} role={role} h={h} />;
-  else if (lease.status === "mediation") main = <MediationLease lease={lease} dispute={dispute} now={now} role={role} h={h} />;
+  else if (lease.status === "mediation")
+    main = <MediationLease lease={lease} dispute={dispute} now={now} role={role} h={h} options={options} directoryError={directoryError} />;
   else main = <Finished lease={lease} snap={snap} onNew={role === "landlord" ? () => setSel("new") : undefined} />;
 
   return (
