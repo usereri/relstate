@@ -113,10 +113,15 @@ moment of its choosing. The absolute worst-case lock-up is therefore
 `M + SELECTION_WINDOW_SECS + 2 * VERDICT_WINDOW_SECS` (a binding just before the provisional
 deadline, then a full verdict window).
 
-Proposing and picking are **not** barred after `selection_deadline`. Past it,
+Proposing and picking are **not** barred after `selection_deadline` — only after
+`verdict_deadline`, per the paragraph above. Past the *selection* deadline,
 `bind_default_appraiser` becomes available to anyone, but as long as no appraiser is bound the two
 sides may still converge on their own; whichever transaction lands first binds, and the other then
 fails with `AppraiserAlreadyBound`. Allowing both is strictly more live than racing them.
+
+Said once, because it is the sentence most likely to be quoted on its own: **the deadline that
+closes picking is `verdict_deadline`, not `selection_deadline`.** The selection deadline only
+*opens* the fallback.
 
 ## 3. Accounts
 

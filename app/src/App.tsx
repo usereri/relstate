@@ -22,6 +22,7 @@ import { LocalWalletProvider, WalletButton, useLocalWallet, useMe } from "@/comp
 import { Handlers, LeaseTab, LogEntry, Waiting } from "@/screens";
 import { Kyc, VerifyFirst } from "@/screens/Kyc";
 import { Payout, TopUp } from "@/screens/TopUp";
+import { VerdictConsole } from "@/screens/Verdict";
 import { isKycRequired, needsVerification, returnAfterKyc, setReturnAfterKyc } from "@/lib/kyc";
 import { Listings, MyProfile } from "@/views";
 
@@ -73,12 +74,22 @@ export default function App() {
       document.documentElement.dataset.role = "tenant";
       document.title = "Relstate · Rent with a record";
     }
+    // Otherwise the operator console inherits whatever title the last route left in the tab,
+    // which on a fresh load is "Sign in".
+    if (route === "appraiser") {
+      document.documentElement.dataset.role = "landlord";
+      document.title = "Appraiser console · Relstate";
+    }
   }, [route]);
 
   // the app needs a role; without one, sign in first
   useEffect(() => {
     if (route === "app" && !role) go("signin");
   }, [route, role]);
+
+  // The operator verdict console: no role, no wallet, no session — it holds no key and signs
+  // nothing itself. Before the role gate, because an appraiser is neither party (screens/Verdict).
+  if (route === "appraiser") return <VerdictConsole />;
 
   if (route === "signup" || route === "signin")
     return (

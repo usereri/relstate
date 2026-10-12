@@ -395,6 +395,18 @@ export function loadLeases(wallet: string, role: Role): Promise<LeaseView[]> {
   });
 }
 
+/**
+ * One lease by address, for the operator console: it is handed a lease nobody's wallet is a party
+ * to, so it cannot find it through {@link loadLeases}, which scans by landlord or tenant.
+ */
+export function loadLease(address: string): Promise<LeaseView | null> {
+  return sharedRead(`lease:${address}`, async () => {
+    const key = new PublicKey(address);
+    const l = await reader.account.lease.fetchNullable(key);
+    return l && leaseView(key, l);
+  });
+}
+
 /** The mediation of one lease, or null when it is not in `Mediation` (the PDA only exists then). */
 export function loadDispute(leaseAddress: string): Promise<DisputeView | null> {
   return sharedRead(`dispute:${leaseAddress}`, async () => {

@@ -27,12 +27,18 @@ export function Logo({ className, onClick }: { className?: string; onClick?: () 
   );
 }
 
-/** Tiny hash router: #/, #/signup, #/signin, #/app. */
-export type Route = "home" | "signup" | "signin" | "app";
-const parse = (): Route => {
-  const h = location.hash.replace(/^#\/?/, "").split(/[?#]/)[0];
-  return h === "signup" || h === "signin" || h === "app" ? h : "home";
+/**
+ * Tiny hash router: #/, #/signup, #/signin, #/app, #/appraiser.
+ *
+ * `appraiser` is the operator verdict console. It is reachable only by typing the URL and is
+ * deliberately linked from nowhere in either role's app (`screens/Verdict.tsx`).
+ */
+export type Route = "home" | "signup" | "signin" | "app" | "appraiser";
+export const parseRoute = (hash: string): Route => {
+  const h = hash.replace(/^#\/?/, "").split(/[?#]/)[0];
+  return h === "signup" || h === "signin" || h === "app" || h === "appraiser" ? h : "home";
 };
+const parse = (): Route => parseRoute(location.hash);
 export const go = (r: Route) => {
   location.hash = r === "home" ? "/" : `/${r}`;
 };
