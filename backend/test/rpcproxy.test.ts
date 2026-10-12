@@ -539,9 +539,16 @@ describe("createRpcProxy: upstream key never leaks (incl. configured secrets)", 
         }),
     ]);
     const proxy = proxyOf({ fetch: fn, timeoutMs: 20 });
-    const res = await proxy.handle(req("getSlot"), noAdmit);
-    assert.equal(res.status, 502);
-    assert.ok(!res.body.includes(UPSTREAM_SECRET));
+    // AbortSignal.timeout()'s timer is unref'd, so on Node 22 nothing keeps the loop alive while
+    // this waits for it and the runner cancels the whole file. A ref'd timer does.
+    const keepAlive = setTimeout(() => {}, 5_000);
+    try {
+      const res = await proxy.handle(req("getSlot"), noAdmit);
+      assert.equal(res.status, 502);
+      assert.ok(!res.body.includes(UPSTREAM_SECRET));
+    } finally {
+      clearTimeout(keepAlive);
+    }
   });
 
   it("rebuilds the upstream request: unknown client fields are not forwarded", async () => {
