@@ -137,6 +137,7 @@ whether you hide it or not, so the Variables tab is the honest place for it.
 | `VITE_DEFAULT_PUBLIC_HOLDBACK` | public | optional | base units of every plain top-up kept public for the lease deposit; default `100000000` (100 rUSDC). See docs/contracts/treasury.md |
 | `VITE_FEE_PAYER` | public | optional | blank is fine — the app then asks `GET /api/sponsor` for it |
 | `VITE_EMBEDDED_WALLET` | public | fixed by the workflow to `mock` | not a repository variable — `.github/workflows/pages.yml` always builds with it set to `mock`, since Privy's SDK binding is not wired up yet (`app/.env.example`) |
+| `VITE_APPRAISER_CONSOLE` | public | **leave unset** except on the demo build | `1` serves the operator verdict screen at `#/appraiser`. Unset builds do not contain the screen: the flag is inlined, so the branch holding its `import()` is dead and the chunk is never emitted (checked by grepping `dist` both ways). The page holds no key — the appraiser's key is the backend's, behind `VERDICT_CONSOLE_TOKEN` — so this flag is about not shipping an operator tool to the public, not about protecting the deposit |
 | `SITE_APP_URL` | public | **required** | `https://<your domain>/app/` — this is the site's link to the app, must include the trailing `/app/` |
 | `CUSTOM_DOMAIN` | public | **required** | `relstate.example` — written verbatim into the Pages artifact's `CNAME` file |
 

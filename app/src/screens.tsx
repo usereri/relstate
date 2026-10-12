@@ -16,7 +16,7 @@ import {
   OracleNote,
   RegistryChoice,
   Rounds,
-  nameOf,
+  committedName,
   optionFor,
   useAppraiserOptions,
 } from "@/screens/Mediation";
@@ -719,7 +719,7 @@ export function MediationLease({
           </Button>
         ) : bound ? (
           <Button size="lg" variant="secondary" disabled>
-            <Clock /> Waiting for {nameOf(options, dispute.appraiser)} to decide
+            <Clock /> Waiting for {committedName(options, dispute.appraiser)} to decide
           </Button>
         ) : (
           <>
@@ -758,16 +758,16 @@ export function MediationLease({
                         // theirs, so the dead button says which name to tap rather than restating
                         // what this side already did.
                         theirs && theirs !== mine
-                        ? `Pick ${nameOf(options, theirs)} above to agree`
-                        : `You picked ${nameOf(options, mine)}`
+                        ? `Pick ${committedName(options, theirs)} above to agree`
+                        : `You picked ${committedName(options, mine)}`
                       : mine
-                        ? `Change to ${nameOf(options, target)}`
-                        : `Agree on ${nameOf(options, target)}`)}
+                        ? `Change to ${committedName(options, target)}`
+                        : `Agree on ${committedName(options, target)}`)}
               </Button>
             )}
             {med.canBindDefault(dispute, now) && fallback && (
               <Button size="lg" variant="outline" disabled={!!h.busy} onClick={() => h.bindDefaultAppraiser(lease, fallback.wallet)}>
-                <Gavel /> {h.busy ?? `Bring in the fallback: ${nameOf(options, fallback.wallet)}`}
+                <Gavel /> {h.busy ?? `Bring in the fallback: ${committedName(options, fallback.wallet)}`}
               </Button>
             )}
           </>

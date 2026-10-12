@@ -10,6 +10,7 @@
 // the two is a pure function.
 import { sha256 } from "@noble/hashes/sha2";
 import { API } from "@/lib/sponsor";
+import { safeName } from "@/lib/utils";
 
 /** True when this deployment has a backend that could serve the directory at all. */
 export const DIRECTORY_AVAILABLE = !!API;
@@ -94,12 +95,16 @@ export function mergeDirectory(registry: RegistryEntry[], directory: DirectoryEn
   const names = new Map(directory.map((d) => [d.wallet, d.name]));
   return registry
     .map((entry) => {
-      const name = names.get(entry.wallet) ?? "";
+      const raw = names.get(entry.wallet) ?? "";
+      // Verify against the RAW string — the registry committed to what was registered — then show
+      // the sanitised one. A name is untrusted input that ends up beside an amount, so it must not
+      // be able to carry bidi overrides or run long enough to push the amount off the card.
+      const verified = !!raw && nameHash(raw) === entry.nameHashHex;
       return {
         address: entry.address,
         wallet: entry.wallet,
-        name,
-        nameVerified: !!name && nameHash(name) === entry.nameHashHex,
+        name: safeName(raw),
+        nameVerified: verified,
         active: entry.active,
         isDefault: entry.isDefault,
         fee: entry.fee,
@@ -111,6 +116,18 @@ export function mergeDirectory(registry: RegistryEntry[], directory: DirectoryEn
         Number(!!b.name) - Number(!!a.name) ||
         (a.name || a.wallet).localeCompare(b.name || b.wallet),
     );
+}
+
+/**
+ * The label to use where a click commits something — a pick, a binding, a verdict.
+ *
+ * Only a name the chain's `name_hash` confirms may stand in for identity there; anything else
+ * shows the key, because an unverified name is the directory's claim about who this is and the
+ * key is the only thing the program actually acts on. Browsing lists may still show an unverified
+ * name, where it sits next to its own missing verification mark rather than next to a button.
+ */
+export function trustedLabel(o: Pick<AppraiserOption, "name" | "nameVerified" | "wallet"> | undefined, shorten: (s: string) => string): string {
+  return o?.nameVerified && o.name ? o.name : shorten(o?.wallet ?? "");
 }
 
 /** How to call an appraiser on screen: their directory name, or a shortened key when there is none. */

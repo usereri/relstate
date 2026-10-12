@@ -79,9 +79,36 @@ export function verdictProblem(args: { deductionBase: number; deposit: number; s
  */
 export const asked = (lease: string, deductionBase: number): string => `${lease}:${deductionBase}`;
 
-/** Whether a held preview authorises submitting this lease and amount. */
-export const previewAuthorises = (preview: { asked: string } | null | undefined, lease: string, deductionBase: number): boolean =>
-  !!preview && preview.asked === asked(lease, deductionBase);
+/** Why the confirm button is or is not armed. */
+export type PreviewGate =
+  | { armed: true }
+  /** Nothing has been previewed yet. */
+  | { armed: false; reason: "none" }
+  /** The form has changed since the preview, so the preview answers a different question. */
+  | { armed: false; reason: "stale" }
+  /** The backend's own echo of the lease or amount is not what it was asked about. */
+  | { armed: false; reason: "echo" };
+
+/**
+ * Whether a held preview authorises submitting this lease and amount.
+ *
+ * Two independent checks, because they fail for different reasons. `stale` is the operator having
+ * edited the form after previewing: the dry run then describes a verdict nobody reviewed, and
+ * confirming it would be a second decision wearing the first one's approval. `echo` is the
+ * *backend* having answered about a different lease or amount than it was asked — a confused
+ * deputy, a proxy serving a cached body, a wrong deployment — and it must never be smoothed over,
+ * because the numbers on screen would then not be the numbers that get signed.
+ */
+export function previewGate(
+  preview: { asked: string; result: Pick<VerdictView, "lease" | "deduction"> } | null | undefined,
+  lease: string,
+  deductionBase: number,
+): PreviewGate {
+  if (!preview) return { armed: false, reason: "none" };
+  if (preview.asked !== asked(lease, deductionBase)) return { armed: false, reason: "stale" };
+  if (preview.result.lease !== lease || preview.result.deduction !== deductionBase) return { armed: false, reason: "echo" };
+  return { armed: true };
+}
 
 const amount = (v: unknown): number => {
   const n = Number(v);
@@ -106,10 +133,18 @@ export function verdictView(body: unknown): VerdictResult {
   };
 }
 
-/** What an operator should read for the ways this route refuses. `code` is the backend's own. */
-export function consoleErrorMessage(status: number, body: { error?: unknown; code?: unknown }): string {
-  const error = typeof body.error === "string" ? body.error : "";
-  const code = typeof body.code === "string" ? body.code : "";
+/**
+ * What an operator should read for the ways this route refuses. `code` is the backend's own.
+ *
+ * `body` is whatever came back on a failure, which is `unknown` for real: a bare `null` is valid
+ * JSON and `res.json()` resolves it rather than rejecting, so a `.catch` fallback never sees it.
+ * Reading a field off it unguarded would throw a TypeError in place of the message an operator
+ * needs — the worst possible failure for the one screen that pays out a deposit.
+ */
+export function consoleErrorMessage(status: number, body: unknown): string {
+  const b = (typeof body === "object" && body !== null ? body : {}) as { error?: unknown; code?: unknown };
+  const error = typeof b.error === "string" ? b.error : "";
+  const code = typeof b.code === "string" ? b.code : "";
   if (status === 401 || status === 403)
     return error.includes("not configured")
       ? "This backend has no VERDICT_CONSOLE_TOKEN set, so its verdict console is switched off."
@@ -137,7 +172,9 @@ export async function postVerdict(token: string, input: { lease: string; deducti
     headers: { "content-type": "application/json", authorization: `Bearer ${token.trim()}` },
     body: JSON.stringify({ lease: input.lease, deduction: String(Math.trunc(input.deduction)), dryRun: input.dryRun }),
   });
-  const body = (await res.json().catch(() => ({}))) as { error?: unknown; code?: unknown };
+  // Unknown, not a shape: a parse failure gives {}, but a body of literal `null` parses fine and
+  // arrives as null. Both callees below take it from here.
+  const body: unknown = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(consoleErrorMessage(res.status, body));
   return verdictView(body);
 }

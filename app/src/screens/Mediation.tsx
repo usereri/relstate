@@ -14,7 +14,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Terms } from "@/components/Terms";
 import * as chain from "@/lib/chain";
 import type { DisputeView, Role } from "@/lib/chain";
-import { DIRECTORY_AVAILABLE, loadAppraiserDirectory, mergeDirectory, type AppraiserOption } from "@/lib/appraisers";
+import { DIRECTORY_AVAILABLE, loadAppraiserDirectory, mergeDirectory, trustedLabel, type AppraiserOption } from "@/lib/appraisers";
 import * as med from "@/lib/mediation";
 import { sharedRead } from "@/lib/reads";
 import { useChain } from "@/lib/useChain";
@@ -51,9 +51,21 @@ export function useAppraiserOptions(enabled: boolean): { options: AppraiserOptio
   };
 }
 
-/** What to call an appraiser: the directory's name, or a shortened key when nobody has one. */
+/**
+ * What to call an appraiser in prose and in lists: the directory's name, or a shortened key when
+ * nobody has one. The name here may be unverified, which the row's own missing tick says.
+ */
 export const nameOf = (options: AppraiserOption[] | undefined, wallet: string): string =>
   options?.find((o) => o.wallet === wallet)?.name || short(wallet, 5);
+
+/**
+ * What to call one on a button that commits — picking, binding, submitting.
+ *
+ * Only a name the chain's `name_hash` confirms may stand in for identity there; an unverified name
+ * is the directory's claim, and the key is what the program acts on.
+ */
+export const committedName = (options: AppraiserOption[] | undefined, wallet: string): string =>
+  trustedLabel(options?.find((o) => o.wallet === wallet), (k) => short(k, 5));
 
 /** The registry entry for a key, or undefined while the registry loads or if the key left it. */
 export const optionFor = (options: AppraiserOption[] | undefined, wallet: string) => options?.find((o) => o.wallet === wallet);
@@ -326,7 +338,7 @@ export function BoundAppraiser({ dispute, options, now }: { dispute: DisputeView
           <Scale className="size-5" />
         </span>
         <CardTitle className="mt-2 flex flex-wrap items-center gap-2">
-          {o?.name || short(dispute.appraiser, 5)}
+          {trustedLabel(o, (k) => short(k, 5))}
           {o && <VerifiedName o={o} />}
           {o?.isDefault && !agreedByBoth && <Badge variant="outline">fallback</Badge>}
         </CardTitle>
@@ -339,7 +351,7 @@ export function BoundAppraiser({ dispute, options, now }: { dispute: DisputeView
       <CardContent className="flex flex-col gap-3">
         <Terms
           rows={[
-            ["Deciding", nameOf(options, dispute.appraiser)],
+            ["Deciding", committedName(options, dispute.appraiser)],
             ["Wallet", short(dispute.appraiser, 8)],
             // Past the deadline "due ... ago" reads as a mistake, and the fact that matters has
             // changed: it is no longer a wait, it is an exit.

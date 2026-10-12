@@ -22,11 +22,12 @@ import { Logo } from "@/components/Brand";
 import { Terms } from "@/components/Terms";
 import * as chain from "@/lib/chain";
 import * as med from "@/lib/mediation";
-import { nameOf, optionFor, useAppraiserOptions } from "@/screens/Mediation";
-import { CONSOLE_AVAILABLE, asked, parseAmountInput, postVerdict, previewAuthorises, verdictProblem, type VerdictResult } from "@/lib/verdict";
+import { optionFor, useAppraiserOptions } from "@/screens/Mediation";
+import { trustedLabel } from "@/lib/appraisers";
+import { CONSOLE_AVAILABLE, asked, parseAmountInput, postVerdict, previewGate, verdictProblem, type VerdictResult } from "@/lib/verdict";
 import { invalidateReads } from "@/lib/reads";
 import { Tick, useChain } from "@/lib/useChain";
-import { duration, short, usdc } from "@/lib/utils";
+import { duration, isSignature, short, usdc } from "@/lib/utils";
 
 const Problem = ({ children }: { children: React.ReactNode }) => (
   <p role="alert" className="rounded-xl border border-destructive/30 bg-danger-soft p-3 text-sm text-destructive">
@@ -65,8 +66,11 @@ function Console({ bump }: { bump: () => void }) {
   const fee = lease && bound ? med.feeFor(lease.deposit, optionFor(options, bound)?.fee ?? 0, chain.APPRAISER_FEE_CAP_DIVISOR) : 0;
   const local = lease ? med.verdictSplit(lease.deposit, deductionBase, fee) : null;
   const current = asked(leaseAddress, deductionBase);
-  // Editing the lease or the amount disarms the confirm: a dry run authorises only its own question.
-  const previewed = previewAuthorises(preview, leaseAddress, deductionBase) ? preview!.result : null;
+  // Editing the lease or the amount disarms the confirm, and so does a backend that echoed back a
+  // different question than it was asked.
+  const gate = previewGate(preview, leaseAddress, deductionBase);
+  const previewed = gate.armed && preview ? preview.result : null;
+  const echoMismatch = !gate.armed && gate.reason === "echo" ? preview?.result : null;
   const drift =
     previewed && local && (previewed.toTenant !== local.toTenant || previewed.toLandlord !== local.toLandlord || previewed.feePaid !== local.feePaid);
 
@@ -113,17 +117,25 @@ function Console({ bump }: { bump: () => void }) {
               ["Appraiser's fee", `${usdc(done.feePaid)} USDC`],
             ]}
           />
-          {done.signatures.map((sig) => (
-            <a
-              key={sig}
-              href={chain.explorerTx(sig)}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-sm underline underline-offset-4"
-            >
-              {short(sig, 8)} <ArrowUpRight className="size-3.5" />
-            </a>
-          ))}
+          {/* A signature becomes an href, so it is checked to be base58 first: it arrives in a
+              backend response, and anything that is not a signature has no business in a URL. */}
+          {done.signatures.map((sig) =>
+            isSignature(sig) ? (
+              <a
+                key={sig}
+                href={chain.explorerTx(sig)}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-sm underline underline-offset-4"
+              >
+                {short(sig, 8)} <ArrowUpRight className="size-3.5" />
+              </a>
+            ) : (
+              <span key={sig} className="font-mono text-xs text-muted-foreground">
+                {short(sig, 8)} — not a valid signature, so it is not linked
+              </span>
+            ),
+          )}
           <Button
             variant="outline"
             onClick={() => {
@@ -186,7 +198,7 @@ function Console({ bump }: { bump: () => void }) {
                   ["Deposit in vault", `${usdc(lease.deposit)} USDC`],
                   ["Landlord", short(lease.landlord, 6)],
                   ["Tenant", short(lease.tenant, 6)],
-                  ...(bound ? ([["Bound appraiser", nameOf(options, bound)]] as [string, string][]) : []),
+                  ...(bound ? ([["Bound appraiser", trustedLabel(optionFor(options, bound), (k) => short(k, 6))]] as [string, string][]) : []),
                   ...(dispute
                     ? ([
                         [
@@ -242,6 +254,15 @@ function Console({ bump }: { bump: () => void }) {
       </Card>
 
       {error && <Problem>{error}</Problem>}
+
+      {echoMismatch && (
+        <Problem>
+          The backend answered about a different verdict than it was asked: it reports lease {short(echoMismatch.lease, 6)} and{" "}
+          {usdc(echoMismatch.deduction)} USDC, where this form asked about {short(leaseAddress, 6)} and {usdc(deductionBase)} USDC. Nothing can be
+          submitted from this preview — the numbers above would not be the ones signed. Check that this app points at the backend you think it does,
+          then preview again.
+        </Problem>
+      )}
 
       {previewed && (
         <Card className="border-primary/40">

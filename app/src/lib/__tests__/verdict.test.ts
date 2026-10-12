@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { asked, consoleErrorMessage, parseAmountInput, previewAuthorises, verdictProblem, verdictView } from "../verdict";
+import { asked, consoleErrorMessage, parseAmountInput, previewGate, verdictProblem, verdictView } from "../verdict";
 
 describe("parseAmountInput", () => {
   it("parses whole and decimal amounts into base units", () => {
@@ -45,26 +45,26 @@ describe("parseAmountInput", () => {
   });
 });
 
-describe("asked / previewAuthorises", () => {
+describe("asked / previewGate", () => {
   it("authorises exactly the (lease, deductionBase) pair it was asked about", () => {
-    const preview = { asked: asked("LEASE1", 100) };
-    expect(previewAuthorises(preview, "LEASE1", 100)).toBe(true);
+    const preview = { asked: asked("LEASE1", 100), result: { lease: "LEASE1", deduction: 100 } };
+    expect(previewGate(preview, "LEASE1", 100)).toEqual({ armed: true });
   });
 
   it("does not authorise a different lease", () => {
-    const preview = { asked: asked("LEASE1", 100) };
-    expect(previewAuthorises(preview, "LEASE2", 100)).toBe(false);
+    const preview = { asked: asked("LEASE1", 100), result: { lease: "LEASE1", deduction: 100 } };
+    expect(previewGate(preview, "LEASE2", 100)).toEqual({ armed: false, reason: "stale" });
   });
 
   it("does not authorise an amount that differs by a single base unit", () => {
-    const preview = { asked: asked("LEASE1", 100) };
-    expect(previewAuthorises(preview, "LEASE1", 101)).toBe(false);
-    expect(previewAuthorises(preview, "LEASE1", 99)).toBe(false);
+    const preview = { asked: asked("LEASE1", 100), result: { lease: "LEASE1", deduction: 100 } };
+    expect(previewGate(preview, "LEASE1", 101)).toEqual({ armed: false, reason: "stale" });
+    expect(previewGate(preview, "LEASE1", 99)).toEqual({ armed: false, reason: "stale" });
   });
 
   it("a dry run cannot authorise a question it did not answer: no preview authorises anything", () => {
-    expect(previewAuthorises(null, "LEASE1", 100)).toBe(false);
-    expect(previewAuthorises(undefined, "LEASE1", 100)).toBe(false);
+    expect(previewGate(null, "LEASE1", 100)).toEqual({ armed: false, reason: "none" });
+    expect(previewGate(undefined, "LEASE1", 100)).toEqual({ armed: false, reason: "none" });
   });
 
   it("asked does not collide across amounts that a naive concatenation would (no accidental prefix collision)", () => {

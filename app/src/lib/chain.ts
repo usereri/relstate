@@ -7,7 +7,7 @@ import { GRACE_SECS, IS_LOCAL, MINT, PERIOD_SECS, RPC, TERM_PERIODS } from "./co
 import { retryingFetch } from "./rpc";
 import { invalidateReads, sharedRead } from "./reads";
 import { isShortPublicBalance } from "./holdback";
-import { setKey } from "./mediation";
+import { MAX_CANDIDATES, setKey } from "./mediation";
 import { jsonSafe } from "./utils";
 import { API, SPONSORED, postSponsored, sponsorFeePayer } from "./sponsor";
 import { asWalletProvider, localKeypair, localWallet, readOnlyWallet } from "./wallet";
@@ -743,6 +743,15 @@ export function escalateToMediation(me: Me, l: LeaseView) {
  * accounts and must be passed as explicit nulls, or Anchor would derive and send them.
  */
 export function proposeAppraisers(me: Me, l: LeaseView, wallets: string[]) {
+  // Said here rather than left to the destructure below, which would have sent `appraiser_one:
+  // undefined` for an empty list (Anchor then tries to derive a PDA whose seed is a field of the
+  // account it is deriving, and fails with something unrelated) and silently dropped a fourth.
+  // Dropping one is the worse of the two: the side would have proposed something other than what
+  // it chose, and a side only proposes once.
+  if (wallets.length === 0) throw new Error("Choose at least one appraiser to put forward.");
+  if (wallets.length > MAX_CANDIDATES)
+    throw new Error(`A side may put forward at most ${MAX_CANDIDATES} appraisers, and ${wallets.length} were chosen.`);
+  if (new Set(wallets).size !== wallets.length) throw new Error("Each appraiser can only be put forward once.");
   const lease = new PublicKey(l.address);
   const [one, two, three] = wallets.map((w) => appraiserPda(new PublicKey(w)));
   return send(me, me.program.methods
