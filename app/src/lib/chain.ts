@@ -562,7 +562,15 @@ export async function sendSponsored(me: Me, tx: anchor.web3.Transaction): Promis
   tx.feePayer = new PublicKey(feePayer);
   tx.recentBlockhash = latest.blockhash;
   tx.lastValidBlockHeight = latest.lastValidBlockHeight;
+  const requestedBlockhash = tx.recentBlockhash;
+  const requestedAt = Date.now();
   const signed = await me.wallet.signTransaction(tx);
+  // Diagnostic: some wallets (Phantom) rewrite the message while signing, adding compute-budget
+  // instructions and sometimes a blockhash of their own. Say so, with how long the prompt took.
+  if (signed.recentBlockhash !== requestedBlockhash) {
+    console.warn(`[sponsor] wallet replaced the blockhash: asked ${requestedBlockhash}, signed ${signed.recentBlockhash}`);
+  }
+  console.info(`[sponsor] blockhash ${signed.recentBlockhash}, signed after ${Date.now() - requestedAt} ms, ${signed.instructions.length} instructions`);
   return postSponsored(signed.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64"));
 }
 
