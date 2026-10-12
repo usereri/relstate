@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as anchor from "@anchor-lang/core";
 import idl from "@target/idl/relstate.json";
 import { localKeypair, localWallet } from "../wallet";
+import { MAX_CANDIDATES } from "../mediation";
 import type { LeaseView } from "../chain";
 
 const { PublicKey } = anchor.web3;
@@ -151,6 +152,42 @@ describe("proposeAppraisers: the three candidate slots", () => {
     expect(m.appraiserOne).toBe(appraiserPda(w1).toBase58());
     expect(m.appraiserTwo).toBe(appraiserPda(w2).toBase58());
     expect(m.appraiserThree).toBe(appraiserPda(w3).toBase58());
+  });
+});
+
+describe("proposeAppraisers: invalid candidate lists", () => {
+  it("gives each invalid list a distinct error before building or sending a transaction", async () => {
+    vi.stubEnv("VITE_API", "");
+    const chain = await load();
+    const me = chain.makeMe(localWallet("tenant"));
+    const buildInstruction = vi.spyOn(me.program.methods, "proposeAppraisers");
+    // If a regression reaches the send path, keep the test isolated from any network call and
+    // assert that neither simulation nor submission was attempted.
+    const simulate = vi.spyOn(anchor.AnchorProvider.prototype, "simulate").mockResolvedValue({ logs: [] } as never);
+    const send = vi.spyOn(anchor.AnchorProvider.prototype, "sendAndConfirm").mockResolvedValue("SIGNATURE" as never);
+    const duplicate = localKeypair("landlord").publicKey.toBase58();
+    const tooMany = Array.from({ length: MAX_CANDIDATES + 1 }, () => PublicKey.unique().toBase58());
+    const invalidLists = [[], tooMany, [duplicate, duplicate]];
+
+    const errors: unknown[] = [];
+    for (const wallets of invalidLists) {
+      try {
+        await chain.proposeAppraisers(me, lease({ status: "mediation" }), wallets);
+        errors.push(null);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+
+    expect(errors.every((error) => error instanceof Error)).toBe(true);
+    const messages = errors.map((error) => (error as Error).message);
+    expect(messages[0]).toMatch(/at least one appraiser/);
+    expect(messages[1]).toContain(`at most ${MAX_CANDIDATES} appraisers`);
+    expect(messages[2]).toMatch(/only be put forward once/);
+    expect(new Set(messages).size).toBe(3);
+    expect(buildInstruction).not.toHaveBeenCalled();
+    expect(simulate).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   });
 });
 
