@@ -202,6 +202,12 @@ export async function fetchAllAppraisers(rpc: Rpc<GetProgramAccountsApi>): Promi
   return (rows as unknown as { account: { data: [string, string] } }[]).map((r) => decodeAppraiser(accountBytes(r.account.data[0])));
 }
 
+/** Registry entries flagged default that the directory no longer lists: they would stay eligible for bind_default_appraiser. */
+export const staleDefaults = (records: readonly AppraiserRecord[], directoryWallets: Iterable<string>): AppraiserRecord[] => {
+  const keep = new Set(directoryWallets);
+  return records.filter((r) => r.isDefault && !keep.has(r.wallet));
+};
+
 /** Whether an account exists. submit_verdict transfers fee_paid (even 0) to the appraiser's ATA, so it must. */
 export async function accountExists(rpc: AppraiserRpc, address: Address): Promise<boolean> {
   return (await fetchEncodedAccount(rpc, address)).exists;
