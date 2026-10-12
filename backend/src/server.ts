@@ -75,6 +75,27 @@ async function readJson<T>(c: { req: { json(): Promise<unknown> } }): Promise<T>
   }
 }
 
+/**
+ * A verdict deduction: base-unit digits only, as a string, or a safe non-negative integer. Not
+ * `BigInt(x)`, which maps "", " ", true, [] and "0x10" to values and would turn an empty form field
+ * into a live verdict of 0.
+ */
+export function parseDeduction(value: unknown): bigint {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === "string" && /^\d+$/.test(value) && value.length <= 20) {
+    const n = BigInt(value);
+    if (n <= 18_446_744_073_709_551_615n) return n;
+  }
+  throw new RejectedTransaction("deduction must be a non-negative base-unit integer (digits only)", "malformed-body");
+}
+
+/** A flag that, if present, must be a real boolean: "true", 1 and "yes" are refused, not guessed at. */
+export function parseOptionalBoolean(value: unknown, field: string): boolean {
+  if (value === undefined) return false;
+  if (typeof value === "boolean") return value;
+  throw new RejectedTransaction(`${field} must be true or false`, "malformed-body");
+}
+
 /** Positive base-unit amount from an untrusted string. */
 function parseAmount(value: unknown, field = "amount"): bigint {
   if (typeof value !== "string" && typeof value !== "number") {
@@ -639,13 +660,13 @@ export function createApp(
     if (typeof body.lease !== "string" || !isAddress(body.lease)) {
       throw new RejectedTransaction("lease must be the lease account's address", "malformed-body");
     }
-    let deduction: bigint;
-    try {
-      deduction = BigInt(body.deduction as string | number);
-    } catch {
-      throw new RejectedTransaction("deduction must be a base-unit integer", "malformed-body");
+    const deduction = parseDeduction(body.deduction);
+    const dryRun = parseOptionalBoolean(body.dryRun, "dryRun");
+    // Any key the body carries beyond these is a typo for a flag we would silently ignore (a verdict
+    // that goes live when the operator meant a preview), so unknown keys are refused too.
+    for (const key of Object.keys(body)) {
+      if (key !== "lease" && key !== "deduction" && key !== "dryRun") throw new RejectedTransaction(`unknown field ${key}`, "malformed-body");
     }
-    if (deduction < 0n) throw new RejectedTransaction("deduction cannot be negative", "malformed-body");
     const chain = await services.appraiserChain();
     const input = { lease: body.lease as Address, deduction };
     const view = (plan: Awaited<ReturnType<typeof chain.plan>>) => ({
@@ -659,7 +680,7 @@ export function createApp(
       appraiserAta: plan.appraiserAta,
       appraiserAtaExists: plan.appraiserAtaExists,
     });
-    if (body.dryRun === true) return c.json({ dryRun: true, ...view(await chain.plan(input)) });
+    if (dryRun) return c.json({ dryRun: true, ...view(await chain.plan(input)) });
     const result = await chain.submit(input);
     return c.json({ dryRun: false, signatures: result.signatures, ...view(result.plan) });
   });

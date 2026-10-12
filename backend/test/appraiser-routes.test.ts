@@ -31,7 +31,19 @@ describe("POST /api/admin/appraiser/verdict", () => {
     const auth = "Bearer s3cret-admin-token";
     assert.equal((await post({ lease: "x", deduction: "1" }, auth)).status, 400);
     assert.equal((await post({ lease: A, deduction: "-1" }, auth)).status, 400);
-    assert.equal((await post({ lease: A, deduction: "abc" }, auth)).status, 400);
+    for (const deduction of ["abc", "", " ", true, false, [], {}, null, "0x10", "0b1", "1e3", "1.5", " 5", "5 ", 1.5, -0, 2 ** 60, "18446744073709551616"]) {
+      const res = await post({ lease: A, deduction }, auth);
+      assert.equal(res.status, 400, `deduction ${JSON.stringify(deduction)} should be refused`);
+    }
+    assert.equal((await post({ lease: A }, auth)).status, 400, "a missing deduction is not 0");
+  });
+  it("400s on a dryRun that is not a boolean, instead of going live", async () => {
+    const auth = "Bearer s3cret-admin-token";
+    for (const dryRun of ["true", "false", 1, 0, "yes", null, []]) {
+      const res = await post({ lease: A, deduction: "1", dryRun }, auth);
+      assert.equal(res.status, 400, `dryRun ${JSON.stringify(dryRun)} should be refused`);
+    }
+    assert.equal((await post({ lease: A, deduction: "1", dryrun: true }, auth)).status, 400, "unknown field");
   });
   it("503s, saying why, when no appraiser key is configured", async () => {
     const res = await post({ lease: A, deduction: "1" }, "Bearer s3cret-admin-token");
