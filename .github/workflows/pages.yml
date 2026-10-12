@@ -65,6 +65,7 @@ jobs:
           VITE_RUSDC_MINT: ${{ vars.VITE_RUSDC_MINT }}
           VITE_MINT: ${{ vars.VITE_MINT }}
           VITE_CLUSTER: ${{ vars.VITE_CLUSTER }}
+          VITE_LISTING_LANDLORDS: ${{ vars.VITE_LISTING_LANDLORDS }}
           VITE_FEE_PAYER: ${{ vars.VITE_FEE_PAYER }}
           VITE_EMBEDDED_WALLET: mock
         run: npm run app:build

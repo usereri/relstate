@@ -16,6 +16,7 @@ import { MAX_TEXT, USDC } from "@/lib/config";
 import { count, recordLine, unique, useRecords } from "@/lib/records";
 import { termLabel } from "@/lib/term";
 import { useChain } from "@/lib/useChain";
+import { UPLOAD_AVAILABLE, uploadPhoto } from "@/lib/photoUpload";
 import { duration, photoUrl, short, usdc } from "@/lib/utils";
 
 const bytes = (s: string) => new TextEncoder().encode(s).length;
@@ -193,6 +194,24 @@ function ListingForm({ h }: { h: Handlers }) {
   const region = f.region.toUpperCase();
   const tooLong = (["title", "city", "blurb", "photo"] as const).find((k) => bytes(f[k]) > MAX_TEXT[k]);
   const photo = photoUrl(f.photo);
+  const [uploading, setUploading] = useState(false);
+  const [uploadErr, setUploadErr] = useState("");
+  const pick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploading(true);
+    setUploadErr("");
+    try {
+      setF((cur) => ({ ...cur, photo: "" }));
+      const url = await uploadPhoto(file);
+      setF((cur) => ({ ...cur, photo: url }));
+    } catch (err) {
+      setUploadErr(err instanceof Error ? err.message : "Upload failed.");
+    } finally {
+      setUploading(false);
+    }
+  };
   const [photoOk, setPhotoOk] = useState<boolean | null>(null); // null = not checked yet
   useEffect(() => setPhotoOk(null), [photo]);
   const ok = !!f.title.trim() && rent > 0 && deposit >= 0 && /^[A-Z]{2}$/.test(region) && !tooLong && (!photo || photoOk === true);
@@ -220,6 +239,13 @@ function ListingForm({ h }: { h: Handlers }) {
       </div>
       {field("blurb", "Short description", { placeholder: "Furnished · 42 m² · fibre internet" })}
       {field("photo", "Photo", { placeholder: "kazimierz.jpg, /listings/flat.jpg or https://…" })}
+      {UPLOAD_AVAILABLE && (
+        <label className="flex items-center gap-2 text-xs">
+          <span className="rounded-md border px-3 py-1.5 font-semibold cursor-pointer hover:bg-muted">{uploading ? "Uploading…" : "Upload from computer"}</span>
+          <input type="file" accept="image/*" className="hidden" disabled={uploading} onChange={pick} />
+          {uploadErr && <span className="text-destructive">{uploadErr}</span>}
+        </label>
+      )}
       {photo && (
         <div className="flex items-center gap-3 text-xs">
           <img
@@ -239,7 +265,7 @@ function ListingForm({ h }: { h: Handlers }) {
         {field("deposit", "Deposit, USDC", { inputMode: "decimal", placeholder: f.rent || "same as rent" })}
       </div>
       <p className="text-xs text-muted-foreground">
-        Photo: a file name from <span className="font-mono">app/public/listings</span>, or a web address. The deposit is the standard one; the program halves it
+        Photo: upload one, a file name from <span className="font-mono">app/public/listings</span>, or a web address. The deposit is the standard one; the program halves it
         for tenants with a clean record.
         {tooLong && <span className="block text-destructive">The {tooLong} is too long for the chain (max {MAX_TEXT[tooLong]} bytes).</span>}
       </p>

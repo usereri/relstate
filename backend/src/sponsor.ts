@@ -133,16 +133,24 @@ export function createSponsorService(deps: SponsorDeps) {
     try {
       let unitsConsumed: bigint | undefined;
       if (deps.simulate) {
-        const simulation = await deps.rpc
-          .simulateTransaction(txBase64 as Parameters<SponsorRpc["simulateTransaction"]>[0], {
-            encoding: "base64",
-            commitment: "confirmed",
-            // We have not signed yet, so signatures cannot verify; and we keep the
-            // client's blockhash so an expired one fails here rather than after we pay.
-            sigVerify: false,
-            replaceRecentBlockhash: false,
-          })
-          .send();
+        // The client read its blockhash from one node and we simulate on another, which can be a
+        // slot behind: "BlockhashNotFound" for a blockhash that is perfectly valid. Retry briefly
+        // before treating it as the expired blockhash it otherwise means.
+        let simulation;
+        for (let attempt = 0; ; attempt++) {
+          simulation = await deps.rpc
+            .simulateTransaction(txBase64 as Parameters<SponsorRpc["simulateTransaction"]>[0], {
+              encoding: "base64",
+              commitment: "confirmed",
+              // We have not signed yet, so signatures cannot verify; and we keep the
+              // client's blockhash so an expired one fails here rather than after we pay.
+              sigVerify: false,
+              replaceRecentBlockhash: false,
+            })
+            .send();
+          if (simulation.value.err !== "BlockhashNotFound" || attempt >= 4) break;
+          await new Promise((r) => setTimeout(r, 500));
+        }
 
         if (simulation.value.err !== null) {
           throw new RejectedTransaction(

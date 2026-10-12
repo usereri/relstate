@@ -78,3 +78,13 @@ export const MAX_TEXT = { title: 60, city: 40, blurb: 120, photo: 120 };
  * the whole amount public. Override with VITE_DEFAULT_PUBLIC_HOLDBACK. (docs/contracts/treasury.md)
  */
 export const DEFAULT_PUBLIC_HOLDBACK: number = Number(import.meta.env.VITE_DEFAULT_PUBLIC_HOLDBACK ?? 100_000_000) || 0;
+
+/**
+ * Demo curation: when set, the marketplace lists only listings by these landlords (comma-separated
+ * wallet addresses). Listings by anyone else stay on chain, since only their landlord can close
+ * one, but they are not shown. Unset shows everything.
+ */
+export const LISTING_LANDLORDS: string[] = (import.meta.env.VITE_LISTING_LANDLORDS ?? "")
+  .split(",")
+  .map((s: string) => s.trim())
+  .filter(Boolean);

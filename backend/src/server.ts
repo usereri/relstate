@@ -23,6 +23,7 @@ import { ServiceUnavailable, createServices, type Services } from "./services.ts
 import { InvariantViolation, reportForLog, type InvariantReport } from "./treasury.ts";
 import { clientIpOf, createIpLimiter, createWalletAuth, RateLimited, type WalletAuth } from "./wallet-auth.ts";
 import { RejectedTransaction } from "./txinspect.ts";
+import { createUploads } from "./uploads.ts";
 import { loadIdl } from "./layout.ts";
 import { createRpcLimiter, createRpcProxy, RPC_PROXY_MAX_BODY_BYTES, type RpcProxy } from "./rpcproxy.ts";
 
@@ -683,6 +684,21 @@ export function createApp(
     const lease = c.req.query("lease");
     if (lease === undefined) throw new RejectedTransaction("lease is required: GET /api/invites?lease=<address>", "malformed-query");
     return c.json(await services.invites().pending({ lease, wallet: session.wallet }));
+  });
+
+  // Listing photos (mock object storage). Upload needs a session; reading is public so any
+  // browser can render the listing.
+  const uploads = createUploads();
+  app.post("/api/uploads", bodyLimit({ maxSize: 450_000, onError: (c) => c.json({ error: "photo too large", code: "malformed-body" }, 413) }), async (c) => {
+    const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
+    inviteLimit(`u:${session.wallet}`);
+    const body = await readJson<{ type?: unknown; data?: unknown }>(c);
+    return c.json({ id: uploads.put(body.type, body.data) });
+  });
+  app.get("/api/uploads/:id", (c) => {
+    const item = uploads.get(c.req.param("id"));
+    if (!item) return c.json({ error: "not found", code: "not-found" }, 404);
+    return new Response(item.data, { headers: { "content-type": item.type, "x-content-type-options": "nosniff", "cache-control": "public, max-age=86400", "cross-origin-resource-policy": "cross-origin" } });
   });
 
   app.notFound((c) => c.json({ error: "not found", code: "not-found" }, 404));

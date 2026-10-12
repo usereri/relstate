@@ -9,7 +9,7 @@ import {
 } from "@solana/spl-token";
 import idl from "@target/idl/relstate.json";
 import type { Relstate } from "@target/types/relstate";
-import { GRACE_SECS, IS_LOCAL, MINT, PERIOD_SECS, RPC } from "./config";
+import { GRACE_SECS, IS_LOCAL, LISTING_LANDLORDS, MINT, PERIOD_SECS, RPC } from "./config";
 import { retryingFetch } from "./rpc";
 import { invalidateReads, sharedRead } from "./reads";
 import { isShortPublicBalance } from "./holdback";
@@ -457,7 +457,7 @@ const applicationView = (address: PubKey, a: Acc<"application">): ApplicationVie
 const newestFirst = <T extends { id: string }>(rows: T[]) => rows.sort((a, b) => Number(b.id) - Number(a.id));
 
 export function loadListings(): Promise<ListingView[]> {
-  return sharedRead("listings", async () => newestFirst((await reader.account.listing.all()).map((r) => listingView(r.publicKey, r.account))));
+  return sharedRead("listings", async () => newestFirst((await reader.account.listing.all()).filter((r) => !LISTING_LANDLORDS.length || LISTING_LANDLORDS.includes(r.account.landlord.toBase58())).map((r) => listingView(r.publicKey, r.account))));
 }
 
 // Key offsets in an application: landlord 40, tenant 72. Applications for a landlord's listings, or made by a tenant.
