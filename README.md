@@ -9,7 +9,7 @@ Relstate is a rental marketplace on Solana where the deposit sits in an on-chain
 <p>
   <img alt="Solana" src="https://img.shields.io/badge/Solana-Anchor%201.1-9945FF?logo=solana&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white">
-  <img alt="Tests" src="https://img.shields.io/badge/program%20tests-39%20passing-2ea44f">
+  <img alt="Tests" src="https://img.shields.io/badge/program%20tests-54%20passing-2ea44f">
   <img alt="Status" src="https://img.shields.io/badge/status-hackathon%20prototype-orange">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
@@ -64,7 +64,9 @@ flowchart LR
 
 A profile (one per wallet, seen as tenant and as landlord) keeps counters that only the program writes:
 
-`leases_completed` · `paid_on_time` · `paid_late` · `defaults` · `deposits_returned_full` · `deposits_claimed` · `deposit_total` · `deducted_total` · `rent_paid_total`
+`leases_completed` · `paid_on_time` · `paid_late` · `defaults` · `deposits_returned_full` · `deposits_claimed` · `deposit_total` · `deducted_total` · `rent_paid_total` · `last_deposit_return_bps` · `deposit_events`
+
+The last two are the landlord's public deposit-return record: the share of the most recent deposit that went back (10000 = all of it) and how many leases it is based on. Deposit amounts and deductions are public by design; only rent payments are confidential (`docs/privacy.md`). It is a published record, **not a guarantee or a deterrent on its own**: a landlord can inflate it with leases between wallets they control, so it relies on the KYC issuer (`require_kyc`) for sybil resistance.
 
 The **typical rent** of a tenant is `rent_paid_total / payments made`.
 
@@ -96,14 +98,18 @@ The third rule closes the cheap trick of finishing a tiny lease to earn a discou
 | `fund_deposit` | tenant | Accept: checks the contract hash, locks the deposit, starts the lease. |
 | `pay_rent` | tenant | Pay one period straight to the landlord. On time within the grace period, late after it. No prepaying. |
 | `mark_default` | landlord | When rent is overdue by more than a period plus grace: takes the owed rent (up to the deposit), returns the rest. |
-| `release_deposit` | landlord | After the term: returns the deposit minus an optional deduction. Both records show it. |
-| `claim_deposit` | tenant | If the landlord does not release within the claim window, the tenant takes it back and the landlord's record shows it. |
+| `release_deposit` | landlord | After the term. A deduction of 0 returns the deposit at once. A deduction above 0 is only a **proposal**: the lease becomes `Disputed`, nothing is paid and the claim clock pauses. |
+| `accept_deduction` | tenant | Agrees to the proposed deduction; the deposit is split and the lease closes. |
+| `abandon_dispute` | tenant | Rejects the proposal inside the dispute window; the claim clock resumes and `claim_deposit` returns the whole deposit. |
+| `finalize_deduction` | landlord | After the dispute window, if the tenant stayed silent: the proposal stands. |
+| `settle_dispute` | tenant **and** landlord | Both sign a final deduction (any amount up to the deposit); the deposit is split and the lease closes. |
+| `claim_deposit` | tenant | If the landlord does not release within the claim window (paused while a dispute is open), the tenant takes it all back and the landlord's record shows it. |
 
-Program ID: `5J52oGfo7BjC529vizEaM96QtxVFD4Kbv22Tw8aXa1Ar`
+Program ID: `G4iMjveQKXztnGoxigAeWPrb5evT9yt6qaLkgQEp2dXm`
 
 ## Quick start (local)
 
-**Prerequisites:** Rust (pinned by `rust-toolchain.toml`), the Solana CLI tools (for `cargo build-sbf`), [Anchor](https://www.anchor-lang.com/) 1.1, [Surfpool](https://surfpool.run/) 1.5, Node 20+ (developed on 24). A wallet extension such as Phantom is optional locally.
+**Prerequisites:** Rust (pinned by `rust-toolchain.toml`), the Solana CLI tools (for `cargo build-sbf`), [Anchor](https://www.anchor-lang.com/) 1.1, [Surfpool](https://surfpool.run/) 1.5, Node 22.18+ (developed on 26; runs the TypeScript tests and scripts natively). A wallet extension such as Phantom is optional locally.
 
 ### First time only
 
@@ -113,15 +119,38 @@ npm install
 # the payer that funds accounts and owns the default listings
 solana-keygen new              # skip if ~/.config/solana/id.json already exists
 
-# the test-USDC mint. Its address is baked into the program, so use your own key:
-solana-keygen new --no-bip39-passphrase -o tests/test-usdc-mint.json
-solana-keygen pubkey tests/test-usdc-mint.json
-#   -> put that address in ALLOWED_MINT (programs/relstate/src/constants.rs)
-#      and in MINT (app/src/lib/config.ts)
-
-# only if you do not have the program's deploy keypair:
-anchor keys sync
 ```
+
+The test-USDC mint needs no keypair file: `make demo-setup` derives its address from the payer
+wallet (`createWithSeed`, seed `relstate-test-usdc`) and prints it. If your payer is not the one
+`MINT` in `app/src/lib/config.ts` was derived from, set `VITE_MINT=<printed address>` in
+`app/.env.local`.
+
+`make test-demo` does not need that mint: the test suite creates and allows its own.
+
+#### Program keypair
+
+The deploy keypair lives **outside the repo**, at `~/.config/relstate/program-keypair.json`, so
+every worktree and machine deploys the same program id without the private key being in git. The
+Makefile copies it into `target/deploy/` before each build. Copy it from whoever has it, or
+regenerate the id if you are starting a deployment of your own:
+
+```bash
+solana-keygen new --no-bip39-passphrase -o ~/.config/relstate/program-keypair.json
+chmod 600 ~/.config/relstate/program-keypair.json
+make program-keypair && anchor keys sync   # rewrites declare_id! and Anchor.toml to match
+```
+
+Override the location with `PROGRAM_KEYPAIR=/path/to/key.json make test-demo`.
+
+#### Allowed mints
+
+A lease can only be denominated in a mint the program's on-chain `Config` allowlist accepts, so a
+fresh network needs `init_config` once and then `set_mint_allowed` per mint. **`make demo-setup`
+does both**: it initializes the `Config` (the payer becomes admin) and allows the test-USDC mint it
+creates, so the local quick start below is fully scripted — there is no manual allowlist step. For a
+manual or devnet setup, see [`docs/contracts/program-interface.md`](docs/contracts/program-interface.md)
+§2 and §4.
 
 Optionally copy `.env.example` to `.env` to list wallets that `make demo-setup` should fund.
 
@@ -133,27 +162,28 @@ make demo-setup     # terminal 2: mint + fund the built-in test wallets + four d
 make demo-app       # terminal 2: the web app at http://localhost:5173
 ```
 
-Open **two tabs**:
+Open **two tabs** at `http://localhost:5173/`. Sign in with **Demo wallet (landlord)** in one and **Demo wallet (tenant)** in the other. Sign-up does not ask for a role (everyone starts the same, as a tenant); the role switch in the header changes it any time and is remembered per tab.
 
-- `http://localhost:5173/?role=landlord`
-- `http://localhost:5173/?role=tenant`
+For scripted demos and tests only, `?role=landlord` / `?role=tenant` opens a tab directly as that role (a testing override, not part of normal navigation; see [`docs/env-checklist.md`](docs/env-checklist.md#role-and-session)).
 
-In each, open **Connect wallet** and pick the built-in **Test wallet**. It is a fixed key per role for local networks, so the two tabs are two different people and no extension is needed.
+The demo wallets are fixed keys per role for local networks, so the two tabs are two different people and no extension is needed.
 
 `make demo-setup` also accepts your own addresses: `make demo-setup WALLETS="<addr> <addr>"`.
 
 ### Try the whole flow (about 3 minutes)
 
 1. **Tenant tab:** browse *Apartments* and click **Apply to rent**.
-2. **Landlord tab:** in *My listings* add a listing (photos are files in `app/public/listings`, for example `kazimierz.jpg`). In *Leases*, the applicant appears with their record. Click **Propose lease** and attach the sample contract.
+2. **Landlord tab:** in *My listings* add a listing (photos are files in `app/public/listings`, for example `kazimierz.jpg`). In *Leases*, the applicant appears with their record. Choose the lease term (months, default 3), click **Propose lease** and attach the sample contract.
 3. **Tenant tab:** *My lease*, attach the same contract, accept. The deposit locks in the vault. A different file is refused.
-4. **Pay rent** three times using the demo-clock buttons (local network only) to jump forward. Try one late payment inside the grace period.
+4. **Pay rent** once per period of the term (three by default) using the demo-clock buttons (local network only) to jump forward. Try one late payment inside the grace period.
 5. **Landlord tab:** release the deposit, with or without a deduction. Or let the tenant claim it, or declare a default.
 6. **Profiles** now show the outcome. Propose another lease to the same tenant and the deposit is 50% lower.
 
 ## Devnet
 
-1. Build and deploy the demo build: `anchor build -- --features demo`, then `anchor deploy --provider.cluster devnet`.
+1. Build and deploy the demo build: `anchor build -- --features demo`, then `anchor deploy --provider.cluster devnet`. **The demo build must be the deployed one** (the app reads the claim and dispute windows from the IDL it is built against, so build the app from the same `anchor build -- --features demo` output you deployed).
+
+   > **Fresh network state required.** `Profile` (88 → 94 B) and `Lease` (193 → 218 B) grew with the deposit-dispute work and there is **no migration**. Upgrading this program id in place over accounts created by the earlier layout makes every one of them undeserializable, and any deposit escrowed in their vaults unreachable. Deploy to a network (or a new program id) that holds no old leases or profiles; on devnet that means wiping or switching before deploying this version.
 2. Point the app at devnet in `app/.env.local`: `VITE_RPC=https://api.devnet.solana.com`
 3. Create the mint and fund your wallets: `RPC=https://api.devnet.solana.com make demo-setup WALLETS="<landlord> <tenant>"`
 4. `npm run app`, then open the two roles in **separate browser profiles or browsers**, each with its own wallet account.
@@ -164,15 +194,22 @@ On devnet a rent period is 45 seconds and the demo-clock is hidden. The built-in
 
 ```bash
 make test-demo      # anchor test -- --features demo   (needs port 8899 free)
+
+> **Never start a second Surfpool from a directory that has, or will get, a `txtx.yml`.** Surfpool
+> writes `txtx.yml` with `rpc_api_url: http://127.0.0.1:8899` and ignores `--port`, and its default
+> deployment runbook then upgrades the program on whatever is listening on 8899, i.e. your running
+> demo chain. A second validator must start from an empty scratch directory with `--no-deploy`, and
+> the program must be deployed to it explicitly (`solana program deploy -u http://127.0.0.1:<port>`).
+> `anchor test` itself needs 8899, so the authoritative run is with your chain stopped.
 ```
 
-39 program tests cover the lease lifecycle, listings, applications, the discount rules, defaults and every rejection path. They run against Surfpool and jump its clock to simulate months.
+44 program tests cover the lease lifecycle, listings, applications, the discount rules, defaults, the mint allowlist, a Token-2022 lease and every rejection path. They run against Surfpool and jump its clock to simulate months. `anchor test` runs 10 Rust unit tests first, covering the confidential-transfer introspection in `pay_rent`.
 
 ## Project layout
 
 ```
 programs/relstate/     Anchor program (state, instructions, constants, errors)
-tests/                 program tests (ts-mocha)
+tests/                 program tests (mocha, run by Node's built-in TypeScript support)
 app/                   Vite + React + Tailwind frontend
   src/lib/chain.ts     every read and transaction the UI performs
   src/screens.tsx      lease screens (propose, accept, pay, release, ...)
@@ -183,10 +220,10 @@ Makefile               demo-chain, demo-setup, demo-app, test-demo
 
 ## Design notes and limits
 
-This is a prototype, not audited, and it only accepts one test token.
+This is a prototype, not audited, and it only accepts test tokens an admin has allowed.
 
-- **Mint.** Leases accept a single hard-coded test-USDC mint, so a worthless token cannot build a reputation.
-- **Timing.** The `demo` build allows 1-second periods and a 10-second claim window. Without it, a period is at least **28 days** and the landlord has **14 days** to release the deposit.
+- **Mint.** Leases are only allowed on a mint in the program's `Config` allowlist, so a worthless token cannot build a reputation. Whoever calls `init_config` first on a network owns that list.
+- **Timing.** The `demo` build allows 1-second periods a 3-second claim window and a 15-second dispute window. Without it, a period is at least **28 days** and the landlord has **14 days** to release the deposit.
 - **Deductions are the landlord's call.** They are recorded on both profiles, but there is no dispute process yet.
 - **A wallet is not a person.** A bad tenant can start a fresh wallet. New wallets get no discount, but identity attestation is the real answer and is not built.
 - **Farming.** Two wallets you control can still lease to each other at real rent to earn a discount. It costs time and locked capital, not nothing.
@@ -212,7 +249,7 @@ Dispute resolution for deductions, identity attestations, importing rental histo
 
 ## Tech
 
-Anchor 1.1 (Rust) · Solana · SPL Token · TypeScript · React 19 · Vite 7 · Tailwind 4 · Solana wallet-adapter · Surfpool for local networks and tests.
+Anchor 1.1 (Rust) · Solana · SPL Token / Token-2022 · TypeScript · React 19 · Vite 7 · Tailwind 4 · Solana wallet-adapter · Surfpool for local networks and tests.
 
 ## License
 

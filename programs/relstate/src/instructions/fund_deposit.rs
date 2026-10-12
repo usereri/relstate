@@ -1,7 +1,9 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{transfer_checked, Mint, Token, TokenAccount, TransferChecked};
+use anchor_spl::token_interface::{
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
+};
 
-use crate::{constants::*, error::ErrorCode, state::*};
+use crate::{constants::*, error::ErrorCode, instructions::attest::enforce_kyc, state::*};
 
 #[derive(Accounts)]
 pub struct FundDeposit<'info> {
@@ -14,20 +16,20 @@ pub struct FundDeposit<'info> {
         seeds = [LEASE_SEED, lease.landlord.as_ref(), &lease.lease_id.to_le_bytes()],
         bump = lease.bump
     )]
-    pub lease: Account<'info, Lease>,
-    pub mint: Account<'info, Mint>,
+    pub lease: Box<Account<'info, Lease>>,
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
     #[account(
         mut, 
         seeds = [VAULT_SEED, lease.key().as_ref()], 
         bump
     )]
-    pub vault: Account<'info, TokenAccount>,
+    pub vault: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(
         mut,
         token::mint = mint,
         token::authority = tenant
     )]
-    pub tenant_ata: Account<'info, TokenAccount>,
+    pub tenant_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(
         init_if_needed,
         payer = tenant,
@@ -35,8 +37,14 @@ pub struct FundDeposit<'info> {
         seeds = [PROFILE_SEED, tenant.key().as_ref()],
         bump
     )]
-    pub tenant_profile: Account<'info, Profile>,
-    pub token_program: Program<'info, Token>,
+    pub tenant_profile: Box<Account<'info, Profile>>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+    /// CHECK: the tenant's attestation PDA, forced by the seeds. Read by hand in the handler
+    /// because an unverified wallet has no account here (see `apply`).
+    #[account(seeds = [ATTESTATION_SEED, tenant.key().as_ref()], bump)]
+    pub attestation: UncheckedAccount<'info>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
 
@@ -49,6 +57,16 @@ pub fn handle_fund_deposit(ctx: Context<FundDeposit>, lease_hash: [u8; 32]) -> R
         ctx.accounts.lease.lease_hash == lease_hash,
         ErrorCode::LeaseHashMismatch
     );
+
+    // The binding tenant gate. `apply` is optional (a landlord can propose to anyone), so this is
+    // where an unverified tenant is actually stopped: accepting the lease is the tenant's real
+    // commitment. Inert while `Config::require_kyc` is false.
+    enforce_kyc(
+        &ctx.accounts.config,
+        &ctx.accounts.attestation.to_account_info(),
+        &ctx.accounts.tenant.key(),
+        Clock::get()?.unix_timestamp,
+    )?;
 
     transfer_checked(
         CpiContext::new(

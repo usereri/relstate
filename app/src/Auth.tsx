@@ -1,0 +1,425 @@
+import { useEffect, useState } from "react";
+import { ArrowRight, Check, FlaskConical, Loader2, Lock, ShieldCheck, Wallet } from "lucide-react";
+import { WalletReadyState } from "@solana/wallet-adapter-base";
+import { WalletProvider, useWallet } from "@solana/wallet-adapter-react";
+import * as chain from "@/lib/chain";
+import { Role } from "@/lib/chain";
+import { Account, loadAccount, saveAccount } from "@/lib/account";
+import { EMBEDDED_ENABLED, EmailSignIn, EmbeddedWalletProvider } from "@/auth/embedded";
+import { Logo } from "@/components/Brand";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { LocalWalletProvider, useLocalWallet } from "@/components/WalletButton";
+import { cn } from "@/lib/utils";
+
+/**
+ * Sign-in does not know the role yet (it is stored with the account), but the wallet providers
+ * keep their per-browser state under a role-named key. Until the account says which role this is,
+ * that state lives under this scope; {@link adoptSigninScope} then moves it under the real role.
+ */
+const SIGNIN_SCOPE = "signin" as Role;
+const SCOPED_KEYS = ["relstate.embedded.", "relstate.wallet."];
+
+function adoptSigninScope(role: Role) {
+  try {
+    for (const base of SCOPED_KEYS) {
+      const v = localStorage.getItem(base + SIGNIN_SCOPE);
+      if (v === null) continue;
+      localStorage.setItem(base + role, v);
+      localStorage.removeItem(base + SIGNIN_SCOPE);
+    }
+  } catch {
+    /* private mode: the wallet is simply asked for again after the redirect */
+  }
+}
+
+/** Sign up and sign in share one frame: a form on the left, a brand panel on the right. */
+export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: (role: Role) => void }) {
+  // Everyone starts the same. The account is created as a tenant, and which side of a lease the
+  // user acts on is switched in the app (the role switch in the header), not asked at sign-up.
+  const role: Role = "tenant";
+  const [step, setStep] = useState<"details" | "wallet">("wallet");
+  const [details, setDetails] = useState({ name: "", email: "", city: "" });
+  // wallet first, profile second: the wallet is the account, a name is optional and asked only after it connects
+  const [pending, setPending] = useState<string | null>(null);
+  const connected = (address: string, roleHint?: Role) => {
+    const prior = loadAccount(address);
+    if (mode === "signup") {
+      setPending(address);
+      setStep("details");
+      return;
+    }
+    // Sign-in restores whatever role the account was created with.
+    const stored = prior?.role ?? roleHint;
+    if (stored) {
+      adoptSigninScope(stored);
+      if (!prior) saveAccount(address, { name: "", email: "", city: "", role: stored, createdAt: Date.now() });
+      onDone(stored);
+      return;
+    }
+    // No account yet: start it like any other, as a tenant; the role is switchable in the app.
+    saveAccount(address, { name: "", email: "", city: "", role, createdAt: Date.now() });
+    adoptSigninScope(role);
+    onDone(role);
+  };
+  const finish = (address: string) => {
+    const prior = loadAccount(address);
+    const a: Account = {
+      name: details.name.trim() || prior?.name || "",
+      email: details.email.trim() || prior?.email || "",
+      city: details.city.trim() || prior?.city || "",
+      role,
+      createdAt: prior?.createdAt ?? Date.now(),
+    };
+    saveAccount(address, a);
+    if (mode === "signin") adoptSigninScope(role);
+    onDone(role);
+  };
+
+  useEffect(() => {
+    document.documentElement.dataset.role = role;
+    document.title = mode === "signup" ? "Create account · Relstate" : "Sign in · Relstate";
+  }, [role, mode]);
+
+  const steps = ["wallet", "details"] as const;
+  const scope: Role = mode === "signin" ? SIGNIN_SCOPE : role;
+
+  return (
+    <div className="grid min-h-dvh lg:grid-cols-[1fr_minmax(0,560px)]">
+      <main className="flex flex-col px-5 py-6 sm:px-10">
+        <header className="flex items-center justify-between">
+          <Logo />
+          <p className="text-sm text-muted-foreground">
+            {mode === "signup" ? "Already have an account? " : "New to Relstate? "}
+            <a className="font-medium text-foreground underline-offset-4 hover:underline" href={mode === "signup" ? "#/signin" : "#/signup"}>
+              {mode === "signup" ? "Sign in" : "Create one"}
+            </a>
+          </p>
+        </header>
+
+        <div className="mx-auto flex w-full max-w-[440px] flex-1 flex-col justify-center gap-8 py-12">
+          {mode === "signup" && (
+            <ol className="flex gap-2" aria-label="Progress">
+              {steps.map((s, i) => (
+                <li key={s} className={cn("h-1 flex-1 rounded-full transition-colors", steps.indexOf(step) >= i ? "bg-primary" : "bg-border")}>
+                  <span className="sr-only">
+                    Step {i + 1}
+                    {s === step && " (current)"}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          )}
+
+          {step === "details" && (
+            <form
+              key="details"
+              className="rise flex flex-col gap-5"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (pending) finish(pending);
+              }}
+            >
+              <Heading
+                title="Almost there"
+                text="Add a name if you'd like landlords and tenants to see one. Everything here is optional, kept on this device only and never written on-chain."
+              />
+              <Field id="name" label="Display name" hint="A first name or nickname is enough.">
+                <Input
+                  id="name"
+                  autoComplete="name"
+                  placeholder="Maria Kowalska"
+                  value={details.name}
+                  onChange={(e) => setDetails({ ...details, name: e.target.value })}
+                />
+              </Field>
+              <Field id="email" label="Email" hint="For lease reminders. Optional.">
+                <Input
+                  id="email"
+                  type="email"
+                  autoComplete="email"
+                  placeholder="maria@example.com"
+                  value={details.email}
+                  onChange={(e) => setDetails({ ...details, email: e.target.value })}
+                />
+              </Field>
+              <Field id="city" label="Your city" hint="Where you are looking, or where your properties are.">
+                <Input
+                  id="city"
+                  autoComplete="address-level2"
+                  placeholder="Kraków"
+                  value={details.city}
+                  onChange={(e) => setDetails({ ...details, city: e.target.value })}
+                />
+              </Field>
+              <div className="flex gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="lg"
+                  onClick={() => {
+                    if (!pending) return;
+                    // remember the choice so sign-in doesn't ask again
+                    if (!loadAccount(pending)) saveAccount(pending, { name: "", email: "", city: "", role, createdAt: Date.now() });
+                    if (mode === "signin") adoptSigninScope(role);
+                    onDone(role);
+                  }}
+                >
+                  Skip for now
+                </Button>
+                <Button type="submit" size="lg" className="flex-1">
+                  Save and continue <ArrowRight />
+                </Button>
+              </div>
+            </form>
+          )}
+
+          {step === "wallet" && (
+            <div key="wallet" className="rise flex flex-col gap-6">
+              {mode === "signin" ? (
+                <>
+                  <Heading
+                    title="Welcome back"
+                    text={EMBEDDED_ENABLED ? "Sign in with your email, or with the wallet that holds your rental record." : "Sign in with the wallet that holds your rental record."}
+                  />
+                </>
+              ) : (
+                <Heading
+                  title={EMBEDDED_ENABLED ? "Sign up with your email" : "Connect a wallet to continue"}
+                  text={
+                    EMBEDDED_ENABLED
+                      ? "An email is enough: we set up the account that signs your leases and keeps your rental record. Already have a wallet? Connect it instead."
+                      : "No email or password needed: your wallet signs your leases and keeps your rental record."
+                  }
+                />
+              )}
+
+              {/* keyed by role: each role keeps its own wallet, exactly like the app */}
+              <WalletProvider key={scope} wallets={[]} autoConnect={false} localStorageKey={`relstate.wallet.${scope}`}>
+                <LocalWalletProvider role={scope}>
+                  <EmbeddedWalletProvider role={scope}>
+                    <WalletChoices onConnected={connected} signin={mode === "signin"} />
+                  </EmbeddedWalletProvider>
+                </LocalWalletProvider>
+              </WalletProvider>
+
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                By continuing you agree to the Terms of Service and Privacy Policy. Relstate never asks for your seed phrase.
+              </p>
+            </div>
+          )}
+        </div>
+      </main>
+      <BrandPanel mode={mode} />
+    </div>
+  );
+}
+
+function WalletChoices({ onConnected, signin }: { onConnected: (address: string, roleHint?: Role) => void; signin: boolean }) {
+  const local = useLocalWallet();
+  const { wallets, select } = useWallet();
+  const installed = wallets.filter((w) => w.readyState === WalletReadyState.Installed);
+  const [picked, setPicked] = useState<string | null>(null);
+  const [phase, setPhase] = useState<"idle" | "connecting" | "signing" | "done">("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [address, setAddress] = useState<string | null>(null);
+  const [hint, setHint] = useState<Role | null>(null);
+  const busy = phase === "connecting" || phase === "signing";
+
+  useEffect(() => {
+    if (phase !== "done" || !address) return;
+    const t = setTimeout(() => onConnected(address, hint ?? undefined), 450); // let the success state register
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, address]);
+
+  /**
+   * Everything runs straight from the click, on the adapter itself. Going through select() and an
+   * effect lost the click (no popup) whenever the adapter was already selected or the provider lagged.
+   * Connecting alone is silent on a site Phantom already trusts, so a signed message always asks the user.
+   */
+  const pick = async (w: (typeof wallets)[number]) => {
+    const adapter = w.adapter;
+    setError(null);
+    setPicked(adapter.name);
+    setPhase("connecting");
+    select(adapter.name); // the provider follows the adapter's own connect event
+    try {
+      if (!adapter.connected) await adapter.connect();
+    } catch (e) {
+      setPhase("idle");
+      setError(
+        (e as Error)?.name === "WalletNotReadyError"
+          ? "That wallet isn't ready. Unlock it and try again."
+          : "Connection was cancelled. Pick a wallet to try again."
+      );
+      return;
+    }
+    const addr = adapter.publicKey?.toBase58();
+    if (!addr) {
+      setPhase("idle");
+      setError("The wallet didn't share an address. Unlock it and try again.");
+      return;
+    }
+    if ("signMessage" in adapter && typeof adapter.signMessage === "function") {
+      setPhase("signing");
+      const text = `Sign in to Relstate\n\nWallet: ${addr}\nIssued: ${new Date().toISOString()}\nNonce: ${crypto.randomUUID()}\n\nThis request costs nothing and does not send a transaction.`;
+      try {
+        await adapter.signMessage(new TextEncoder().encode(text));
+      } catch {
+        setPhase("idle");
+        setError("Signature declined. Signing proves this wallet is yours and costs nothing.");
+        adapter.disconnect().catch(() => {});
+        return;
+      }
+    }
+    setAddress(addr);
+    setPhase("done");
+  };
+
+  if (phase === "done")
+    return (
+      <div className="flex items-center gap-3 rounded-2xl border border-success/40 bg-success-soft p-4 text-success">
+        <Check className="size-5" /> <span className="font-medium">Connected. Opening your dashboard…</span>
+      </div>
+    );
+
+  const Row = ({ icon, name, note, onClick }: { icon: React.ReactNode; name: string; note?: string; onClick: () => void }) => (
+    <button
+      onClick={onClick}
+      disabled={busy}
+      className="group flex min-h-14 w-full items-center gap-3 rounded-xl border bg-card px-4 text-left transition-all hover:border-input hover:shadow-card disabled:opacity-60"
+    >
+      {icon}
+      <span className="flex-1">
+        <span className="block font-medium">{name}</span>
+        {note && <span className="block text-xs text-muted-foreground">{note}</span>}
+      </span>
+      {busy && picked === name ? (
+        <Loader2 className="size-4 animate-spin text-muted-foreground" />
+      ) : (
+        <ArrowRight className="size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+      )}
+    </button>
+  );
+
+  return (
+    <div className="flex flex-col gap-2.5">
+      {/* the email account comes first: it is the path that needs no extension and no SOL */}
+      <EmailSignIn onSignedIn={onConnected} />
+      {EMBEDDED_ENABLED && (
+        <div className="flex items-center gap-3 py-1 text-xs uppercase tracking-wider text-muted-foreground">
+          <span className="h-px flex-1 bg-border" /> or connect a wallet <span className="h-px flex-1 bg-border" />
+        </div>
+      )}
+      {error && (
+        <p role="alert" className="rounded-xl border border-destructive/30 bg-danger-soft px-4 py-3 text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      {installed.map((w) => (
+        <Row
+          key={w.adapter.name}
+          icon={<img src={w.adapter.icon} alt="" className="size-7 rounded-md" />}
+          name={w.adapter.name}
+          note={
+            busy && picked === w.adapter.name
+              ? phase === "signing"
+                ? "Approve the sign-in request in your wallet"
+                : "Waiting for your wallet…"
+              : "Detected in this browser"
+          }
+          onClick={() => pick(w)}
+        />
+      ))}
+      {chain.LOCAL_WALLETS_AVAILABLE &&
+        // The built-in test accounts are two fixed identities, not a role choice: each one signs in as itself.
+        (signin ? (["tenant", "landlord"] as Role[]) : [local.role]).map((r) => (
+          <Row
+            key={r}
+            icon={
+              <span className="grid size-7 place-items-center rounded-md bg-brass-soft text-warning">
+                <FlaskConical className="size-4" />
+              </span>
+            }
+            name={`Demo wallet (${r})`}
+            note="Pre-funded test account on the local network"
+            onClick={() => {
+              if (signin) {
+                try {
+                  sessionStorage.setItem(`relstate.localWallet.${r}`, "1");
+                } catch {
+                  /* private mode: the choice is forgotten on reload */
+                }
+                setHint(r);
+              } else local.set(true);
+              setAddress(chain.localKeypair(r).publicKey.toBase58());
+              setPhase("done");
+            }}
+          />
+        ))}
+      {installed.length === 0 && (
+        <div className="flex items-start gap-3 rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
+          <Wallet className="mt-0.5 size-5 shrink-0" />
+          <p>
+            No Solana wallet found in this browser.{" "}
+            <a className="font-medium text-foreground underline underline-offset-4" href="https://phantom.com/download" target="_blank" rel="noreferrer">
+              Get Phantom
+            </a>{" "}
+            (free, two minutes), then reload this page.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Heading({ title, text }: { title: string; text: string }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <h1 className="text-4xl font-semibold leading-tight">{title}</h1>
+      <p className="text-muted-foreground">{text}</p>
+    </div>
+  );
+}
+
+function Field({ id, label, hint, children }: { id: string; label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor={id} className="text-sm font-medium">
+        {label}
+      </label>
+      {children}
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+function BrandPanel({ mode }: { mode: "signup" | "signin" }) {
+  return (
+    <aside className="relative hidden overflow-hidden bg-ink p-10 text-white lg:flex lg:flex-col lg:justify-between">
+      <img src="/listings/praga.jpg" alt="" className="absolute inset-0 size-full object-cover opacity-35" />
+      <div className="absolute inset-0 bg-gradient-to-b from-ink/30 via-ink/60 to-ink" />
+      <p className="relative eyebrow text-white/60">{mode === "signup" ? "Join Relstate" : "Your record is waiting"}</p>
+      <div className="relative flex flex-col gap-8">
+        <blockquote className="font-display text-3xl font-medium leading-snug tracking-tight">
+          “I moved from Lisbon to Kraków and my landlord could see two years of on-time rent before we'd even met. Half the deposit, same week.”
+        </blockquote>
+        <p className="text-sm text-white/60">Illustrative tenant story</p>
+        <ul className="grid gap-3 border-t border-white/15 pt-6 text-sm text-white/80">
+          {[
+            [Lock, "Deposit held in a vault, never by the landlord"],
+            [ShieldCheck, "A record only the protocol can write"],
+          ].map(([Icon, t]) => {
+            const I = Icon as typeof Lock;
+            return (
+              <li key={t as string} className="flex items-center gap-3">
+                <I className="size-4 text-brass" /> {t as string}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </aside>
+  );
+}

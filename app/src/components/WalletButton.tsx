@@ -1,9 +1,10 @@
 import { createContext, useContext, useMemo, useState } from "react";
-import { Check, ChevronDown, Copy, FlaskConical, LogOut, Wallet } from "lucide-react";
+import { Check, ChevronDown, Copy, FlaskConical, LogOut, Mail, Wallet } from "lucide-react";
 import { WalletReadyState } from "@solana/wallet-adapter-base";
 import { useWallet } from "@solana/wallet-adapter-react";
 import * as chain from "@/lib/chain";
 import { Role } from "@/lib/chain";
+import { EMBEDDED_IS_MOCK, useEmbeddedWallet, useSponsorSession } from "@/auth/embedded";
 import { Button } from "@/components/ui/button";
 import { short, usdc } from "@/lib/utils";
 
@@ -33,59 +34,92 @@ export function LocalWalletProvider({ role, children }: { role: Role; children: 
   return <LocalContext.Provider value={{ role, on, set }}>{children}</LocalContext.Provider>;
 }
 
-/** The signer for every transaction: null until a wallet is connected. */
-export function useMe(): chain.Me | null {
+export const useLocalWallet = () => useContext(LocalContext);
+
+/**
+ * The signer for every transaction: null until a wallet is connected.
+ *
+ * Three kinds can fill the slot, in this order of precedence: the email/embedded wallet (someone
+ * who signed up with an email has no other account), then the built-in test wallet, then a browser
+ * extension. All three arrive as the same `WalletProvider`, so nothing downstream can tell.
+ *
+ * `signMessage` is threaded through because the wallet contract derives the confidential-balance
+ * keys from it; without it an extension wallet cannot pay rent privately. It stays optional —
+ * not every adapter offers it.
+ */
+export function useSigner(): chain.Me | null {
   const local = useContext(LocalContext);
-  const { publicKey, signTransaction, signAllTransactions } = useWallet();
+  const embedded = useEmbeddedWallet();
+  const { publicKey, signTransaction, signAllTransactions, signMessage, wallet } = useWallet();
+  // The Wallet Standard wallet behind the adapter, so the signing request can name the cluster the
+  // app is on and the extension simulates against the right one (lib/wallet.ts). Every current
+  // extension is a standard wallet; anything else leaves this null and signs as before.
+  const standard = wallet?.adapter && "wallet" in wallet.adapter ? (wallet.adapter.wallet as chain.StandardWallet) : null;
   return useMemo(() => {
+    if (embedded?.wallet) return chain.makeMe(embedded.wallet);
     if (local.on) return chain.makeMe(chain.localWallet(local.role));
-    return publicKey && signTransaction && signAllTransactions ? chain.makeMe({ publicKey, signTransaction, signAllTransactions }) : null;
-  }, [local.on, local.role, publicKey, signTransaction, signAllTransactions]);
+    return publicKey && signTransaction && signAllTransactions
+      ? chain.makeMe({ publicKey, signTransaction, signAllTransactions, signMessage, standard })
+      : null;
+  }, [embedded?.wallet, local.on, local.role, publicKey, signTransaction, signAllTransactions, signMessage, standard]);
+}
+
+/**
+ * The same signer, plus the sponsor session registration. Call this **once per tree** — the shell
+ * does — and {@link useSigner} everywhere else: the registration is process-wide and its cleanup
+ * clears it, so a second caller unmounting would log the first one out of the sponsor.
+ */
+export function useMe(): chain.Me | null {
+  const me = useSigner();
+  // The one place that knows which wallet is live, so the one place that can authenticate it to
+  // the sponsor. Covers all three kinds.
+  useSponsorSession(me?.key.toBase58() ?? null, me?.wallet.signMessage);
+  return me;
 }
 
 export function WalletButton({ balances }: { balances?: { sol: number; usdc: number | null } }) {
   const { wallets, select, connecting, publicKey, disconnect, wallet } = useWallet();
   const local = useContext(LocalContext);
+  const embedded = useEmbeddedWallet();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const installed = wallets.filter((w) => w.readyState === WalletReadyState.Installed);
 
-  const address = local.on ? chain.localKeypair(local.role).publicKey.toBase58() : publicKey?.toBase58();
+  // Same precedence as `useMe`, so the header always names the wallet that signs.
+  const address = embedded?.address ?? (local.on ? chain.localKeypair(local.role).publicKey.toBase58() : publicKey?.toBase58());
   if (address) {
+    const emailAccount = !!embedded?.address;
     return (
       <div className="flex items-center gap-2">
         <button
-          title="Copy full address"
+          title={`${emailAccount && embedded?.email ? `${embedded.email} · ` : ""}Copy full address${balances ? ` · ${balances.sol.toFixed(2)} SOL · ${balances.usdc === null ? "no USDC account" : `${usdc(balances.usdc)} USDC`}` : ""}`}
           onClick={() => {
             navigator.clipboard?.writeText(address);
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
           }}
-          className="flex h-11 items-center gap-2.5 rounded-xl border bg-card px-3 text-left transition-colors hover:bg-secondary/60"
+          className="flex h-10 items-center gap-2 whitespace-nowrap rounded-xl border bg-card px-3 text-left transition-colors hover:bg-secondary/60"
         >
-          {local.on ? (
+          {emailAccount ? (
+            <Mail className="size-4" />
+          ) : local.on ? (
             <FlaskConical className="size-4" />
           ) : wallet?.adapter.icon ? (
             <img src={wallet.adapter.icon} alt="" className="size-5 rounded" />
           ) : (
             <Wallet className="size-4" />
           )}
-          <span className="leading-tight">
-            <span className="flex items-center gap-1.5 font-mono text-xs font-medium">
-              {short(address, 4)} {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5 text-muted-foreground" />}
-              {local.on && <span className="font-sans text-[10px] font-semibold uppercase tracking-wider text-accent">test wallet</span>}
-            </span>
-            <span className="block text-[11px] tabular-nums text-muted-foreground">
-              {balances ? `${balances.sol.toFixed(2)} SOL · ${balances.usdc === null ? "no USDC account" : `${usdc(balances.usdc)} USDC`}` : "…"}
-            </span>
-          </span>
+          <span className="font-mono text-xs font-medium">{short(address, 4)}</span>
+          {local.on && !emailAccount && <span className="hidden text-[10px] font-semibold uppercase tracking-wider text-accent sm:inline">test</span>}
+          {emailAccount && EMBEDDED_IS_MOCK && <span className="hidden text-[10px] font-semibold uppercase tracking-wider text-accent sm:inline">demo</span>}
+          {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5 text-muted-foreground" />}
         </button>
         <Button
           variant="ghost"
           size="sm"
-          aria-label="Disconnect wallet"
-          title="Disconnect"
-          onClick={() => (local.on ? local.set(false) : disconnect())}
+          aria-label={emailAccount ? "Sign out of this wallet" : "Disconnect wallet"}
+          title={emailAccount ? "Sign out" : "Disconnect"}
+          onClick={() => (emailAccount ? embedded!.signOut() : local.on ? local.set(false) : disconnect())}
         >
           <LogOut />
         </Button>

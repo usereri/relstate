@@ -9,11 +9,44 @@ pub use constants::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("5J52oGfo7BjC529vizEaM96QtxVFD4Kbv22Tw8aXa1Ar");
+declare_id!("G4iMjveQKXztnGoxigAeWPrb5evT9yt6qaLkgQEp2dXm");
 
 #[program]
 pub mod relstate {
     use super::*;
+
+    pub fn init_config(ctx: Context<InitConfig>) -> Result<()> {
+        crate::instructions::config::handle_init_config(ctx)
+    }
+
+    pub fn set_mint_allowed(ctx: Context<SetMintAllowed>, allowed: bool) -> Result<()> {
+        crate::instructions::config::handle_set_mint_allowed(ctx, allowed)
+    }
+
+    pub fn set_admin(ctx: Context<UpdateConfig>, new_admin: Pubkey) -> Result<()> {
+        crate::instructions::config::handle_set_admin(ctx, new_admin)
+    }
+
+    pub fn set_issuer(ctx: Context<SetKycConfig>, issuer: Pubkey) -> Result<()> {
+        crate::instructions::config::handle_set_issuer(ctx, issuer)
+    }
+
+    pub fn set_require_kyc(ctx: Context<SetKycConfig>, required: bool) -> Result<()> {
+        crate::instructions::config::handle_set_require_kyc(ctx, required)
+    }
+
+    pub fn attest(
+        ctx: Context<Attest>,
+        level: u8,
+        expires_at: i64,
+        subject_hash: [u8; 32],
+    ) -> Result<()> {
+        crate::instructions::attest::handle_attest(ctx, level, expires_at, subject_hash)
+    }
+
+    pub fn revoke(ctx: Context<Revoke>) -> Result<()> {
+        crate::instructions::attest::handle_revoke(ctx)
+    }
 
     pub fn create_listing(
         ctx: Context<CreateListing>,
@@ -85,5 +118,68 @@ pub mod relstate {
 
     pub fn release_deposit(ctx: Context<ReleaseDeposit>, deduction: u64) -> Result<()> {
         crate::instructions::release_deposit::handle_release_deposit(ctx, deduction)
+    }
+
+    /// Both parties sign a final deduction and the lease closes on it (D1).
+    pub fn settle_dispute(ctx: Context<SettleDispute>, deduction: u64) -> Result<()> {
+        crate::instructions::settle_dispute::handle_settle_dispute(ctx, deduction)
+    }
+
+    /// Tenant accepts the landlord's proposed deduction as it stands.
+    pub fn accept_deduction(ctx: Context<AcceptDeduction>) -> Result<()> {
+        crate::instructions::settle_dispute::handle_accept_deduction(ctx)
+    }
+
+    /// Tenant rejects the proposed deduction with rounds still to spare; the deposit returns in
+    /// full and the landlord may propose once more.
+    pub fn abandon_dispute(ctx: Context<AbandonDispute>) -> Result<()> {
+        crate::instructions::settle_dispute::handle_abandon_dispute(ctx)
+    }
+
+    /// Tenant rejects for the last time: the lease enters `Mediation` and an appraiser decides (D2).
+    pub fn escalate_to_mediation(ctx: Context<EscalateToMediation>) -> Result<()> {
+        crate::instructions::settle_dispute::handle_escalate_to_mediation(ctx)
+    }
+
+    /// Landlord closes an unanswered dispute once the tenant's window has passed.
+    pub fn finalize_deduction(ctx: Context<FinalizeDeduction>) -> Result<()> {
+        crate::instructions::settle_dispute::handle_finalize_deduction(ctx)
+    }
+
+    // ---- D2 appraiser arbitration (docs/contracts/dispute-mediation.md)
+
+    /// Landlord or tenant, phase 1: nominates one to three appraisal companies by name, each with
+    /// a fee. Once per side.
+    pub fn propose_appraisers(
+        ctx: Context<ProposeAppraisers>,
+        candidates: Vec<CandidateInput>,
+    ) -> Result<()> {
+        crate::instructions::mediation::handle_propose_appraisers(ctx, candidates)
+    }
+
+    /// Landlord or tenant, phase 1: names one company from either list. Matching picks agree it.
+    pub fn pick_appraiser(ctx: Context<PickAppraiser>, name: String) -> Result<()> {
+        crate::instructions::mediation::handle_pick_appraiser(ctx, name)
+    }
+
+    /// Landlord or tenant, phase 2: proposes the wallet that signs for the agreed company.
+    pub fn propose_appraiser_key(ctx: Context<AppraiserKey>, wallet: Pubkey) -> Result<()> {
+        crate::instructions::mediation::handle_propose_appraiser_key(ctx, wallet)
+    }
+
+    /// The party that did not propose, phase 2: confirms the same wallet and binds it.
+    pub fn confirm_appraiser_key(ctx: Context<AppraiserKey>, wallet: Pubkey) -> Result<()> {
+        crate::instructions::mediation::handle_confirm_appraiser_key(ctx, wallet)
+    }
+
+    /// The bound appraiser decides the deduction; the deposit is split and the lease closes.
+    pub fn submit_verdict(ctx: Context<SubmitVerdict>, deduction: u64) -> Result<()> {
+        crate::instructions::mediation::handle_submit_verdict(ctx, deduction)
+    }
+
+    /// Landlord or tenant: past the selection deadline with nothing bound, or past the verdict
+    /// deadline once bound. The lease returns to `Active` and the claim clock resumes.
+    pub fn expire_mediation(ctx: Context<ExpireMediation>) -> Result<()> {
+        crate::instructions::mediation::handle_expire_mediation(ctx)
     }
 }

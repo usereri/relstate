@@ -1,6 +1,7 @@
-import { ShieldCheck } from "lucide-react";
+import { BadgeCheck, ShieldCheck } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { ReputationPanel } from "@/gamify";
 import { DISCOUNT_PCT, RENT_HEADROOM_PCT, ProfileView, Role, goodStanding, maxDiscountRent, typicalRent } from "@/lib/chain";
 import { short, usdc } from "@/lib/utils";
 
@@ -10,10 +11,12 @@ interface Props {
   profile: ProfileView | null;
   /** countries of the wallet's finished leases in this role, when known */
   countries?: string[];
+  /** the wallet holds a valid identity attestation (read from chain by the caller) */
+  verified?: boolean;
 }
 
 /** The on-chain track record: counters written only by the program, never by the users. */
-export function ProfileCard({ role, address, profile, countries }: Props) {
+export function ProfileCard({ role, address, profile, countries, verified }: Props) {
   const p = profile;
   const paid = p ? p.paidOnTime + p.paidLate : 0;
   const onTime = p && paid > 0 ? Math.round((p.paidOnTime / paid) * 100) : null;
@@ -26,9 +29,16 @@ export function ProfileCard({ role, address, profile, countries }: Props) {
           <span className="text-xs font-semibold uppercase tracking-widest opacity-80">
             {role === "tenant" ? "Tenant" : "Landlord"} record
           </span>
-          <Badge className="bg-primary-foreground/15 text-primary-foreground">
-            <ShieldCheck /> on-chain
-          </Badge>
+          <div className="flex items-center gap-1.5">
+            {verified && (
+              <Badge className="bg-success-soft text-success">
+                <BadgeCheck /> Verified
+              </Badge>
+            )}
+            <Badge className="bg-primary-foreground/15 text-primary-foreground">
+              <ShieldCheck /> on-chain
+            </Badge>
+          </div>
         </div>
         <p className="mt-3 font-mono text-xs opacity-75">{short(address, 6)}</p>
         <div className="mt-2 flex flex-wrap items-end gap-x-6 gap-y-3">
@@ -50,6 +60,8 @@ export function ProfileCard({ role, address, profile, countries }: Props) {
           )}
         </div>
       </div>
+
+      <ReputationPanel role={role} profile={p} countries={countries} />
 
       <dl className="grid grid-cols-2 gap-px bg-border">
         {role === "tenant" && (
@@ -92,9 +104,24 @@ export function ProfileCard({ role, address, profile, countries }: Props) {
             {p ? usdc(p.deductedTotal) : 0} <span className="text-base font-normal text-muted-foreground">of {p ? usdc(p.depositTotal) : 0} USDC deducted</span>
           </dd>
           <dt className="text-xs text-muted-foreground">
-            {deducted === null ? "No closed deposits yet" : `${deducted}% of deposits kept by the landlord`}
+            {deducted === null ? "No closed deposits yet" : role === "landlord" ? "Deposit amounts and deductions are public on chain" : `${deducted}% of deposits kept by the landlord`}
           </dt>
         </div>
+        {role === "landlord" && p && (p.depositEvents ?? 0) > 0 && deducted !== null && (
+          <div className="col-span-2 bg-card px-5 py-3">
+            <dd className="font-serif text-2xl font-semibold">
+              Returns {100 - deducted}%{" "}
+              <span className="text-base font-normal text-muted-foreground">
+                of deposits over {p.depositEvents} {p.depositEvents === 1 ? "lease" : "leases"}
+              </span>
+            </dd>
+            <dt className="text-xs text-muted-foreground">
+              Lifetime, by amount
+              {p.lastDepositReturnBps !== undefined && ` · most recent lease: ${Math.round(p.lastDepositReturnBps / 100)}%`}. A published record, not a
+              guarantee: it can be inflated by leases between accounts one person controls, so weigh it with the Verified badge.
+            </dt>
+          </div>
+        )}
         {countries && countries.length > 0 && (
           <div className="col-span-2 bg-card px-5 py-3">
             <dd className="flex flex-wrap gap-1.5">

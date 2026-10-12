@@ -1,0 +1,38 @@
+{
+  "_note": "APPROXIMATE, HAND-WRITTEN DATA. A listing on chain has no coordinates, so this file places the demo's listings on the map for the \"near an event\" filter. Each entry is a district-level centroid of a real Kraków or Warsaw neighbourhood, rounded to ~100 m -- not a street address, and not where anybody lives. Matched to a listing by title+city (the on-chain listing_id is a per-landlord fallback). A listing that is absent from this file is treated as location-unknown: it is listed as usual, without a distance. Served from app/public, so editing it needs no rebuild. See docs/events.md.",
+  "updated": "2026-10-10",
+  "items": [
+    {
+      "listingId": "1",
+      "title": "Sunlit 1-bedroom, Kazimierz",
+      "city": "Kraków",
+      "area": "Kazimierz",
+      "lat": 50.0512,
+      "lng": 19.9447
+    },
+    {
+      "listingId": "2",
+      "title": "Studio by the Planty",
+      "city": "Kraków",
+      "area": "Planty / Old Town",
+      "lat": 50.0614,
+      "lng": 19.9366
+    },
+    {
+      "listingId": "3",
+      "title": "Brick loft with a view, Praga",
+      "city": "Warsaw",
+      "area": "Praga-Północ",
+      "lat": 52.256,
+      "lng": 21.033
+    },
+    {
+      "listingId": "4",
+      "title": "Garden flat, Zabłocie",
+      "city": "Kraków",
+      "area": "Zabłocie",
+      "lat": 50.0472,
+      "lng": 19.9611
+    }
+  ]
+}

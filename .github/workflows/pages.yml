@@ -1,0 +1,112 @@
+name: Deploy Pages
+
+# Push to the `deploy` branch (or trigger by hand) builds site/ at the domain root and app/ under
+# /app/, and publishes both as one GitHub Pages artifact. See docs/deploy.md for the full runbook,
+# including which repository Variables this workflow needs and why they are Variables and not
+# Secrets: every VITE_* value below is compiled into the public JS bundle, so there is nothing to
+# protect by hiding it from this file.
+on:
+  push:
+    branches: [deploy]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fail fast and clearly, before spending time on a build that would ship broken defaults
+      # (VITE_RPC is deliberately NOT required: the app reads through the backend's /api/rpc, so no RPC key ships in the bundle).
+      - name: Check required repository variables
+        env:
+          VITE_API: ${{ vars.VITE_API }}
+          VITE_RUSDC_MINT: ${{ vars.VITE_RUSDC_MINT }}
+          VITE_MINT: ${{ vars.VITE_MINT }}
+          SITE_APP_URL: ${{ vars.SITE_APP_URL }}
+          CUSTOM_DOMAIN: ${{ vars.CUSTOM_DOMAIN }}
+        run: |
+          missing=()
+          for name in VITE_API VITE_RUSDC_MINT VITE_MINT SITE_APP_URL CUSTOM_DOMAIN; do
+            value="${!name}"
+            if [ -z "$value" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing required repository variable(s): ${missing[*]}. Set them under Settings > Secrets and variables > Actions > Variables (docs/deploy.md, docs/env-checklist.md), then re-run this workflow."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install app dependencies
+        run: npm ci
+
+      # BASE=/app/ matches where the assembled artifact places it below. VITE_EMBEDDED_WALLET is
+      # fixed to "mock" here (not a repository variable): it needs no provider account, which is
+      # what the demo runs on (app/.env.example). The app uses hash routes (#/...), so these are
+      # the only values that have to be right at build time -- no server-side rewrites are needed
+      # for deep links to work on Pages.
+      - name: Build app
+        env:
+          BASE: /app/
+          VITE_API: ${{ vars.VITE_API }}
+          VITE_RUSDC_MINT: ${{ vars.VITE_RUSDC_MINT }}
+          VITE_MINT: ${{ vars.VITE_MINT }}
+          VITE_CLUSTER: ${{ vars.VITE_CLUSTER }}
+          VITE_LISTING_LANDLORDS: ${{ vars.VITE_LISTING_LANDLORDS }}
+          VITE_FEE_PAYER: ${{ vars.VITE_FEE_PAYER }}
+          VITE_EMBEDDED_WALLET: mock
+        run: npm run app:build
+
+      - name: Install site dependencies
+        run: npm ci
+        working-directory: site
+
+      # No BASE here: the site lives at the domain root, so vite.config.ts's default (`/`) is right.
+      - name: Build site
+        env:
+          SITE_APP_URL: ${{ vars.SITE_APP_URL }}
+        run: npm run build
+        working-directory: site
+
+      - name: Assemble the Pages artifact
+        env:
+          CUSTOM_DOMAIN: ${{ vars.CUSTOM_DOMAIN }}
+        run: |
+          set -euo pipefail
+          rm -rf dist-pages
+          mkdir -p dist-pages/app
+          cp -r site/dist/. dist-pages/
+          cp -r app/dist/. dist-pages/app/
+          # GitHub Pages serves this for any unmatched path project-wide. The app's own routes are
+          # all after "#", so the server never sees them; this only covers a mistyped static path.
+          cp site/dist/index.html dist-pages/404.html
+          echo -n "$CUSTOM_DOMAIN" > dist-pages/CNAME
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist-pages
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{Mint, Token, TokenAccount};
+use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
 use super::payout::pay_out_vault;
 use crate::{constants::*, error::ErrorCode, state::*};
@@ -15,32 +15,41 @@ pub struct MarkDefault<'info> {
         bump = lease.bump
     )]
     pub lease: Account<'info, Lease>,
-    pub mint: Box<Account<'info, Mint>>,
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
     #[account(
         mut,
         seeds = [VAULT_SEED, lease.key().as_ref()],
         bump
     )]
-    pub vault: Box<Account<'info, TokenAccount>>,
+    pub vault: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(
         mut,
         token::mint = mint,
         token::authority = lease.tenant
     )]
-    pub tenant_ata: Box<Account<'info, TokenAccount>>,
+    pub tenant_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(
         mut,
         token::mint = mint,
         token::authority = landlord
     )]
-    pub landlord_ata: Box<Account<'info, TokenAccount>>,
+    pub landlord_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(
         mut,
         seeds = [PROFILE_SEED, lease.tenant.as_ref()],
         bump
     )]
     pub tenant_profile: Account<'info, Profile>,
-    pub token_program: Program<'info, Token>,
+    /// Added so a seizure lands on the landlord's own record too. Without it a landlord who
+    /// defaults every tenant and keeps their deposits showed a spotless return history, which made
+    /// the return rate gameable (A1 in the plan). Created by `propose_lease`, so it always exists.
+    #[account(
+        mut,
+        seeds = [PROFILE_SEED, landlord.key().as_ref()],
+        bump
+    )]
+    pub landlord_profile: Account<'info, Profile>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handle_mark_default(ctx: Context<MarkDefault>) -> Result<()> {
@@ -71,9 +80,19 @@ pub fn handle_mark_default(ctx: Context<MarkDefault>) -> Result<()> {
         &ctx.accounts.landlord_ata,
         lease.deposit_amount - seized,
         seized,
+        None,
     )?;
 
-    ctx.accounts.tenant_profile.defaults += 1;
+    let tenant = &mut ctx.accounts.tenant_profile;
+    tenant.defaults = tenant.defaults.saturating_add(1);
+
+    // A seizure is a deposit outcome like any other, and it is the landlord's: the amount kept
+    // goes on the landlord's record, so the deposit-return rate counts it. `leases_completed` is
+    // deliberately not bumped — the lease did not complete — and neither is
+    // `deposits_returned_full`, even when nothing was owed to seize.
+    ctx.accounts
+        .landlord_profile
+        .record_deposit_outcome(lease.deposit_amount, seized)?;
 
     let lease = &mut ctx.accounts.lease;
     lease.status = Status::Defaulted;

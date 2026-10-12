@@ -16,7 +16,29 @@ pub const APPLICATION_SEED: &[u8] = b"application";
 pub const PROFILE_SEED: &[u8] = b"profile";
 
 #[constant]
+pub const CONFIG_SEED: &[u8] = b"config";
+
+#[constant]
+pub const ATTESTATION_SEED: &[u8] = b"attestation";
+
+#[constant]
+pub const DISPUTE_SEED: &[u8] = b"dispute";
+
+// KYC levels on an Attestation. 0 is "none" and is never stored: an unverified wallet has no
+// account at all, so `attest` refuses level 0 rather than writing a useless record.
+#[constant]
+pub const KYC_LEVEL_BASIC: u8 = 1;
+
+#[constant]
+pub const KYC_LEVEL_ENHANCED: u8 = 2;
+
+#[constant]
 pub const GOOD_STANDING_DISCOUNT_PCT: u8 = 50;
+
+// Denominator of every deposit-return rate on a Profile: 10000 bps means the tenant got all of
+// the deposit back.
+#[constant]
+pub const BPS_FULL: u16 = 10_000;
 
 // listing text limits, in bytes (the app mirrors them as MAX_TEXT in lib/config.ts)
 pub const MAX_TITLE: usize = 60;
@@ -29,8 +51,10 @@ pub const MAX_PHOTO: usize = 120;
 #[constant]
 pub const RENT_HEADROOM_PCT: u16 = 150;
 
-// For demo only devnet's USDC can back a lease, so a worthless token can't pay a Profile
-pub const ALLOWED_MINT: Pubkey = pubkey!("CpzHPiiCaJ6LUTcSXgcptmjr8fyto3GAxH48b1FJbYDQ");
+// Only a mint the admin has allowed (see Config) can back a lease, so a worthless token cannot
+// pay for a Profile. The list lives on chain because the demo needs both the classic test-USDC
+// mint and a Token-2022 rUSDC mint, and the latter is created per deployment.
+pub const MAX_ALLOWED_MINTS: usize = 8;
 
 // demo allows 1 sec leases, on mainnet minimum 28 days
 pub const MIN_PERIOD_SECS: i64 = if cfg!(feature = "demo") {
@@ -39,9 +63,90 @@ pub const MIN_PERIOD_SECS: i64 = if cfg!(feature = "demo") {
     28 * 24 * 60 * 60
 };
 
-// 14 days for releasing deposit by landlord before tenant may claim it. Shortened in the demo
-pub const CLAIM_WINDOW_SECS: i64 = if cfg!(feature = "demo") {
-    10
-} else {
-    14 * 24 * 60 * 60
-};
+// 14 days for releasing deposit by landlord before tenant may claim it. Shortened in the demo.
+//
+// These two are `#[constant]` so they land in the IDL and the app and tests read the value of the
+// build they run against instead of mirroring it. The release value is spelled as a literal
+// (14 * 24 * 60 * 60) because the IDL stores the expression's text, which the client must parse
+// as a number.
+#[cfg(feature = "demo")]
+#[constant]
+pub const CLAIM_WINDOW_SECS: i64 = 3;
+#[cfg(not(feature = "demo"))]
+#[constant]
+pub const CLAIM_WINDOW_SECS: i64 = 1_209_600;
+
+// How long the tenant has to answer a proposed deduction (accept it or reject it) before the
+// landlord may finalize it unanswered. Same 14 days as CLAIM_WINDOW_SECS in a real deployment,
+// and short enough in the demo build to be shown on stage without waiting.
+//
+// 45 s, not the 15 s this started at: 15 s is less than the time it takes a person to read the
+// proposal, switch to the tenant window and sign a rejection in a wallet, so a hand-run demo lost
+// the rejection to the clock. The window is the only thing that changes; every rule around it is
+// the same, and the tenant's screen now counts the remaining seconds down.
+#[cfg(feature = "demo")]
+#[constant]
+pub const DISPUTE_WINDOW_SECS: i64 = 45;
+#[cfg(not(feature = "demo"))]
+#[constant]
+pub const DISPUTE_WINDOW_SECS: i64 = 1_209_600;
+
+// How many deductions the tenant may reject before the lease leaves the two parties' hands. Round
+// 1 rejection puts the lease back to Active and lets the landlord propose once more; the last one
+// escalates to Status::Mediation and the appraiser decides (docs/contracts/dispute-mediation.md).
+//
+// Setting this to 1 is cut line 3 of the D2 plan: `abandon_dispute` becomes unreachable and the
+// first rejection escalates straight away. Nothing else has to change.
+#[constant]
+pub const MAX_DISPUTE_ROUNDS: u8 = 2;
+
+// How many appraisal companies one side may nominate. Plain usize like MAX_ALLOWED_MINTS, because it is the
+// length of a fixed array on Dispute and the client reads that array's length out of the IDL.
+pub const MAX_CANDIDATES: usize = 3;
+
+// The appraiser's fee is capped at deposit / APPRAISER_FEE_CAP_DIVISOR, so a candidate with an
+// absurd fee can never eat a deposit. `#[constant]` so the app can show the cap it applies.
+#[constant]
+pub const APPRAISER_FEE_CAP_DIVISOR: u64 = 10;
+
+// The longest an appraiser company's name may be, in bytes of the normalised display form
+// (docs/contracts/dispute-mediation.md §4). Plain usize: it is the length of a fixed array.
+pub const MAX_NAME_LEN: usize = 64;
+
+// How many times EACH party may propose the appraiser's wallet. Two each, tracked per party, so one
+// party can never burn the other's budget: the last proposal on the table is always one the other
+// party had the chance to counter, and can confirm or let the mediation expire. `#[constant]` so
+// the app can show "1 proposal left".
+#[constant]
+pub const MAX_KEY_PROPOSALS_PER_PARTY: u8 = 2;
+
+// One deadline covers the whole selection: agreeing on a company AND attaching its wallet. Nothing
+// can be bound at or after it, and an unbound mediation may be expired from then on. The verdict
+// window then runs from the moment an appraiser is *bound*. Same `#[constant]` treatment as the D1
+// windows: the app reads the value of the build it runs against, and scripts/sync-idl.sh refuses
+// an IDL that is not the demo set.
+//
+// 7 and 14 days in a real deployment; 3 min and 2 min in the demo so the whole arbitration fits on
+// stage.
+#[cfg(feature = "demo")]
+#[constant]
+pub const SELECTION_WINDOW_SECS: i64 = 180;
+#[cfg(not(feature = "demo"))]
+#[constant]
+pub const SELECTION_WINDOW_SECS: i64 = 604_800;
+
+#[cfg(feature = "demo")]
+#[constant]
+pub const VERDICT_WINDOW_SECS: i64 = 120;
+#[cfg(not(feature = "demo"))]
+#[constant]
+pub const VERDICT_WINDOW_SECS: i64 = 1_209_600;
+
+// Upper bound on term_periods * period_secs. Nothing else bounds a lease from above, and a term
+// near i64::MAX would leave a funded deposit unreachable forever (release is "not ended", claim is
+// "too early"). Five years in a real deployment; the demo build is generous so local clock jumps
+// never trip it.
+#[cfg(feature = "demo")]
+pub const MAX_LEASE_SECS: i64 = 100 * 365 * 24 * 60 * 60;
+#[cfg(not(feature = "demo"))]
+pub const MAX_LEASE_SECS: i64 = 5 * 365 * 24 * 60 * 60;

@@ -8,6 +8,7 @@ test-ledger
 .surfpool
 tests/test-usdc-mint.json
 dist
+dist-pages
 app/src/demo.json
 runbooks
 txtx.yml
@@ -15,3 +16,5 @@ txtx.yml
 *.log
 *.tsbuildinfo
 .env
+.keys
+fly.toml

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Relstate · confidential-balance check</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 2rem;
+        font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: #14110f;
+        color: #e8e1d9;
+      }
+      h1 {
+        font: 600 15px/1.4 ui-sans-serif, system-ui, sans-serif;
+        letter-spacing: 0.02em;
+        margin: 0 0 1.5rem;
+      }
+      pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .ok {
+        color: #7fd1a0;
+      }
+      .bad {
+        color: #ea8a7a;
+      }
+      .dim {
+        color: #8a8178;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      A developer check, not part of the app: it drives app/src/lib/confidential.ts against devnet
+      from a real browser, which is what proves the @solana/zk-sdk wasm survives Vite's pipeline.
+      See app/src/lib/confidential-check.ts for what it needs in app/.env.local.
+    -->
+    <h1>Confidential-balance check</h1>
+    <pre id="out" class="dim">starting…</pre>
+    <script type="module" src="/src/lib/confidential-check.ts"></script>
+  </body>
+</html>

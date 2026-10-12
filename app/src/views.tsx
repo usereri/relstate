@@ -6,12 +6,17 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Listing } from "@/components/Terms";
 import { ProfileCard } from "@/components/ProfileCard";
+import { EventsStrip, NearbyBanner, NearbyNote, useNearby } from "@/events";
+import { apartmentName } from "@/lib/apartment";
 import { Handlers, Waiting, statusBadge } from "@/screens";
+import { useKycStatus } from "@/screens/Kyc";
 import * as chain from "@/lib/chain";
 import { LeaseView, ListingView, ProfileView, Role, typicalRent } from "@/lib/chain";
 import { MAX_TEXT, USDC } from "@/lib/config";
 import { count, recordLine, unique, useRecords } from "@/lib/records";
+import { termLabel } from "@/lib/term";
 import { useChain } from "@/lib/useChain";
+import { UPLOAD_AVAILABLE, uploadPhoto } from "@/lib/photoUpload";
 import { duration, photoUrl, short, usdc } from "@/lib/utils";
 
 const bytes = (s: string) => new TextEncoder().encode(s).length;
@@ -31,10 +36,15 @@ export function Listings({
 }) {
   const [q, setQ] = useState("");
   const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-  const shown = (listings ?? []).filter(
+  const matching = (listings ?? []).filter(
     (l) =>
       (mode === "browse" || l.landlord === me) && words.every((w) => `${l.title} ${l.city} ${l.blurb} ${l.region}`.toLowerCase().includes(w)),
   );
+  // workstream H: "near an event". Without a venue in the URL or a card picked in the strip this
+  // is the identity: every match, in the same order, with no distance. Never in "mine" mode.
+  const near = useNearby(mode === "browse");
+  const { rows, hidden, unplaced } = near.apply(matching);
+  const shown = rows.map((r) => r.listing);
   // only the button that was clicked shows its progress; the others just wait
   const [acting, setActing] = useState<string | null>(null);
   const act = (key: string, fn: () => Promise<unknown>) => {
@@ -55,17 +65,18 @@ export function Listings({
 
   const grid = (
     <div className={mode === "mine" ? "grid gap-5 sm:grid-cols-2" : "grid gap-5 sm:grid-cols-2 xl:grid-cols-3"}>
-      {shown.map((l) => {
+      {rows.map(({ listing: l, km, area }) => {
         const rec = records[l.landlord];
         const forListing = applications.filter((a) => a.listing === l.address);
         const applied = forListing[0];
         // a lease proposed to me, or already accepted, by this listing's landlord: nothing left to withdraw
-        const lease = myLeases.find((x) => x.landlord === l.landlord && (x.status === "proposed" || x.status === "active"));
+        const lease = myLeases.find((x) => x.landlord === l.landlord && chain.inProgress(x.status));
         return (
           <Listing key={l.address} l={l}>
             <div className="flex flex-col gap-3 border-t px-4 py-3">
               {mode === "browse" ? (
                 <>
+                  <NearbyNote km={km} area={area} label={near.filter?.label} />
                   <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                     <UserRound className="size-3.5" />
                     <span className="font-mono">{short(l.landlord)}</span>
@@ -83,8 +94,8 @@ export function Listings({
                     <p className="text-xs text-muted-foreground">This is your own listing.</p>
                   ) : lease ? (
                     <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                      <Badge variant={lease.status === "active" ? "success" : "warning"}>{lease.status === "active" ? "Lease active" : "Lease proposed"}</Badge>
-                      {lease.status === "active" ? "with this landlord" : "accept it in My lease"}
+                      <Badge variant={lease.status === "active" ? "success" : "warning"}>{lease.status === "active" ? "Lease active" : lease.status === "disputed" ? "Deduction proposed" : lease.status === "mediation" ? "With an appraiser" : "Lease proposed"}</Badge>
+                      {lease.status === "proposed" ? "accept it in My lease" : "with this landlord"}
                     </p>
                   ) : applied ? (
                     <Button variant="outline" disabled={!!h.busy} onClick={() => act(applied.address, () => h.closeApplication(applied))}>
@@ -123,7 +134,13 @@ export function Listings({
   const empty =
     listings && shown.length === 0 ? (
       <p className="text-sm text-muted-foreground">
-        {mode === "mine" && !q ? "You have no listings yet. Add one with the form." : q ? `Nothing matches “${q}”.` : "No apartments are listed yet. Run `make demo-setup` for the default listings, or add one in a landlord window."}
+        {mode === "mine" && !q
+          ? "You have no listings yet. Add one with the form."
+          : q
+            ? `Nothing matches “${q}”.`
+            : near.filter
+              ? "Nothing within that distance. Widen the search with “Show all”."
+              : "No apartments are listed yet. Run `make demo-setup` for the default listings, or add one in a landlord window."}
       </p>
     ) : null;
 
@@ -156,6 +173,10 @@ export function Listings({
         <Search className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input className="pl-11" placeholder="Search by district, city or feature: Kraków, garden, furnished…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search apartments" />
       </div>
+      <EventsStrip filter={near.filter} onPick={near.select} onShowAll={near.clear} />
+      {near.filter && !near.dismissed && (
+        <NearbyBanner filter={near.filter} count={shown.length} hidden={hidden} unplaced={unplaced} onShowAll={near.clear} onDismiss={near.dismiss} />
+      )}
       {!listings && <p className="text-sm text-muted-foreground">Loading apartments…</p>}
       {empty}
       {grid}
@@ -173,6 +194,24 @@ function ListingForm({ h }: { h: Handlers }) {
   const region = f.region.toUpperCase();
   const tooLong = (["title", "city", "blurb", "photo"] as const).find((k) => bytes(f[k]) > MAX_TEXT[k]);
   const photo = photoUrl(f.photo);
+  const [uploading, setUploading] = useState(false);
+  const [uploadErr, setUploadErr] = useState("");
+  const pick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploading(true);
+    setUploadErr("");
+    try {
+      setF((cur) => ({ ...cur, photo: "" }));
+      const url = await uploadPhoto(file);
+      setF((cur) => ({ ...cur, photo: url }));
+    } catch (err) {
+      setUploadErr(err instanceof Error ? err.message : "Upload failed.");
+    } finally {
+      setUploading(false);
+    }
+  };
   const [photoOk, setPhotoOk] = useState<boolean | null>(null); // null = not checked yet
   useEffect(() => setPhotoOk(null), [photo]);
   const ok = !!f.title.trim() && rent > 0 && deposit >= 0 && /^[A-Z]{2}$/.test(region) && !tooLong && (!photo || photoOk === true);
@@ -200,6 +239,13 @@ function ListingForm({ h }: { h: Handlers }) {
       </div>
       {field("blurb", "Short description", { placeholder: "Furnished · 42 m² · fibre internet" })}
       {field("photo", "Photo", { placeholder: "kazimierz.jpg, /listings/flat.jpg or https://…" })}
+      {UPLOAD_AVAILABLE && (
+        <label className="flex items-center gap-2 text-xs">
+          <span className="rounded-md border px-3 py-1.5 font-semibold cursor-pointer hover:bg-muted">{uploading ? "Uploading…" : "Upload from computer"}</span>
+          <input type="file" accept="image/*" className="hidden" disabled={uploading} onChange={pick} />
+          {uploadErr && <span className="text-destructive">{uploadErr}</span>}
+        </label>
+      )}
       {photo && (
         <div className="flex items-center gap-3 text-xs">
           <img
@@ -219,7 +265,7 @@ function ListingForm({ h }: { h: Handlers }) {
         {field("deposit", "Deposit, USDC", { inputMode: "decimal", placeholder: f.rent || "same as rent" })}
       </div>
       <p className="text-xs text-muted-foreground">
-        Photo: a file name from <span className="font-mono">app/public/listings</span>, or a web address. The deposit is the standard one; the program halves it
+        Photo: upload one, a file name from <span className="font-mono">app/public/listings</span>, or a web address. The deposit is the standard one; the program halves it
         for tenants with a clean record.
         {tooLong && <span className="block text-destructive">The {tooLong} is too long for the chain (max {MAX_TEXT[tooLong]} bytes).</span>}
       </p>
@@ -235,11 +281,15 @@ function ListingForm({ h }: { h: Handlers }) {
 
 export function MyProfile({ role, me }: { role: Role; me: string }) {
   const profile = useChain(() => chain.loadProfile(me), [me]);
+  const kycStatus = useKycStatus(me);
   const leases = useChain(() => chain.loadLeases(me, role), [me, role]);
+  // The same shared read the Apartments tab does, for the apartment names below: a lease does not
+  // carry its listing, so the name is matched (lib/apartment.ts).
+  const listings = useChain(() => chain.loadListings(), []);
   const other: Role = role === "landlord" ? "tenant" : "landlord";
   const records = useRecords(unique((leases ?? []).map((l) => l[other])));
 
-  const current = (leases ?? []).filter((l) => l.status === "proposed" || l.status === "active");
+  const current = (leases ?? []).filter((l) => chain.inProgress(l.status));
   const recent = (leases ?? []).filter((l) => l.status === "closed" || l.status === "defaulted");
   const countries = unique(recent.filter((l) => l.status === "closed").map((l) => l.region)).sort();
 
@@ -254,18 +304,21 @@ export function MyProfile({ role, me }: { role: Role; me: string }) {
         items.map((l) => (
           <Card key={l.address} className="flex flex-col gap-2 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <button
-                title="Copy full address"
-                onClick={() => navigator.clipboard?.writeText(l[other])}
-                className="flex items-center gap-2 font-mono text-sm font-medium hover:text-accent"
-              >
-                <UserRound className="size-4" /> {short(l[other], 6)} <Copy className="size-3.5 text-muted-foreground" />
-              </button>
+              {/* The apartment names the card. The counterparty's key is below it: an address is
+                  how the program identifies them, not how a person recognises a lease. */}
+              <p className="min-w-0 font-medium">{apartmentName(l, listings)}</p>
               {statusBadge(l.status)}
             </div>
+            <button
+              title="Copy full address"
+              onClick={() => navigator.clipboard?.writeText(l[other])}
+              className="flex items-center gap-2 self-start font-mono text-xs text-muted-foreground hover:text-accent"
+            >
+              <UserRound className="size-3.5" /> {short(l[other], 6)} <Copy className="size-3 " />
+            </button>
             <p className="text-sm text-muted-foreground">{recordLine(other, records[l[other]])}</p>
             <p className="text-xs text-muted-foreground">
-              {usdc(l.rent)} USDC / {duration(l.periodSecs)} · {l.paidCount}/{l.termPeriods} paid · deposit {usdc(l.deposit)} USDC · {l.region}
+              {usdc(l.rent)} USDC / {duration(l.periodSecs)} · {l.paidCount}/{l.termPeriods} paid · {termLabel(l.termPeriods, l.periodSecs)} · deposit {usdc(l.deposit)} USDC
               {l.startTs ? ` · started ${new Date(l.startTs * 1000).toLocaleDateString()}` : " · not started"}
             </p>
           </Card>
@@ -277,7 +330,7 @@ export function MyProfile({ role, me }: { role: Role; me: string }) {
   return (
     <div className="rise grid items-start gap-8 lg:grid-cols-[400px_minmax(0,1fr)]">
       <div className="flex flex-col gap-3 lg:sticky lg:top-6">
-        <ProfileCard role={role} address={me} profile={profile ?? null} countries={countries} />
+        <ProfileCard role={role} address={me} profile={profile ?? null} countries={countries} verified={kycStatus?.verified} />
       </div>
       <div className="flex flex-col gap-8">
         {rows(role === "landlord" ? "Current tenants" : "Current landlord", current, role === "landlord" ? "No tenant is in a lease with you right now." : "You have no lease in progress.")}

@@ -59,8 +59,8 @@ export function DocPicker({ label, hint, doc, onDoc, expectedHex }: Props) {
         className={cn(
           "flex min-h-24 w-full items-center gap-4 rounded-2xl border-2 border-dashed p-4 text-left transition-colors",
           !doc && "border-input bg-card/60 hover:bg-secondary/40",
-          verdict === "mismatch" && "border-destructive/50 bg-[#f6e4df]",
-          (verdict === "match" || (doc && !expectedHex)) && "border-success/50 bg-[#eef2e4]",
+          verdict === "mismatch" && "border-destructive/50 bg-danger-soft",
+          (verdict === "match" || (doc && !expectedHex)) && "border-success/50 bg-success-soft",
         )}
       >
         <span className="grid size-12 shrink-0 place-items-center rounded-xl bg-secondary text-primary">
