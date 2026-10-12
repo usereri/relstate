@@ -40,6 +40,10 @@ describe("nameProblem", () => {
       expect(nameProblem(`Acme${c}Wycena`), JSON.stringify(c)).toMatch(/invisible/);
     }
   });
+  it("refuses variation selectors (S1: parity with the program's is_invisible)", () => {
+    expect(nameProblem("Acme\u{FE0F} Wycena")).toMatch(/invisible/);
+    expect(nameProblem("Acme\u{E0100} Wycena")).toMatch(/invisible/);
+  });
 });
 
 describe("nameHashHex", () => {

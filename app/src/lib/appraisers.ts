@@ -54,15 +54,27 @@ export const displayName = (raw: string): string => raw.split(/\p{White_Space}+/
 
 /**
  * Unicode format and bidi-control code points: exactly the ranges the program's `is_invisible`
- * lists, in the same order.
+ * lists, in the same order (and backend/src/dispute.ts's `INVISIBLE_RANGES`, which this mirrors).
  *
  * They render as nothing, or reorder what is around them, so two rows a person cannot tell apart
  * would carry different hashes — which decides which fee is agreed and which company the
  * invitation is sent to (review G6). Whitespace-class separators (NBSP, U+2028, U+3000) are
  * absent on purpose: {@link displayName} has already collapsed those to a plain space.
+ *
+ * Written from `\u{...}` escapes, not pasted literal invisible characters — a literal invisible
+ * character in the source is invisible to review as well.
  */
-const INVISIBLE =
-  /[­؀-؅؜۝܏᠎​-‏‪-‮⁠-⁤⁦-⁯﻿￹-￻\u{E0001}\u{E0020}-\u{E007F}]/u;
+const INVISIBLE_RANGES = [
+  [0x00ad, 0x00ad], [0x0600, 0x0605], [0x061c, 0x061c], [0x06dd, 0x06dd], [0x070f, 0x070f],
+  [0x180e, 0x180e], [0x200b, 0x200f], [0x202a, 0x202e], [0x2060, 0x2064], [0x2066, 0x206f],
+  [0xfe00, 0xfe0f], [0xfeff, 0xfeff], [0xfff9, 0xfffb], [0xe0001, 0xe0001], [0xe0020, 0xe007f],
+  [0xe0100, 0xe01ef],
+] as const;
+
+const classOf = (ranges: readonly (readonly [number, number])[]): RegExp =>
+  new RegExp(`[${ranges.map(([lo, hi]) => (lo === hi ? `\\u{${lo.toString(16)}}` : `\\u{${lo.toString(16)}}-\\u{${hi.toString(16)}}`)).join("")}]`, "u");
+
+const INVISIBLE = classOf(INVISIBLE_RANGES);
 
 /** The program measures the name in BYTES of UTF-8, so "Łódź" is eight of the sixty-four. */
 export const nameBytes = (s: string): number => new TextEncoder().encode(s).length;

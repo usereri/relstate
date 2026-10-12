@@ -157,6 +157,11 @@ describe("POST /api/invites", () => {
     assert.equal(await codeOf(() => f.invites.issue({ lease: f.lease, companyName: "Acme​ Wycena", email: "a@b.example", wallet: f.landlord })), "invalid-name");
   });
 
+  it("refuses a variation selector in the name (S1: parity with the program's is_invisible)", async () => {
+    const f = await fixture();
+    assert.equal(await codeOf(() => f.invites.issue({ lease: f.lease, companyName: "Acme\u{FE0F} Wycena", email: "a@b.example", wallet: f.landlord })), "invalid-name");
+  });
+
   it("refuses something that is not an e-mail address", async () => {
     const f = await fixture();
     for (const email of ["", "   ", f.landlord, "a@b", "two@a.example,three@b.example"]) {
@@ -285,5 +290,19 @@ describe("the invite token is not a session token", () => {
   it("has its own HMAC key", async () => {
     const { sessionSecret } = await import("../src/auth.ts");
     assert.notDeepEqual(inviteSecret(), sessionSecret(), "an invite token signed with the session key would be a session token");
+  });
+
+  it("the invite HMAC domain is mode-separated, like the session one (S4a)", async () => {
+    const { env } = await import("../src/env.ts");
+    const original = env.authMode;
+    try {
+      (env as unknown as { authMode: string }).authMode = "mock";
+      const mockSecret = inviteSecret();
+      (env as unknown as { authMode: string }).authMode = "wallet";
+      const walletSecret = inviteSecret();
+      assert.notDeepEqual(mockSecret, walletSecret, "a mock-minted invite token must not verify on a live (wallet-mode) deployment");
+    } finally {
+      (env as unknown as { authMode: string }).authMode = original;
+    }
   });
 });
