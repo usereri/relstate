@@ -85,6 +85,9 @@ describe("parseAppraiserDirectory", () => {
       refuses([{ name: "A", wallet: A, fee: "1.5", default: true }], /is not an integer/);
       refuses([{ name: "A", wallet: A, fee: 1.5, default: true }], /not a whole number/);
     });
+    it("0x / 0b / 0o / whitespace-only / exponent fee forms, which BigInt() would accept or misread", () => {
+      for (const fee of ["0x10", "0b1", "0o7", " ", "1e3", "+5"]) refuses([{ name: "A", wallet: A, fee, default: true }], /fee/);
+    });
     it("a fee above u64", () => refuses([{ name: "A", wallet: A, fee: "18446744073709551616", default: true }], /does not fit in a u64/));
     it("a non-boolean default", () => refuses([{ name: "A", wallet: A, fee: "1", default: "yes" }], /default must be true or false/));
     it("the same wallet twice: one registry entry cannot have two directory names", () => {
@@ -117,5 +120,20 @@ describe("parseKeySpecs", () => {
   });
   it("is empty for an unset value", () => {
     for (const value of [undefined, "", ";;"]) assert.deepEqual(parseKeySpecs(value), []);
+  });
+});
+
+describe("assertEnvConsistent: the verdict console fails closed", async () => {
+  const { env, assertEnvConsistent } = await import("../src/env.ts");
+  const base = { ...env, appraisers: { ...env.appraisers, keypairs: "/k/a.json", consoleToken: "tok" } } as typeof env;
+  const msg = (e: typeof env) => { try { assertEnvConsistent(e); return ""; } catch (x) { return String((x as Error).message); } };
+  it("accepts a devnet console with its own token", () => assert.equal(msg(base), ""));
+  it("refuses keys on mainnet", () => assert.match(msg({ ...base, cluster: "mainnet-beta" } as typeof env), /refused on cluster mainnet-beta/));
+  it("refuses keys without VERDICT_CONSOLE_TOKEN, or when it equals ADMIN_TOKEN", () => {
+    assert.match(msg({ ...base, appraisers: { ...base.appraisers, consoleToken: "" } } as typeof env), /VERDICT_CONSOLE_TOKEN is required/);
+    assert.match(msg({ ...base, adminToken: "tok" } as typeof env), /must differ from ADMIN_TOKEN/);
+  });
+  it("refuses an appraiser key spec equal to the treasury key", () => {
+    assert.match(msg({ ...base, treasuryKeypair: "/k/a.json" } as typeof env), /must not contain the fee payer, treasury/);
   });
 });
