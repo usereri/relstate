@@ -679,6 +679,7 @@ export function createApp(
   /** Either party reads the claimed wallet, which is what their app passes to phase 2. */
   app.get("/api/invites", async (c) => {
     const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
+    inviteLimit(`p:${session.wallet}`);
     const lease = c.req.query("lease");
     if (lease === undefined) throw new RejectedTransaction("lease is required: GET /api/invites?lease=<address>", "malformed-query");
     return c.json(await services.invites().pending({ lease, wallet: session.wallet }));

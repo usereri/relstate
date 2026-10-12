@@ -437,6 +437,7 @@ describe("wallet-auth routes via createApp", () => {
     kyc: () => ({ status: async (wallet: string) => ({ wallet, pending: false, verified: false }) }),
     // POST /api/auth/mock checks the requested wallet against the sponsor's own address.
     sponsor: async () => ({ feePayer: "11111111111111111111111111111112" }),
+    invites: () => ({ pending: async () => ({ claimedWallet: null }) }),
   } as unknown as Services;
 
   function freshApp(opts: WalletAuthOptions = {}) {
@@ -484,6 +485,20 @@ describe("wallet-auth routes via createApp", () => {
       assert.equal((await post(app, "/api/auth/challenge", { wallet })).status, 200, `request ${i}`);
     }
     const limited = await post(app, "/api/auth/challenge", { wallet });
+    assert.equal(limited.status, 429);
+    assert.equal((await json(limited)).code, "rate-limited");
+  });
+
+  it("GET /api/invites?lease= is rate-limited per wallet, like the other invite routes (S4b)", async () => {
+    const { app } = { app: createApp(fakeServices, createWalletAuth({ origin: ORIGIN })) };
+    const { privateKey, wallet } = makeKeypair();
+    const { message, nonce } = await json(await post(app, "/api/auth/challenge", { wallet }));
+    const sig = signMessage(message, privateKey);
+    const { token } = await json(await post(app, "/api/auth/verify", { wallet, nonce, signature: sig.toString("base64") }));
+    for (let i = 0; i < env.authRatePerMinute; i++) {
+      assert.equal((await get(app, "/api/invites?lease=11111111111111111111111111111112", { authorization: `Bearer ${token}` })).status, 200, `request ${i}`);
+    }
+    const limited = await get(app, "/api/invites?lease=11111111111111111111111111111112", { authorization: `Bearer ${token}` });
     assert.equal(limited.status, 429);
     assert.equal((await json(limited)).code, "rate-limited");
   });
