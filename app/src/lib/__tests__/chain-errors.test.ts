@@ -52,10 +52,10 @@ describe("programErrorMessage", () => {
     expect(programErrorMessage(other!.name)).toBe(other!.msg);
   });
 
-  it("every one of the sixteen mediation errors (6038-6053) maps to a non-empty friendly message", async () => {
+  it("every one of the seventeen mediation errors (6038-6054, S3's BindingWindowClosed included) maps to a non-empty friendly message", async () => {
     const { programErrorMessage } = await load();
-    const mediationErrors = errors.filter((e) => e.code >= 6038 && e.code <= 6053);
-    expect(mediationErrors).toHaveLength(16);
+    const mediationErrors = errors.filter((e) => e.code >= 6038 && e.code <= 6054);
+    expect(mediationErrors).toHaveLength(17);
     for (const e of mediationErrors) {
       expect(programErrorMessage(e.name), e.name).toBeTruthy();
     }

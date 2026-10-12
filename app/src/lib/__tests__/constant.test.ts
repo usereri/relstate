@@ -3,6 +3,7 @@ import { ConfidentialKeys } from "@solana/zk-sdk/node";
 import { CONFIDENTIAL_DERIVATION_MESSAGE } from "../wallet";
 import idl from "@target/idl/relstate.json";
 import { APPRAISER_FEE_CAP_DIVISOR, MAX_DISPUTE_ROUNDS, SELECTION_WINDOW_SECS, VERDICT_WINDOW_SECS } from "../chain";
+import { CLAIM_WINDOW_SECS } from "../config";
 
 // Own file on purpose: this is the only test that loads the zk-sdk wasm. wallet.ts spells the
 // constant out to keep that wasm out of the main bundle, so this is what stops the two drifting.
@@ -33,5 +34,9 @@ describe("mediation window / round constants, read from the IDL", () => {
 
   it("APPRAISER_FEE_CAP_DIVISOR equals the IDL's own value", () => {
     expect(APPRAISER_FEE_CAP_DIVISOR).toBe(idlConstant("APPRAISER_FEE_CAP_DIVISOR"));
+  });
+
+  it("CLAIM_WINDOW_SECS (config.ts; predates these four) equals the IDL's own value too", () => {
+    expect(CLAIM_WINDOW_SECS).toBe(idlConstant("CLAIM_WINDOW_SECS"));
   });
 });
