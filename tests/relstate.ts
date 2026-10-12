@@ -16,6 +16,7 @@ import {
   createMint,
   createTransferCheckedInstruction,
   getAccount,
+  getAssociatedTokenAddressSync,
   getMintLen,
   mintTo,
 } from "@solana/spl-token";
@@ -1890,6 +1891,22 @@ describe("relstate", () => {
   it("submit_verdict refuses an unbound dispute", async () => {
     const env = await mediating();
     await expectFail(env.submitVerdict(100, apprLow), "AppraiserNotBound");
+  });
+
+  // S3 F4: submit_verdict always takes appraiser_ata, even when the fee paid turns out to be
+  // zero, so a bound appraiser with no token account for the lease's mint cannot submit at all.
+  // The failure looks exactly like a silent appraiser (the same shape as expire_mediation's
+  // timeout), not a setup bug -- which is why the appraiser setup script has to create one ATA
+  // per appraiser per mint, and why this is worth its own test rather than an assumption.
+  it("a bound appraiser with no ATA for the lease's mint cannot submit a verdict", async () => {
+    const env = await mediating();
+    const wallet = Keypair.generate();
+    await airdrop(wallet);
+    const noAta = await registerAsAppraiser(wallet, 10);
+    await bind(env, noAta); // bound through the normal pick-agreement path, same as any appraiser
+    // the ATA this appraiser *would* use, derived but never created
+    const missingAta = getAssociatedTokenAddressSync(USDC, wallet.publicKey);
+    await expectFail(env.submitVerdict(100, { ...noAta, ata: missingAta }), "AccountNotInitialized");
   });
 
   it("submit_verdict refuses once the verdict window has closed", async () => {
