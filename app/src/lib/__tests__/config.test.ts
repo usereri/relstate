@@ -89,6 +89,41 @@ describe("RPC / IS_LOCAL defaults", () => {
   });
 });
 
+describe("CLUSTER", () => {
+  it("VITE_CLUSTER=devnet becomes the Wallet Standard identifier solana:devnet", async () => {
+    vi.stubEnv("VITE_CLUSTER", "devnet");
+    const { CLUSTER } = await load();
+    expect(CLUSTER).toBe("solana:devnet");
+  });
+
+  it("an already-prefixed value passes through unchanged", async () => {
+    vi.stubEnv("VITE_CLUSTER", "solana:devnet");
+    const { CLUSTER } = await load();
+    expect(CLUSTER).toBe("solana:devnet");
+  });
+
+  it("VITE_LOCAL=1 with a proxied VITE_API: solana:localnet", async () => {
+    vi.stubEnv("VITE_API", "http://localhost:8787");
+    vi.stubEnv("VITE_LOCAL", "1");
+    const { CLUSTER } = await load();
+    expect(CLUSTER).toBe("solana:localnet");
+  });
+
+  it("a proxied RPC with nothing else set: solana:devnet, never mainnet by guess", async () => {
+    vi.stubEnv("VITE_API", "http://localhost:8787");
+    const { CLUSTER } = await load();
+    expect(CLUSTER).toBe("solana:devnet");
+  });
+
+  it("a VITE_RPC naming testnet or mainnet is reflected, not defaulted to devnet", async () => {
+    vi.stubEnv("VITE_RPC", "https://api.testnet.solana.com");
+    expect((await load()).CLUSTER).toBe("solana:testnet");
+
+    vi.stubEnv("VITE_RPC", "https://api.mainnet-beta.solana.com");
+    expect((await load()).CLUSTER).toBe("solana:mainnet");
+  });
+});
+
 describe("DEFAULT_PUBLIC_HOLDBACK", () => {
   it("defaults to 100,000,000 base units (100 rUSDC) with no override", async () => {
     const { DEFAULT_PUBLIC_HOLDBACK } = await load();
