@@ -249,9 +249,12 @@ describe("relstate", () => {
     const vault = pda(Buffer.from("vault"), lease.toBuffer());
     const landlordProfile = pda(Buffer.from("profile"), landlord.publicKey.toBuffer());
     const tenantProfile = pda(Buffer.from("profile"), tenant.publicKey.toBuffer());
+    // Exists only while the lease is in Mediation: escalate_to_mediation creates it and every
+    // exit closes it (docs/contracts/dispute-mediation.md §3).
+    const dispute = pda(Buffer.from("dispute"), lease.toBuffer());
 
     return {
-      landlord, tenant, mint, landlordAta, tenantAta, lease, vault,
+      landlord, tenant, mint, landlordAta, tenantAta, lease, vault, dispute,
       landlordProfile, tenantProfile, tokenProgram,
 
       // overrides let tests try invalid lease terms
@@ -321,12 +324,13 @@ describe("relstate", () => {
           .signers([signer])
           .rpc(),
 
-      // both parties sign; `signers` lets a test leave one out or swap in a stranger
-      settle: (deduction: number, signers: anchor.web3.Keypair[] = [tenant, landlord]) =>
+      // both parties sign; `signers` lets a test leave one out or swap in a stranger.
+      // `dispute` is null in Disputed (there is no such account) and the Dispute PDA in Mediation.
+      settle: (deduction: number, signers: anchor.web3.Keypair[] = [tenant, landlord], disputeAcc: anchor.web3.PublicKey | null = null) =>
         program.methods
           .settleDispute(new BN(deduction))
           .accountsPartial({
-            tenant: tenant.publicKey, landlord: landlord.publicKey, lease, mint, vault,
+            tenant: tenant.publicKey, landlord: landlord.publicKey, lease, dispute: disputeAcc, mint, vault,
             tenantAta, landlordAta, tenantProfile, landlordProfile, tokenProgram,
           })
           .signers(signers)
@@ -346,6 +350,14 @@ describe("relstate", () => {
         program.methods
           .abandonDispute()
           .accountsPartial({ tenant: signer.publicKey, lease })
+          .signers([signer])
+          .rpc(),
+
+      // the last-round rejection: same gesture for the tenant, but it opens Mediation (D2)
+      escalate: (signer = tenant) =>
+        program.methods
+          .escalateToMediation()
+          .accountsPartial({ tenant: signer.publicKey, lease, dispute })
           .signers([signer])
           .rpc(),
 
@@ -1352,8 +1364,8 @@ describe("relstate", () => {
     await env.abandon();
     const lease = await program.account.lease.fetch(env.lease);
     expect(lease.status).to.have.property("active");
-    expect([lease.proposedDeduction.toNumber(), lease.disputedAt.toNumber(), lease.disputeRejected])
-      .to.deep.equal([0, 0, true]);
+    expect([lease.proposedDeduction.toNumber(), lease.disputedAt.toNumber(), lease.disputeRounds])
+      .to.deep.equal([0, 0, 1]);
     expect(lease.claimPauseSecs.toNumber()).to.be.at.most(DISPUTE_WINDOW);
     expect(await balance(env.vault)).to.equal(DEPOSIT);
 
@@ -1379,10 +1391,31 @@ describe("relstate", () => {
     await expectConserved(env, DEPOSIT, 0);
   });
 
-  it("a rejected dispute cannot be reopened, but a full release still works", async () => {
+  // D2 changed this rule: a rejection no longer ends the argument, it spends one of
+  // MAX_DISPUTE_ROUNDS. The round the rounds actually run out on is covered by the mediation
+  // suite, which has to escalate and expire to get a lease back to Active at the cap.
+  it("a rejection spends a round rather than barring every further proposal", async () => {
     const env = await disputed(800);
     await env.abandon();
-    await expectFail(env.release(100), "DisputeAlreadyRejected");
+    expect((await program.account.lease.fetch(env.lease)).disputeRounds).to.equal(1);
+
+    // the landlord may propose once more, which D1 refused
+    await env.release(100);
+    const lease = await program.account.lease.fetch(env.lease);
+    expect(lease.status).to.have.property("disputed");
+    expect(lease.proposedDeduction.toNumber()).to.equal(100);
+    expect(await balance(env.vault)).to.equal(DEPOSIT);
+
+    // but the second rejection is escalate_to_mediation, not abandon_dispute: the two cover every
+    // round exactly once, so the escalation can be neither skipped nor repeated
+    await expectFail(env.abandon(), "WrongDisputeRound");
+    await env.accept();
+    await expectConserved(env, DEPOSIT - 100, 100);
+  });
+
+  it("a full release still works at every round", async () => {
+    const env = await disputed(800);
+    await env.abandon();
     await env.release(0);
     await expectConserved(env, DEPOSIT, 0);
   });
