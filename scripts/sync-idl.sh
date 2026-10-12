@@ -7,9 +7,11 @@
 #   make program-keypair && anchor build -- --features demo
 #   scripts/sync-idl.sh
 #
-# Refuses a release-build IDL (CLAIM_WINDOW_SECS must be 3, DISPUTE_WINDOW_SECS must be 15 -- a
-# release build has 1_209_600 for both, docs/contracts/program-interface.md §5), so a stale or
-# wrongly-featured build fails here instead of silently shipping the wrong timing to the app.
+# Refuses a release-build IDL. All four windows the app reads must carry their demo values --
+# CLAIM_WINDOW_SECS=3, DISPUTE_WINDOW_SECS=15 (docs/contracts/program-interface.md §5) and
+# SELECTION_WINDOW_SECS=30, VERDICT_WINDOW_SECS=60 (docs/contracts/dispute-mediation.md §2) --
+# so a stale or wrongly-featured build fails here instead of silently shipping the wrong timing to
+# the app. A release build has 1_209_600 / 1_209_600 / 604_800 / 1_209_600.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -34,22 +36,24 @@ read_constant() {
   ' "$TARGET_IDL" "$1"
 }
 
-CLAIM_WINDOW_SECS="$(read_constant CLAIM_WINDOW_SECS)"
-DISPUTE_WINDOW_SECS="$(read_constant DISPUTE_WINDOW_SECS)"
+check_constant() {
+  local name="$1" want="$2" got
+  got="$(read_constant "$name")"
+  if [[ "$got" != "$want" ]]; then
+    echo "error: target/idl/relstate.json has $name=$got, expected $want (the demo build)." >&2
+    echo "       this looks like a release build, or a stale one. Rebuild with: anchor build -- --features demo" >&2
+    exit 1
+  fi
+}
 
-if [[ "$CLAIM_WINDOW_SECS" != "3" ]]; then
-  echo "error: target/idl/relstate.json has CLAIM_WINDOW_SECS=$CLAIM_WINDOW_SECS, expected 3 (the demo build)." >&2
-  echo "       this looks like a release build, or a stale one. Rebuild with: anchor build -- --features demo" >&2
-  exit 1
-fi
-if [[ "$DISPUTE_WINDOW_SECS" != "15" ]]; then
-  echo "error: target/idl/relstate.json has DISPUTE_WINDOW_SECS=$DISPUTE_WINDOW_SECS, expected 15 (the demo build)." >&2
-  echo "       this looks like a release build, or a stale one. Rebuild with: anchor build -- --features demo" >&2
-  exit 1
-fi
+# Every window the app reads out of the IDL, so none of them can ship with a release value.
+check_constant CLAIM_WINDOW_SECS 3
+check_constant DISPUTE_WINDOW_SECS 15
+check_constant SELECTION_WINDOW_SECS 30
+check_constant VERDICT_WINDOW_SECS 60
 
 mkdir -p "$OUT_DIR"
 cp "$TARGET_IDL" "$OUT_DIR/relstate.json"
 cp "$TARGET_TYPES" "$OUT_DIR/relstate.ts"
 
-echo "synced app/idl/relstate.json and app/idl/relstate.ts from target/ (CLAIM_WINDOW_SECS=3, DISPUTE_WINDOW_SECS=15)"
+echo "synced app/idl/relstate.json and app/idl/relstate.ts from target/ (claim=3, dispute=15, selection=30, verdict=60)"

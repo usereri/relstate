@@ -80,6 +80,7 @@ pub fn handle_mark_default(ctx: Context<MarkDefault>) -> Result<()> {
         &ctx.accounts.landlord_ata,
         lease.deposit_amount - seized,
         seized,
+        None,
     )?;
 
     let tenant = &mut ctx.accounts.tenant_profile;

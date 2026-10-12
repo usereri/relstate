@@ -18,8 +18,11 @@ export const LEASE_ACCOUNT_SIZE = FALLBACK_LAYOUTS.Lease!.size;
 /** Anchor's account discriminator: the first 8 bytes of sha256("account:Lease"). */
 export const LEASE_DISCRIMINATOR = new Uint8Array(createHash("sha256").update("account:Lease").digest().subarray(0, 8));
 
-// In the order of the program's `Status` enum (the IDL lists them); Disputed was added with the dispute flow.
-export const LEASE_STATUS = ["proposed", "active", "closed", "defaulted", "disputed"] as const;
+// In the order of the program's `Status` enum (the IDL lists them). Disputed was added with the
+// dispute flow and Mediation with the appraiser flow; both are appended, so the byte values above
+// them never moved (docs/contracts/dispute-mediation.md §8). A lease in a status missing from this
+// list fails to decode, so it has to track the enum.
+export const LEASE_STATUS = ["proposed", "active", "closed", "defaulted", "disputed", "mediation"] as const;
 export type LeaseStatus = (typeof LEASE_STATUS)[number];
 
 export type DecodedLease = {

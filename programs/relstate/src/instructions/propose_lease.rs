@@ -124,7 +124,7 @@ pub fn handle_propose_lease(
     lease.proposed_deduction = 0;
     lease.disputed_at = 0;
     lease.claim_pause_secs = 0;
-    lease.dispute_rejected = false;
+    lease.dispute_rounds = 0;
 
     ctx.accounts.landlord_profile.wallet = landlord;
     Ok(())

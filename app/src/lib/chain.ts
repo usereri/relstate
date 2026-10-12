@@ -16,7 +16,7 @@ const { Connection, PublicKey, SYSVAR_CLOCK_PUBKEY } = anchor.web3;
 type PubKey = anchor.web3.PublicKey;
 
 export type { Role, WalletProvider };
-export type Status = "proposed" | "active" | "disputed" | "closed" | "defaulted";
+export type Status = "proposed" | "active" | "disputed" | "mediation" | "closed" | "defaulted";
 
 export interface ListingView {
   address: string;

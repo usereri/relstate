@@ -51,7 +51,7 @@ pub struct ReleaseDeposit<'info> {
 }
 
 /// Ends a fully paid lease. `deduction == 0` returns the deposit on the spot; anything more is a
-/// *proposal* that the tenant has to answer.
+/// *proposal* that the tenant has to answer, and only while dispute rounds are left.
 ///
 /// The asymmetry is the whole point: before this, the landlord alone decided what to keep and the
 /// tenant's only protection was the landlord doing nothing (`claim_deposit`). Now a deduction
@@ -91,9 +91,14 @@ pub fn handle_release_deposit(ctx: Context<ReleaseDeposit>, deduction: u64) -> R
         );
     }
 
-    // One dispute per lease. A landlord who could re-open one would simply do it again whenever
-    // the resumed claim clock came due, and the deposit would never be reachable.
-    require!(!lease.dispute_rejected, ErrorCode::DisputeAlreadyRejected);
+    // `MAX_DISPUTE_ROUNDS` proposals per lease, no more. A landlord who could re-open one forever
+    // would simply do it again whenever the resumed claim clock came due, and the deposit would
+    // never be reachable. Two strikes and the number stops being either party's to pick: the
+    // tenant's last rejection escalates to `Mediation` and an appraiser decides it.
+    require!(
+        lease.may_propose_deduction(),
+        ErrorCode::DisputeRoundsExhausted
+    );
 
     let lease = &mut ctx.accounts.lease;
     lease.status = Status::Disputed;

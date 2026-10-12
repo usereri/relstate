@@ -71,7 +71,9 @@ export const FALLBACK_LAYOUTS: Readonly<Record<string, Layout>> = {
     offsets: {
       landlord: 8, tenant: 40, mint: 72, lease_id: 104, rent_amount: 112, deposit_amount: 120, start_ts: 128,
       term_periods: 136, paid_count: 138, lease_hash: 140, status: 172, bump: 173, period_secs: 174, grace_secs: 182, region: 190, discount_pct: 192,
-      proposed_deduction: 193, disputed_at: 201, claim_pause_secs: 209, dispute_rejected: 217,
+      // dispute_rounds: u8 replaced dispute_rejected: bool at the same offset, so the size did not
+      // change (docs/contracts/dispute-mediation.md §8) -- only the field name.
+      proposed_deduction: 193, disputed_at: 201, claim_pause_secs: 209, dispute_rounds: 217,
     },
   },
   Profile: {

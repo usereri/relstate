@@ -75,6 +75,7 @@ pub fn handle_claim_deposit(ctx: Context<ClaimDeposit>) -> Result<()> {
         &ctx.accounts.landlord_ata,
         lease.deposit_amount,
         0,
+        None,
     )?;
 
     let deposit = lease.deposit_amount;

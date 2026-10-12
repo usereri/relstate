@@ -21,6 +21,12 @@ pub const CONFIG_SEED: &[u8] = b"config";
 #[constant]
 pub const ATTESTATION_SEED: &[u8] = b"attestation";
 
+#[constant]
+pub const DISPUTE_SEED: &[u8] = b"dispute";
+
+#[constant]
+pub const APPRAISER_SEED: &[u8] = b"appraiser";
+
 // KYC levels on an Attestation. 0 is "none" and is never stored: an unverified wallet has no
 // account at all, so `attest` refuses level 0 rather than writing a useless record.
 #[constant]
@@ -82,6 +88,45 @@ pub const DISPUTE_WINDOW_SECS: i64 = 15;
 #[cfg(not(feature = "demo"))]
 #[constant]
 pub const DISPUTE_WINDOW_SECS: i64 = 1_209_600;
+
+// How many deductions the tenant may reject before the lease leaves the two parties' hands. Round
+// 1 rejection puts the lease back to Active and lets the landlord propose once more; the last one
+// escalates to Status::Mediation and the appraiser decides (docs/contracts/dispute-mediation.md).
+//
+// Setting this to 1 is cut line 3 of the D2 plan: `abandon_dispute` becomes unreachable and the
+// first rejection escalates straight away. Nothing else has to change.
+#[constant]
+pub const MAX_DISPUTE_ROUNDS: u8 = 2;
+
+// How many appraisers one side may nominate. Plain usize like MAX_ALLOWED_MINTS, because it is the
+// length of a fixed array on Dispute and the client reads that array's length out of the IDL.
+pub const MAX_CANDIDATES: usize = 3;
+
+// The appraiser's fee is capped at deposit / APPRAISER_FEE_CAP_DIVISOR, so a registry entry with an
+// absurd fee can never eat a deposit. `#[constant]` so the app can show the cap it applies.
+#[constant]
+pub const APPRAISER_FEE_CAP_DIVISOR: u64 = 10;
+
+// How long the two sides have to agree on an appraiser before anyone may bind the registry's
+// default, and how long the bound appraiser then has to submit a verdict. Same `#[constant]`
+// treatment as the two D1 windows: the app reads the value of the build it runs against, and
+// scripts/sync-idl.sh refuses an IDL that is not the demo set.
+//
+// 7 and 14 days in a real deployment; 30 s and 60 s in the demo so the whole arbitration fits on
+// stage. The verdict window runs from the moment an appraiser is *bound*, not from escalation.
+#[cfg(feature = "demo")]
+#[constant]
+pub const SELECTION_WINDOW_SECS: i64 = 30;
+#[cfg(not(feature = "demo"))]
+#[constant]
+pub const SELECTION_WINDOW_SECS: i64 = 604_800;
+
+#[cfg(feature = "demo")]
+#[constant]
+pub const VERDICT_WINDOW_SECS: i64 = 60;
+#[cfg(not(feature = "demo"))]
+#[constant]
+pub const VERDICT_WINDOW_SECS: i64 = 1_209_600;
 
 // Upper bound on term_periods * period_secs. Nothing else bounds a lease from above, and a term
 // near i64::MAX would leave a funded deposit unreachable forever (release is "not ended", claim is

@@ -16,7 +16,8 @@ export type Relstate = {
     {
       "name": "abandonDispute",
       "docs": [
-        "Tenant rejects the proposed deduction; the deposit returns in full."
+        "Tenant rejects the proposed deduction with rounds still to spare; the deposit returns in",
+        "full and the landlord may propose once more."
       ],
       "discriminator": [
         51,
@@ -430,6 +431,113 @@ export type Relstate = {
       ]
     },
     {
+      "name": "bindDefaultAppraiser",
+      "docs": [
+        "Anyone, once the selection window has passed: binds the registry's default appraiser."
+      ],
+      "discriminator": [
+        12,
+        85,
+        132,
+        234,
+        202,
+        81,
+        221,
+        57
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "signer": true
+        },
+        {
+          "name": "lease",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  97,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.landlord",
+                "account": "lease"
+              },
+              {
+                "kind": "account",
+                "path": "lease.leaseId",
+                "account": "lease"
+              }
+            ]
+          },
+          "relations": [
+            "dispute"
+          ]
+        },
+        {
+          "name": "dispute",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  105,
+                  115,
+                  112,
+                  117,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "appraiser",
+          "docs": [
+            "Must be the registry's default and still active, PDA-checked, so an open instruction cannot",
+            "bind an appraiser of the caller's choosing."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  112,
+                  112,
+                  114,
+                  97,
+                  105,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "appraiser.wallet",
+                "account": "appraiser"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "claimDeposit",
       "discriminator": [
         201,
@@ -739,6 +847,179 @@ export type Relstate = {
           "type": "string"
         }
       ]
+    },
+    {
+      "name": "escalateToMediation",
+      "docs": [
+        "Tenant rejects for the last time: the lease enters `Mediation` and an appraiser decides (D2)."
+      ],
+      "discriminator": [
+        222,
+        169,
+        55,
+        133,
+        249,
+        127,
+        81,
+        196
+      ],
+      "accounts": [
+        {
+          "name": "tenant",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "lease",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  97,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.landlord",
+                "account": "lease"
+              },
+              {
+                "kind": "account",
+                "path": "lease.leaseId",
+                "account": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "dispute",
+          "docs": [
+            "Paid for by the tenant and returned to them on whichever exit ends the mediation."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  105,
+                  115,
+                  112,
+                  117,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "expireMediation",
+      "docs": [
+        "Landlord or tenant, after the verdict window: the lease returns to `Active` and the claim",
+        "clock resumes."
+      ],
+      "discriminator": [
+        197,
+        47,
+        239,
+        162,
+        124,
+        163,
+        62,
+        49
+      ],
+      "accounts": [
+        {
+          "name": "party",
+          "signer": true
+        },
+        {
+          "name": "lease",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  97,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.landlord",
+                "account": "lease"
+              },
+              {
+                "kind": "account",
+                "path": "lease.leaseId",
+                "account": "lease"
+              }
+            ]
+          },
+          "relations": [
+            "dispute"
+          ]
+        },
+        {
+          "name": "dispute",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  105,
+                  115,
+                  112,
+                  117,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "tenant",
+          "docs": [
+            "The rent destination, pinned to the lease's tenant: whichever party calls this, the refund",
+            "goes to whoever paid for the account."
+          ],
+          "writable": true
+        }
+      ],
+      "args": []
     },
     {
       "name": "finalizeDeduction",
@@ -1341,6 +1622,278 @@ export type Relstate = {
       "args": []
     },
     {
+      "name": "pickAppraiser",
+      "docs": [
+        "Landlord or tenant: names one appraiser from either side's list. Matching picks bind it."
+      ],
+      "discriminator": [
+        199,
+        118,
+        216,
+        137,
+        117,
+        10,
+        136,
+        185
+      ],
+      "accounts": [
+        {
+          "name": "party",
+          "signer": true
+        },
+        {
+          "name": "lease",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  97,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.landlord",
+                "account": "lease"
+              },
+              {
+                "kind": "account",
+                "path": "lease.leaseId",
+                "account": "lease"
+              }
+            ]
+          },
+          "relations": [
+            "dispute"
+          ]
+        },
+        {
+          "name": "dispute",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  105,
+                  115,
+                  112,
+                  117,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "appraiser",
+          "docs": [
+            "The pick, as a registry account for the same reason the candidates are: the key is proven",
+            "registered and active here, not looked up in the handler. Re-checking `active` at pick time",
+            "means an appraiser suspended since the nomination fails now instead of at the verdict."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  112,
+                  112,
+                  114,
+                  97,
+                  105,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "appraiser.wallet",
+                "account": "appraiser"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "proposeAppraisers",
+      "docs": [
+        "Landlord or tenant: nominates one to three registered, active appraisers. Once per side."
+      ],
+      "discriminator": [
+        221,
+        98,
+        9,
+        59,
+        134,
+        59,
+        96,
+        67
+      ],
+      "accounts": [
+        {
+          "name": "party",
+          "signer": true
+        },
+        {
+          "name": "lease",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  97,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.landlord",
+                "account": "lease"
+              },
+              {
+                "kind": "account",
+                "path": "lease.leaseId",
+                "account": "lease"
+              }
+            ]
+          },
+          "relations": [
+            "dispute"
+          ]
+        },
+        {
+          "name": "dispute",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  105,
+                  115,
+                  112,
+                  117,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "appraiserOne",
+          "docs": [
+            "The candidates, as registry accounts rather than as a `Vec<Pubkey>` argument. Each is",
+            "pinned to its own seeds, so the account cannot be anything but the registry's entry for",
+            "`appraiser_x.wallet`, and `active` is checked here rather than in the handler.",
+            "",
+            "This is the whole anti-sockpuppet mechanism: Anchor's checks are the lookup."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  112,
+                  112,
+                  114,
+                  97,
+                  105,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "appraiserOne.wallet",
+                "account": "appraiser"
+              }
+            ]
+          }
+        },
+        {
+          "name": "appraiserTwo",
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  112,
+                  112,
+                  114,
+                  97,
+                  105,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "appraiserTwo.wallet",
+                "account": "appraiser"
+              }
+            ]
+          }
+        },
+        {
+          "name": "appraiserThree",
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  112,
+                  112,
+                  114,
+                  97,
+                  105,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "appraiserThree.wallet",
+                "account": "appraiser"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "proposeLease",
       "discriminator": [
         244,
@@ -1558,6 +2111,99 @@ export type Relstate = {
             "array": [
               "u8",
               2
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "registerAppraiser",
+      "docs": [
+        "Admin: adds an appraisal company to the registry, active from the start."
+      ],
+      "discriminator": [
+        8,
+        233,
+        17,
+        190,
+        135,
+        234,
+        220,
+        0
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "appraiser",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  112,
+                  112,
+                  114,
+                  97,
+                  105,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "wallet"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "wallet",
+          "type": "pubkey"
+        },
+        {
+          "name": "fee",
+          "type": "u64"
+        },
+        {
+          "name": "nameHash",
+          "type": {
+            "array": [
+              "u8",
+              32
             ]
           }
         }
@@ -1823,6 +2469,158 @@ export type Relstate = {
       ]
     },
     {
+      "name": "setAppraiserActive",
+      "docs": [
+        "Admin: suspends or restores a registry entry."
+      ],
+      "discriminator": [
+        84,
+        126,
+        127,
+        80,
+        250,
+        7,
+        115,
+        253
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "appraiser",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  112,
+                  112,
+                  114,
+                  97,
+                  105,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "appraiser.wallet",
+                "account": "appraiser"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "active",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "setDefaultAppraiser",
+      "docs": [
+        "Admin: flags the appraiser bound when the two sides fail to agree in time."
+      ],
+      "discriminator": [
+        230,
+        111,
+        88,
+        73,
+        94,
+        178,
+        73,
+        78
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "appraiser",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  112,
+                  112,
+                  114,
+                  97,
+                  105,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "appraiser.wallet",
+                "account": "appraiser"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "isDefault",
+          "type": "bool"
+        }
+      ]
+    },
+    {
       "name": "setIssuer",
       "discriminator": [
         122,
@@ -1998,6 +2796,7 @@ export type Relstate = {
       "accounts": [
         {
           "name": "tenant",
+          "writable": true,
           "signer": true,
           "relations": [
             "lease"
@@ -2033,6 +2832,38 @@ export type Relstate = {
                 "kind": "account",
                 "path": "lease.leaseId",
                 "account": "lease"
+              }
+            ]
+          },
+          "relations": [
+            "dispute"
+          ]
+        },
+        {
+          "name": "dispute",
+          "docs": [
+            "Required in `Mediation`, where it is closed and its rent returned to the tenant who paid",
+            "for it; must be absent in `Disputed`."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  105,
+                  115,
+                  112,
+                  117,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease"
               }
             ]
           }
@@ -2131,6 +2962,225 @@ export type Relstate = {
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "submitVerdict",
+      "docs": [
+        "The bound appraiser decides the deduction; the deposit is split and the lease closes."
+      ],
+      "discriminator": [
+        138,
+        102,
+        56,
+        22,
+        229,
+        130,
+        105,
+        118
+      ],
+      "accounts": [
+        {
+          "name": "appraiser",
+          "signer": true
+        },
+        {
+          "name": "appraiserRecord",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  112,
+                  112,
+                  114,
+                  97,
+                  105,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "appraiser"
+              }
+            ]
+          }
+        },
+        {
+          "name": "lease",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  97,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.landlord",
+                "account": "lease"
+              },
+              {
+                "kind": "account",
+                "path": "lease.leaseId",
+                "account": "lease"
+              }
+            ]
+          },
+          "relations": [
+            "dispute"
+          ]
+        },
+        {
+          "name": "dispute",
+          "docs": [
+            "Closed here, with the rent going back to the tenant who paid for it in",
+            "`escalate_to_mediation`. Closing it is also what makes \"one verdict per dispute\" structural",
+            "rather than a flag: there is no account left to submit against."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  105,
+                  115,
+                  112,
+                  117,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "lease"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "tenant",
+          "docs": [
+            "The rent destination for the closed `Dispute`, pinned to the lease's tenant so the",
+            "appraiser cannot redirect it. Not a signer: the tenant does not have to be present for",
+            "their own refund."
+          ],
+          "writable": true
+        },
+        {
+          "name": "tenantAta",
+          "writable": true
+        },
+        {
+          "name": "landlordAta",
+          "writable": true
+        },
+        {
+          "name": "appraiserAta",
+          "docs": [
+            "Where the fee goes. Pinned to the signing appraiser, so a verdict cannot pay the fee",
+            "anywhere else."
+          ],
+          "writable": true
+        },
+        {
+          "name": "tenantProfile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.tenant",
+                "account": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "landlordProfile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "lease.landlord",
+                "account": "lease"
+              }
+            ]
+          }
+        },
+        {
+          "name": "tokenProgram"
+        }
+      ],
+      "args": [
+        {
+          "name": "deduction",
+          "type": "u64"
+        }
+      ]
     }
   ],
   "accounts": [
@@ -2145,6 +3195,19 @@ export type Relstate = {
         126,
         203,
         30
+      ]
+    },
+    {
+      "name": "appraiser",
+      "discriminator": [
+        148,
+        192,
+        205,
+        57,
+        225,
+        121,
+        241,
+        196
       ]
     },
     {
@@ -2171,6 +3234,19 @@ export type Relstate = {
         250,
         204,
         130
+      ]
+    },
+    {
+      "name": "dispute",
+      "discriminator": [
+        36,
+        49,
+        241,
+        67,
+        40,
+        36,
+        241,
+        74
       ]
     },
     {
@@ -2214,6 +3290,45 @@ export type Relstate = {
     }
   ],
   "events": [
+    {
+      "name": "appraiserBound",
+      "discriminator": [
+        207,
+        59,
+        93,
+        1,
+        155,
+        194,
+        142,
+        242
+      ]
+    },
+    {
+      "name": "appraiserPicked",
+      "discriminator": [
+        86,
+        245,
+        240,
+        153,
+        138,
+        216,
+        217,
+        244
+      ]
+    },
+    {
+      "name": "appraisersProposed",
+      "discriminator": [
+        111,
+        201,
+        46,
+        210,
+        103,
+        133,
+        64,
+        75
+      ]
+    },
     {
       "name": "attestationRevoked",
       "discriminator": [
@@ -2290,6 +3405,45 @@ export type Relstate = {
         133,
         104,
         214
+      ]
+    },
+    {
+      "name": "mediationExpired",
+      "discriminator": [
+        184,
+        31,
+        219,
+        126,
+        84,
+        141,
+        84,
+        134
+      ]
+    },
+    {
+      "name": "mediationOpened",
+      "discriminator": [
+        154,
+        44,
+        69,
+        30,
+        228,
+        255,
+        77,
+        142
+      ]
+    },
+    {
+      "name": "mediationVerdict",
+      "discriminator": [
+        17,
+        102,
+        206,
+        121,
+        57,
+        255,
+        102,
+        224
       ]
     },
     {
@@ -2479,8 +3633,8 @@ export type Relstate = {
     },
     {
       "code": 6034,
-      "name": "disputeAlreadyRejected",
-      "msg": "The tenant already rejected a deduction on this lease, so the deposit returns in full"
+      "name": "disputeRoundsExhausted",
+      "msg": "No dispute rounds are left on this lease, so the deposit returns in full"
     },
     {
       "code": 6035,
@@ -2496,6 +3650,86 @@ export type Relstate = {
       "code": 6037,
       "name": "termTooLong",
       "msg": "The lease term (periods x period length) is too long"
+    },
+    {
+      "code": 6038,
+      "name": "notMediationParty",
+      "msg": "Only the landlord or the tenant of this lease can do that"
+    },
+    {
+      "code": 6039,
+      "name": "wrongDisputeRound",
+      "msg": "Wrong dispute round for this instruction: reject with abandon_dispute until the last round, then with escalate_to_mediation"
+    },
+    {
+      "code": 6040,
+      "name": "appraiserInactive",
+      "msg": "That appraiser's registry entry is not active"
+    },
+    {
+      "code": 6041,
+      "name": "appraiserNotDefault",
+      "msg": "That appraiser is not the registry's default"
+    },
+    {
+      "code": 6042,
+      "name": "appraiserAlreadyBound",
+      "msg": "An appraiser is already bound to this dispute"
+    },
+    {
+      "code": 6043,
+      "name": "appraiserNotBound",
+      "msg": "No appraiser is bound to this dispute yet"
+    },
+    {
+      "code": 6044,
+      "name": "notBoundAppraiser",
+      "msg": "Only the appraiser bound to this dispute can submit the verdict"
+    },
+    {
+      "code": 6045,
+      "name": "candidatesAlreadyProposed",
+      "msg": "This side has already proposed its appraisers"
+    },
+    {
+      "code": 6046,
+      "name": "duplicateCandidate",
+      "msg": "The same appraiser was proposed twice"
+    },
+    {
+      "code": 6047,
+      "name": "candidateNotProposed",
+      "msg": "That appraiser was not proposed by either side"
+    },
+    {
+      "code": 6048,
+      "name": "selectionWindowOpen",
+      "msg": "The sides still have time to agree on an appraiser"
+    },
+    {
+      "code": 6049,
+      "name": "verdictWindowOpen",
+      "msg": "The appraiser still has time to submit a verdict"
+    },
+    {
+      "code": 6050,
+      "name": "verdictWindowClosed",
+      "msg": "The window for the appraiser's verdict has passed"
+    },
+    {
+      "code": 6051,
+      "name": "invalidAppraiser",
+      "msg": "An appraiser's key must not be the default (all-zero) pubkey"
+    },
+    {
+      "code": 6052,
+      "name": "disputeAccountRequired",
+      "msg": "Settling a lease in mediation needs its dispute account"
+    },
+    {
+      "code": 6053,
+      "name": "unexpectedDisputeAccount",
+      "msg": "This lease has no dispute account to pass"
     }
   ],
   "types": [
@@ -2515,6 +3749,150 @@ export type Relstate = {
           {
             "name": "tenant",
             "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "appraiser",
+      "docs": [
+        "One appraisal company in the registry, at seeds `[APPRAISER_SEED, wallet]`. Only the Config",
+        "admin writes these.",
+        "",
+        "The registry is the whole reason a landlord cannot nominate their own sockpuppet: a key with no",
+        "account here, or whose account is not `active`, cannot be proposed, picked or bound, because",
+        "every one of those instructions takes this account and Anchor's seed check proves which key it",
+        "belongs to."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "wallet",
+            "docs": [
+              "The key that signs verdicts, and the account's own seed."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "active",
+            "docs": [
+              "Suspended entries keep their record but cannot be proposed, picked, bound or submit. The",
+              "admin suspending an appraiser mid-dispute does not strand the deposit: `expire_mediation`",
+              "and `settle_dispute` are still open."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "isDefault",
+            "docs": [
+              "Eligible for `bind_default_appraiser`, the deadlock fallback. The program cannot enforce",
+              "that only one entry carries this — there is no on-chain index to iterate — so keeping it",
+              "unique is the admin's job. Every flagged entry is still admin-chosen and active, so the",
+              "worst case is an unexpected but legitimate appraiser."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "fee",
+            "docs": [
+              "Base units of the lease mint, capped per lease at `deposit / APPRAISER_FEE_CAP_DIVISOR`.",
+              "Mint-agnostic base units against a per-lease mint is a known wart",
+              "(docs/contracts/dispute-mediation.md §3); the cap bounds it either way."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "nameHash",
+            "docs": [
+              "`sha256(company name)`. Keeps strings and the directory off chain while still committing to",
+              "a name anyone can verify against `/api/appraisers`. Nothing on chain reads it."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "appraiserBound",
+      "docs": [
+        "An appraiser is bound and the verdict window has started."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lease",
+            "type": "pubkey"
+          },
+          {
+            "name": "appraiser",
+            "type": "pubkey"
+          },
+          {
+            "name": "byDefault",
+            "docs": [
+              "True when the selection window ran out and the registry default was bound instead of the",
+              "two sides agreeing."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "verdictDeadline",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "appraiserPicked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lease",
+            "type": "pubkey"
+          },
+          {
+            "name": "party",
+            "type": "pubkey"
+          },
+          {
+            "name": "pick",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "appraisersProposed",
+      "docs": [
+        "One side nominated its candidates. The keys are on the `Dispute` account; the event carries",
+        "only who acted and how many, so the app knows to refetch."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lease",
+            "type": "pubkey"
+          },
+          {
+            "name": "party",
+            "type": "pubkey"
+          },
+          {
+            "name": "count",
+            "type": "u8"
           }
         ]
       }
@@ -2674,6 +4052,14 @@ export type Relstate = {
           {
             "name": "claimDeadline",
             "type": "i64"
+          },
+          {
+            "name": "disputeRounds",
+            "docs": [
+              "How many rejections this lease has now had. At `MAX_DISPUTE_ROUNDS` the landlord can no",
+              "longer propose a deduction, which is why this is on the event the app listens to."
+            ],
+            "type": "u8"
           }
         ]
       }
@@ -2700,6 +4086,98 @@ export type Relstate = {
               "When the tenant's window to answer runs out."
             ],
             "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "dispute",
+      "docs": [
+        "Everything mediation-specific, at seeds `[DISPUTE_SEED, lease]`. Created by",
+        "`escalate_to_mediation` and closed on every exit, with the rent going back to the tenant who",
+        "paid for it, so it exists exactly while the lease is in `Mediation`.",
+        "",
+        "`Lease` gains nothing for mediation: the audited, money-bearing account keeps its 218-byte",
+        "layout and the new surface is all here."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lease",
+            "docs": [
+              "Redundant with the seeds; kept so every instruction can assert `has_one = lease`."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "landlordCandidates",
+            "docs": [
+              "Only `[..landlord_count]` is meaningful; the rest is zero padding."
+            ],
+            "type": {
+              "array": [
+                "pubkey",
+                3
+              ]
+            }
+          },
+          {
+            "name": "tenantCandidates",
+            "type": {
+              "array": [
+                "pubkey",
+                3
+              ]
+            }
+          },
+          {
+            "name": "landlordCount",
+            "type": "u8"
+          },
+          {
+            "name": "tenantCount",
+            "type": "u8"
+          },
+          {
+            "name": "landlordPick",
+            "docs": [
+              "All-zero until that side picks. A side may change its pick while nothing is bound."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "tenantPick",
+            "type": "pubkey"
+          },
+          {
+            "name": "appraiser",
+            "docs": [
+              "The bound appraiser, all-zero until both picks match or the default is bound. Cannot",
+              "collide with \"unset\": `register_appraiser` refuses the all-zero key."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "selectionDeadline",
+            "docs": [
+              "After this, anyone may `bind_default_appraiser`. Proposing and picking stay open past it,",
+              "so the two sides can still converge on their own until something is actually bound."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "verdictDeadline",
+            "docs": [
+              "After this, either party may `expire_mediation`. Set provisionally at escalation so a",
+              "mediation nobody takes part in still expires, then re-based on the binding, because that is",
+              "the moment the appraiser acquires the obligation."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
           }
         ]
       }
@@ -2799,8 +4277,11 @@ export type Relstate = {
           {
             "name": "disputedAt",
             "docs": [
-              "When the dispute opened; 0 when the lease is not disputed. `DISPUTE_WINDOW_SECS` runs from",
-              "here."
+              "When the current dispute **or** mediation started; 0 when the lease is neither.",
+              "`DISPUTE_WINDOW_SECS` runs from here while `Disputed`, and `escalate_to_mediation` re-stamps",
+              "it so the same field times the `Mediation` stretch. Deliberately the only copy of that",
+              "timestamp: `Dispute` does not repeat it, because the claim-pause arithmetic below must have",
+              "exactly one source of truth."
             ],
             "type": "i64"
           },
@@ -2814,13 +4295,21 @@ export type Relstate = {
             "type": "i64"
           },
           {
-            "name": "disputeRejected",
+            "name": "disputeRounds",
             "docs": [
-              "The tenant rejected a proposed deduction. It voids that proposal and bars another one:",
-              "without it a landlord could re-dispute every time the claim came due and keep the deposit",
-              "out of reach forever. `release_deposit(0)` still works, so a full return is always open."
+              "How many proposed deductions the tenant has rejected, capped at `MAX_DISPUTE_ROUNDS`. Each",
+              "rejection voids that proposal; the landlord may propose again while rounds are left, and",
+              "the last rejection escalates to `Status::Mediation` instead. At the cap `release_deposit`",
+              "refuses any deduction, which is what stops a landlord re-disputing every time the resumed",
+              "claim clock comes due and keeping the deposit out of reach forever. `release_deposit(0)`",
+              "works throughout, so a full return is always open.",
+              "",
+              "**This byte was `dispute_rejected: bool`** in the deployed program, at the same offset",
+              "(217) and with the same encoding for 0 and 1, so an existing lease upgrades in place and",
+              "reads as 0 or 1 rounds. The upgrade is one-way: a lease that reaches 2 stores `0x02`, which",
+              "the old program would reject as an invalid bool. docs/contracts/dispute-mediation.md §8."
             ],
-            "type": "bool"
+            "type": "u8"
           }
         ]
       }
@@ -2906,6 +4395,83 @@ export type Relstate = {
           {
             "name": "photo",
             "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "mediationExpired",
+      "docs": [
+        "Nobody submitted a verdict in time. The lease is `Active` again and the deposit comes back to",
+        "the tenant through the resumed claim clock."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lease",
+            "type": "pubkey"
+          },
+          {
+            "name": "claimDeadline",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "mediationOpened",
+      "docs": [
+        "The tenant used the last dispute round: the number is now an appraiser's to decide."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lease",
+            "type": "pubkey"
+          },
+          {
+            "name": "dispute",
+            "type": "pubkey"
+          },
+          {
+            "name": "selectionDeadline",
+            "type": "i64"
+          },
+          {
+            "name": "verdictDeadline",
+            "docs": [
+              "Provisional — binding an appraiser re-bases it on the binding."
+            ],
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "mediationVerdict",
+      "docs": [
+        "The appraiser decided. `LeaseClosed` is emitted alongside it by the shared payout path."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lease",
+            "type": "pubkey"
+          },
+          {
+            "name": "appraiser",
+            "type": "pubkey"
+          },
+          {
+            "name": "deduction",
+            "type": "u64"
+          },
+          {
+            "name": "feePaid",
+            "type": "u64"
           }
         ]
       }
@@ -3019,6 +4585,9 @@ export type Relstate = {
           },
           {
             "name": "disputed"
+          },
+          {
+            "name": "mediation"
           }
         ]
       }
@@ -3029,6 +4598,16 @@ export type Relstate = {
       "name": "applicationSeed",
       "type": "bytes",
       "value": "[97, 112, 112, 108, 105, 99, 97, 116, 105, 111, 110]"
+    },
+    {
+      "name": "appraiserFeeCapDivisor",
+      "type": "u64",
+      "value": "10"
+    },
+    {
+      "name": "appraiserSeed",
+      "type": "bytes",
+      "value": "[97, 112, 112, 114, 97, 105, 115, 101, 114]"
     },
     {
       "name": "attestationSeed",
@@ -3049,6 +4628,11 @@ export type Relstate = {
       "name": "configSeed",
       "type": "bytes",
       "value": "[99, 111, 110, 102, 105, 103]"
+    },
+    {
+      "name": "disputeSeed",
+      "type": "bytes",
+      "value": "[100, 105, 115, 112, 117, 116, 101]"
     },
     {
       "name": "disputeWindowSecs",
@@ -3081,6 +4665,11 @@ export type Relstate = {
       "value": "[108, 105, 115, 116, 105, 110, 103]"
     },
     {
+      "name": "maxDisputeRounds",
+      "type": "u8",
+      "value": "2"
+    },
+    {
       "name": "profileSeed",
       "type": "bytes",
       "value": "[112, 114, 111, 102, 105, 108, 101]"
@@ -3091,9 +4680,19 @@ export type Relstate = {
       "value": "150"
     },
     {
+      "name": "selectionWindowSecs",
+      "type": "i64",
+      "value": "30"
+    },
+    {
       "name": "vaultSeed",
       "type": "bytes",
       "value": "[118, 97, 117, 108, 116]"
+    },
+    {
+      "name": "verdictWindowSecs",
+      "type": "i64",
+      "value": "60"
     }
   ]
 };
