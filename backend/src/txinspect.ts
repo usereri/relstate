@@ -13,6 +13,8 @@ import {
   type Transaction,
   type V0CompiledTransactionMessage,
 } from "@solana/kit";
+import { instructionDiscriminator } from "./anchor.ts";
+import { ADMIN_ONLY_RELSTATE_INSTRUCTIONS, RELSTATE_PROGRAM, SPONSORABLE_RELSTATE_INSTRUCTIONS } from "./contracts.ts";
 
 /**
  * The message versions the sponsor inspects. Version 1 (SIMD-0385) encodes its
@@ -216,6 +218,43 @@ export function assertProgramsAllowed(tx: InspectedTransaction, allowlist: reado
     }
   }
 }
+
+/**
+ * Within the relstate program, only the instructions a lease party or a bound appraiser signs for
+ * themselves may be co-signed ({@link SPONSORABLE_RELSTATE_INSTRUCTIONS}).
+ *
+ * `assertProgramsAllowed` cannot express this: it reasons about program ids, and relstate's id
+ * covers the admin instructions too. The check is on the 8-byte Anchor prefix, which is the only
+ * part of the data that selects a handler; an admin instruction is named in the refusal, because
+ * "init_config is not sponsored" is a far more useful answer than an unknown discriminator.
+ */
+export function assertRelstateInstructionsAllowed(
+  tx: InspectedTransaction,
+  program: Address = RELSTATE_PROGRAM as Address,
+  sponsorable: readonly string[] = SPONSORABLE_RELSTATE_INSTRUCTIONS,
+  adminOnly: readonly string[] = ADMIN_ONLY_RELSTATE_INSTRUCTIONS,
+): void {
+  const allowed = new Map(sponsorable.map((name) => [hexPrefix(instructionDiscriminator(name)), name]));
+  const refused = new Map(adminOnly.map((name) => [hexPrefix(instructionDiscriminator(name)), name]));
+  for (const ix of tx.instructions) {
+    if (ix.programAddress !== program) continue;
+    // Shorter than 8 bytes selects no handler at all, so it is malformed rather than unknown.
+    if (ix.data.length < 8) {
+      reject("malformed-program-instruction", `instruction ${ix.index} on ${program} carries ${ix.data.length} bytes, too few for an instruction prefix`);
+    }
+    const prefix = hexPrefix(ix.data.subarray(0, 8));
+    if (allowed.has(prefix)) continue;
+    const admin = refused.get(prefix);
+    reject(
+      "instruction-not-allowed",
+      admin === undefined
+        ? `instruction ${ix.index} calls an unknown relstate instruction (${prefix}); the sponsor co-signs only ${sponsorable.length} known ones`
+        : `instruction ${ix.index} calls ${admin}, which only the program's admin or issuer signs; the sponsor does not co-sign it`,
+    );
+  }
+}
+
+const hexPrefix = (bytes: Uint8Array): string => Buffer.from(bytes).toString("hex");
 
 /**
  * The central sponsor invariant: **the sponsor key may appear only as the

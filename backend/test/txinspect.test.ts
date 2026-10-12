@@ -1,8 +1,10 @@
 import "./noenv.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { AccountRole, generateKeyPairSigner, type Address } from "@solana/kit";
+import { AccountRole, generateKeyPairSigner, type Address, type Instruction, type TransactionSigner } from "@solana/kit";
 import { getTransferSolInstruction } from "@solana-program/system";
+import { instructionDiscriminator } from "../src/anchor.ts";
+import { ADMIN_ONLY_RELSTATE_INSTRUCTIONS, RELSTATE_PROGRAM, SPONSORABLE_RELSTATE_INSTRUCTIONS } from "../src/contracts.ts";
 import {
   COMPUTE_BUDGET_PROGRAM,
   RejectedTransaction,
@@ -10,12 +12,14 @@ import {
   assertOnlySponsorSignatureMissing,
   assertPresentSignaturesValid,
   assertProgramsAllowed,
+  assertRelstateInstructionsAllowed,
   assertSponsorNotUsedByInstructions,
   inspectTransaction,
   readComputeBudget,
   worstCaseFeeLamports,
   type SponsorPolicy,
 } from "../src/txinspect.ts";
+import { requireIdl } from "./idlfixtures.ts";
 import { TOKEN_PROGRAM, buildTx, wireWithFeePayerAsProgram, corruptSignature, ixSignedBy, ixTouching, twoKeys } from "./txfixtures.ts";
 
 function codeOf(fn: () => unknown): Promise<string | undefined> {
@@ -116,6 +120,73 @@ describe("assertProgramsAllowed", () => {
     const other = (await generateKeyPairSigner()).address;
     const tx = inspectTransaction(await buildTx({ feePayer: sponsor.address, instructions: [ixSignedBy(user, other)] }));
     assert.equal(await codeOf(() => assertProgramsAllowed(tx, [TOKEN_PROGRAM])), "program-not-allowed");
+  });
+});
+
+describe("assertRelstateInstructionsAllowed", () => {
+  const relstateIx = (signer: TransactionSigner, data: Uint8Array) =>
+    ({
+      programAddress: RELSTATE_PROGRAM as Address,
+      accounts: [{ address: signer.address, role: AccountRole.WRITABLE_SIGNER, signer }],
+      data,
+    }) as unknown as Instruction;
+
+  const check = async (data: Uint8Array) => {
+    const { sponsor, user } = await twoKeys();
+    const tx = inspectTransaction(await buildTx({ feePayer: sponsor.address, instructions: [relstateIx(user, data)] }));
+    return codeOf(() => assertRelstateInstructionsAllowed(tx));
+  };
+
+  // The classification is the security claim, so it is checked against the program's own IDL
+  // rather than against itself: an instruction the program grew and nobody classified fails here.
+  it("classifies every instruction in the program's IDL exactly once", () => {
+    const names = requireIdl().instructions.map((i) => i.name).sort();
+    const classified = [...SPONSORABLE_RELSTATE_INSTRUCTIONS, ...ADMIN_ONLY_RELSTATE_INSTRUCTIONS].sort();
+    assert.deepEqual(
+      classified,
+      names,
+      "SPONSORABLE_RELSTATE_INSTRUCTIONS + ADMIN_ONLY_RELSTATE_INSTRUCTIONS in backend/src/contracts.ts must name every relstate instruction, and only those",
+    );
+    assert.equal(new Set(classified).size, classified.length, "an instruction appears in both lists");
+  });
+
+  it("accepts the party instructions, including the five new mediation ones", async () => {
+    for (const name of ["release_deposit", "abandon_dispute", "escalate_to_mediation", "propose_appraisers", "pick_appraiser", "bind_default_appraiser", "submit_verdict", "expire_mediation", "settle_dispute"]) {
+      assert.equal(await check(instructionDiscriminator(name)), undefined, `${name} should be sponsorable`);
+    }
+  });
+
+  it("accepts the discriminator followed by arguments", async () => {
+    const withArgs = new Uint8Array(16);
+    withArgs.set(instructionDiscriminator("submit_verdict"), 0);
+    new DataView(withArgs.buffer).setBigUint64(8, 250_000n, true);
+    assert.equal(await check(withArgs), undefined);
+  });
+
+  it("refuses an admin instruction and names it", async () => {
+    const { sponsor, user } = await twoKeys();
+    const tx = inspectTransaction(await buildTx({ feePayer: sponsor.address, instructions: [relstateIx(user, instructionDiscriminator("register_appraiser"))] }));
+    assert.throws(
+      () => assertRelstateInstructionsAllowed(tx),
+      (e: unknown) => e instanceof RejectedTransaction && e.code === "instruction-not-allowed" && /register_appraiser/.test(e.message),
+    );
+    for (const name of ADMIN_ONLY_RELSTATE_INSTRUCTIONS) {
+      assert.equal(await check(instructionDiscriminator(name)), "instruction-not-allowed", `${name} must not be sponsorable`);
+    }
+  });
+
+  it("refuses an unknown discriminator", async () => {
+    assert.equal(await check(new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9])), "instruction-not-allowed");
+  });
+
+  it("refuses data too short to carry a prefix", async () => {
+    assert.equal(await check(new Uint8Array([1, 2, 3])), "malformed-program-instruction");
+  });
+
+  it("ignores instructions on other programs: that is assertProgramsAllowed's job", async () => {
+    const { sponsor, user } = await twoKeys();
+    const tx = inspectTransaction(await buildTx({ feePayer: sponsor.address, instructions: [ixSignedBy(user, TOKEN_PROGRAM, [9, 9, 9])] }));
+    assert.doesNotThrow(() => assertRelstateInstructionsAllowed(tx));
   });
 });
 

@@ -8,7 +8,7 @@
 //   1. session token      — the call is attributable to one wallet
 //   2. size + instruction count
 //   3. no address lookup tables
-//   4. program allowlist
+//   4. program allowlist, and within our own program the instruction allowlist
 //   5. fee payer appears only as the message fee payer (never in an instruction)
 //   6. every other required signature is present and cryptographically valid
 //   7. compute-unit and priority-fee caps, worst-case fee bound
@@ -33,6 +33,7 @@ import {
   assertOnlySponsorSignatureMissing,
   assertPresentSignaturesValid,
   assertProgramsAllowed,
+  assertRelstateInstructionsAllowed,
   assertSponsorNotUsedByInstructions,
   inspectTransaction,
   readComputeBudget,
@@ -100,6 +101,7 @@ export function createSponsorService(deps: SponsorDeps) {
     });
 
     assertProgramsAllowed(tx, deps.policy.allowlist);
+    assertRelstateInstructionsAllowed(tx);
     assertSponsorNotUsedByInstructions(tx, deps.feePayer.address);
     assertOnlySponsorSignatureMissing(tx, deps.feePayer.address);
     await assertPresentSignaturesValid(tx);

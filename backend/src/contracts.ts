@@ -61,6 +61,64 @@ export const SPONSOR_ALLOWLIST = [
 ] as const;
 
 /**
+ * Relstate instructions the sponsor will co-sign: every one a lease party or a bound appraiser
+ * signs for themselves.
+ *
+ * The program allowlist above is per PROGRAM, which for relstate is too coarse — it admits
+ * `init_config`, `set_admin` and `register_appraiser` as readily as `pay_rent`. Those are signed by
+ * the Config admin or the attestation issuer, which are backend keys used by
+ * `scripts/*` and `providers/kyc-chain.ts` and never by a browser, so a *sponsored* admin
+ * instruction is either a mistake or an attempt. It would fail on chain either way (the program
+ * checks the admin), but refusing it here keeps the fee payer's blast radius to what the app
+ * actually does, and names the reason instead of returning a simulation failure.
+ *
+ * Snake case, as the program declares them: the wire form is
+ * `sha256("global:<name>")[0..8]`, which `txinspect.ts` computes.
+ * `test/txinspect.test.ts` pins this list plus {@link ADMIN_ONLY_RELSTATE_INSTRUCTIONS} against
+ * every instruction in `app/idl/relstate.json`, so a new one in the program fails there until it is
+ * classified as one or the other.
+ */
+export const SPONSORABLE_RELSTATE_INSTRUCTIONS = [
+  "abandon_dispute",
+  "accept_deduction",
+  "apply",
+  "bind_default_appraiser",
+  "claim_deposit",
+  "close_application",
+  "close_listing",
+  "create_listing",
+  "escalate_to_mediation",
+  "expire_mediation",
+  "finalize_deduction",
+  "fund_deposit",
+  "mark_default",
+  "pay_rent",
+  "pick_appraiser",
+  "propose_appraisers",
+  "propose_lease",
+  "release_deposit",
+  "settle_dispute",
+  "submit_verdict",
+] as const;
+
+/**
+ * Relstate instructions only the Config admin or the attestation issuer signs. Never sponsored; the
+ * list exists so that an unclassified instruction cannot slip into the sponsorable set by default.
+ */
+export const ADMIN_ONLY_RELSTATE_INSTRUCTIONS = [
+  "attest",
+  "init_config",
+  "register_appraiser",
+  "revoke",
+  "set_admin",
+  "set_appraiser_active",
+  "set_default_appraiser",
+  "set_issuer",
+  "set_mint_allowed",
+  "set_require_kyc",
+] as const;
+
+/**
  * Every sponsor call needs a session token, so the spend is attributable to one
  * wallet and the per-wallet caps mean something. `POST /api/auth/mock` issues
  * one in mock mode; the embedded wallet flow issues it in Phase 2.
