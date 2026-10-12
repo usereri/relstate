@@ -6,6 +6,7 @@
 import * as anchor from "@anchor-lang/core";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2";
+import { CLUSTER } from "./config";
 
 const { Keypair, PublicKey } = anchor.web3;
 type PubKey = anchor.web3.PublicKey;
@@ -72,15 +73,103 @@ export interface AdapterWallet {
   signTransaction: <T extends AnyTransaction>(tx: T) => Promise<T>;
   signAllTransactions: <T extends AnyTransaction>(txs: T[]) => Promise<T[]>;
   signMessage?: (message: Uint8Array) => Promise<Uint8Array>;
+  /**
+   * The Wallet Standard wallet behind the adapter, when the connected wallet is a standard one
+   * (every current extension is). Needed only to name the cluster — see {@link chainAwareSigner}.
+   */
+  standard?: StandardWallet | null;
 }
 
-/** A browser-extension wallet as a `WalletProvider`. */
-export function adapterWallet(w: AdapterWallet): WalletProvider {
+// ---- telling the wallet which cluster this is -----------------------------------------------
+//
+// A wallet simulates what it is asked to sign and shows the user the balance changes it predicts.
+// Which cluster it simulates against comes from the `chain` field of the Wallet Standard request —
+// and `StandardWalletAdapter.signTransaction` does not send one: it passes `{ account,
+// transaction }` and nothing else (the field is optional in the standard, and only the adapter's
+// `sendTransaction`, which this app cannot use because the sponsor has to co-sign, fills it in from
+// the connection's endpoint).
+//
+// With no cluster named, the wallet falls back to its own default. On mainnet none of this exists —
+// not the program, not the mint, not one PDA — so the simulation fails and the wallet says "This
+// transaction reverted during simulation. Funds may be lost if submitted." over a transaction that
+// then lands perfectly well on the cluster the app and the sponsor actually use.
+//
+// So the request is made against the wallet's standard interface directly, with the cluster this
+// app is configured for. Everything else is the adapter's behaviour, byte for byte.
+
+const SOLANA_SIGN_TRANSACTION = "solana:signTransaction";
+
+/** The slice of a Wallet Standard wallet this needs. Structural, so no new dependency. */
+export interface StandardAccount {
+  address: string;
+  features: readonly string[];
+  chains: readonly string[];
+}
+export interface StandardWallet {
+  accounts: readonly StandardAccount[];
+  features: Record<string, unknown>;
+}
+type SignTransactionFeature = {
+  signTransaction: (
+    ...inputs: { account: StandardAccount; transaction: Uint8Array; chain?: string }[]
+  ) => Promise<readonly { signedTransaction: Uint8Array }[]>;
+};
+
+/**
+ * The connected account, if this wallet can sign for it on this cluster.
+ *
+ * Null for every reason a standard wallet might not be usable here: a wallet that offers no
+ * `solana:signTransaction`, an account that is not the connected key, or an account that does not
+ * claim the cluster — a wallet that has never heard of `solana:localnet` would refuse the request
+ * outright, and a refusal is worse than the warning this exists to remove. Each of those falls
+ * back to the adapter's own chain-less call, which is exactly today's behaviour.
+ */
+export function chainAwareAccount(wallet: StandardWallet | null | undefined, publicKey: PubKey, chain: string): StandardAccount | null {
+  const feature = wallet?.features?.[SOLANA_SIGN_TRANSACTION] as SignTransactionFeature | undefined;
+  if (!feature || typeof feature.signTransaction !== "function") return null;
+  const address = publicKey.toBase58();
+  const account = wallet!.accounts.find((a) => a.address === address);
+  if (!account || !account.features.includes(SOLANA_SIGN_TRANSACTION) || !account.chains.includes(chain)) return null;
+  return account;
+}
+
+/**
+ * Signing that names the cluster. The wire handling is the adapter's: a versioned transaction goes
+ * over as-is, a legacy one without requiring the signatures it is still missing (the sponsor's fee-
+ * payer slot is empty by design), and what comes back is deserialized into whichever it was.
+ */
+function chainAwareSigner(wallet: StandardWallet, account: StandardAccount, chain: string) {
+  const feature = wallet.features[SOLANA_SIGN_TRANSACTION] as SignTransactionFeature;
+  const wire = (tx: AnyTransaction): Uint8Array =>
+    "version" in tx ? tx.serialize() : new Uint8Array(tx.serialize({ requireAllSignatures: false, verifySignatures: false }));
+  const back = <T extends AnyTransaction>(tx: T, bytes: Uint8Array): T =>
+    ("version" in tx ? anchor.web3.VersionedTransaction.deserialize(bytes) : anchor.web3.Transaction.from(bytes)) as T;
+  return {
+    signTransaction: async <T extends AnyTransaction>(tx: T): Promise<T> => {
+      const [out] = await feature.signTransaction({ account, chain, transaction: wire(tx) });
+      return back(tx, out!.signedTransaction);
+    },
+    signAllTransactions: async <T extends AnyTransaction>(txs: T[]): Promise<T[]> => {
+      const out = await feature.signTransaction(...txs.map((tx) => ({ account, chain, transaction: wire(tx) })));
+      return txs.map((tx, i) => back(tx, out[i]!.signedTransaction));
+    },
+  };
+}
+
+/**
+ * A browser-extension wallet as a `WalletProvider`.
+ *
+ * `chain` is the cluster to name in the signing request; it defaults to the one the app's own RPC
+ * points at. A wallet that cannot be reached through its standard interface keeps the adapter's
+ * signers unchanged.
+ */
+export function adapterWallet(w: AdapterWallet, chain = CLUSTER): WalletProvider {
+  const account = chainAwareAccount(w.standard, w.publicKey, chain);
+  const signers = account ? chainAwareSigner(w.standard!, account, chain) : { signTransaction: w.signTransaction, signAllTransactions: w.signAllTransactions };
   return {
     kind: "adapter",
     publicKey: w.publicKey,
-    signTransaction: w.signTransaction,
-    signAllTransactions: w.signAllTransactions,
+    ...signers,
     ...(w.signMessage ? keyDerivation(w.signMessage) : {}),
   };
 }

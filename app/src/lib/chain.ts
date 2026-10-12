@@ -11,12 +11,12 @@ import { MAX_CANDIDATES, setKey } from "./mediation";
 import { jsonSafe } from "./utils";
 import { API, SPONSORED, postSponsored, sponsorFeePayer } from "./sponsor";
 import { asWalletProvider, localKeypair, localWallet, readOnlyWallet } from "./wallet";
-import type { AdapterWallet, Role, WalletProvider } from "./wallet";
+import type { AdapterWallet, Role, StandardWallet, WalletProvider } from "./wallet";
 
 const { Connection, PublicKey, SYSVAR_CLOCK_PUBKEY } = anchor.web3;
 type PubKey = anchor.web3.PublicKey;
 
-export type { Role, WalletProvider };
+export type { Role, StandardWallet, WalletProvider };
 export type Status = "proposed" | "active" | "disputed" | "mediation" | "closed" | "defaulted";
 
 export interface ListingView {

@@ -50,14 +50,18 @@ export const useLocalWallet = () => useContext(LocalContext);
 export function useSigner(): chain.Me | null {
   const local = useContext(LocalContext);
   const embedded = useEmbeddedWallet();
-  const { publicKey, signTransaction, signAllTransactions, signMessage } = useWallet();
+  const { publicKey, signTransaction, signAllTransactions, signMessage, wallet } = useWallet();
+  // The Wallet Standard wallet behind the adapter, so the signing request can name the cluster the
+  // app is on and the extension simulates against the right one (lib/wallet.ts). Every current
+  // extension is a standard wallet; anything else leaves this null and signs as before.
+  const standard = wallet?.adapter && "wallet" in wallet.adapter ? (wallet.adapter.wallet as chain.StandardWallet) : null;
   return useMemo(() => {
     if (embedded?.wallet) return chain.makeMe(embedded.wallet);
     if (local.on) return chain.makeMe(chain.localWallet(local.role));
     return publicKey && signTransaction && signAllTransactions
-      ? chain.makeMe({ publicKey, signTransaction, signAllTransactions, signMessage })
+      ? chain.makeMe({ publicKey, signTransaction, signAllTransactions, signMessage, standard })
       : null;
-  }, [embedded?.wallet, local.on, local.role, publicKey, signTransaction, signAllTransactions, signMessage]);
+  }, [embedded?.wallet, local.on, local.role, publicKey, signTransaction, signAllTransactions, signMessage, standard]);
 }
 
 /**

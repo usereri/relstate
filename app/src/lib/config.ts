@@ -15,6 +15,29 @@ export const RPC: string =
 // On devnet the clock is real, so periods are compressed (say so out loud). The proxy's URL says
 // nothing about which cluster is behind it, so a proxied app is on a real network unless VITE_LOCAL=1.
 export const IS_LOCAL = /\/api\/rpc\/?$/.test(RPC) ? import.meta.env.VITE_LOCAL === "1" : !/devnet|mainnet|testnet/.test(RPC);
+
+/**
+ * Which cluster this app is on, as the Wallet Standard chain identifier a signing request carries.
+ *
+ * A wallet simulates what it is asked to sign against the cluster the request names, and shows the
+ * user a warning when that simulation fails — so getting this wrong is what produces "this
+ * transaction reverted during simulation" over a transaction that is perfectly fine
+ * (docs/wallet-simulation.md).
+ *
+ * It cannot be read off {@link RPC}: with a backend configured that is the backend's own read-only
+ * proxy, whose URL says nothing about what is behind it. So `VITE_CLUSTER` is the explicit answer,
+ * and without it the fallbacks are the two the demo actually runs on — localnet when the app
+ * already knows it is local, devnet otherwise. Never mainnet by guess: naming the wrong cluster
+ * makes the wallet's prediction wrong, which is worse than the warning this removes.
+ */
+export const CLUSTER: string = (() => {
+  const named = (import.meta.env.VITE_CLUSTER ?? "").trim();
+  if (named) return named.startsWith("solana:") ? named : `solana:${named}`;
+  if (IS_LOCAL) return "solana:localnet";
+  if (/\btestnet\b/i.test(RPC)) return "solana:testnet";
+  if (/\bmainnet\b/i.test(RPC)) return "solana:mainnet";
+  return "solana:devnet";
+})();
 export const CAN_FAST_FORWARD = IS_LOCAL;
 export const PERIOD_SECS = IS_LOCAL ? 30 * 86_400 : 45;
 export const GRACE_SECS = IS_LOCAL ? 3 * 86_400 : 20;
