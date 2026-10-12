@@ -1642,6 +1642,28 @@ describe("relstate", () => {
     expect(await program.account.dispute.fetchNullable(env.dispute)).to.be.null;
   });
 
+  // settle_dispute closes the Option<Account<Dispute>> by hand (`dispute.close(tenant)`), since
+  // Anchor's declarative `close = tenant` cannot reach inside an Option. This is the one place
+  // that hand-rolled close is exercised, so it gets its own rent-accounting test rather than
+  // relying on the balance check above to catch a mistake in it.
+  it("settle_dispute's hand-rolled close actually returns the Dispute account's rent to the tenant", async () => {
+    const env = await mediating();
+    const disputeInfo = await connection.getAccountInfo(env.dispute);
+    const disputeRent = disputeInfo!.lamports;
+    const tenantSolBefore = await connection.getBalance(env.tenant.publicKey);
+
+    await env.settle(300, [env.tenant, env.landlord], env.dispute);
+
+    expect(await connection.getAccountInfo(env.dispute)).to.be.null;
+    // the provider wallet is the fee payer for every .rpc() call in this suite (Anchor defaults
+    // tx.feePayer to the provider's wallet, and `tenant`/`landlord` are only ever extra
+    // signatures), so the tenant's own SOL balance is not touched by this transaction's fee --
+    // the delta is exactly the account's rent, not a naive before/after balance check that a
+    // signing fee could throw off.
+    const tenantSolAfter = await connection.getBalance(env.tenant.publicKey);
+    expect(tenantSolAfter - tenantSolBefore).to.equal(disputeRent);
+  });
+
   it("settle_dispute in Mediation needs its Dispute account", async () => {
     const env = await mediating();
     await expectFail(env.settle(100, [env.tenant, env.landlord], null), "DisputeAccountRequired");
