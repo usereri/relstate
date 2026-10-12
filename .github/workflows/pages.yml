@@ -64,6 +64,7 @@ jobs:
           VITE_API: ${{ vars.VITE_API }}
           VITE_RUSDC_MINT: ${{ vars.VITE_RUSDC_MINT }}
           VITE_MINT: ${{ vars.VITE_MINT }}
+          VITE_CLUSTER: ${{ vars.VITE_CLUSTER }}
           VITE_FEE_PAYER: ${{ vars.VITE_FEE_PAYER }}
           VITE_EMBEDDED_WALLET: mock
         run: npm run app:build
