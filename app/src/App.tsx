@@ -369,7 +369,7 @@ function Shell({
     <div className="min-h-dvh">
       <header className="sticky top-0 z-40 border-b bg-card/85 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-7xl items-center gap-3 px-4 sm:gap-6 sm:px-8">
-          <Logo />
+          <Logo className="max-sm:[&>span]:hidden" />
           <nav role="tablist" aria-label="Sections" className="hidden gap-1 lg:flex">
             {TABS[role].map(([t, label]) => (
               <button
