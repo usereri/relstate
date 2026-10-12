@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, ArrowRight, Building2, Check, FlaskConical, KeyRound, Loader2, Lock, ShieldCheck, Wallet } from "lucide-react";
+import { ArrowRight, Check, FlaskConical, Loader2, Lock, ShieldCheck, Wallet } from "lucide-react";
 import { WalletReadyState } from "@solana/wallet-adapter-base";
 import { WalletProvider, useWallet } from "@solana/wallet-adapter-react";
 import * as chain from "@/lib/chain";
@@ -11,11 +11,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { LocalWalletProvider, useLocalWallet } from "@/components/WalletButton";
 import { cn } from "@/lib/utils";
-
-const ROLE_CARDS: Record<Role, { icon: typeof KeyRound; title: string; text: string }> = {
-  tenant: { icon: KeyRound, title: "I'm looking for a place", text: "Browse apartments, lock your deposit safely and build your record." },
-  landlord: { icon: Building2, title: "I rent out property", text: "List apartments and pick tenants with a verified payment history." },
-};
 
 /**
  * Sign-in does not know the role yet (it is stored with the account), but the wallet providers
@@ -40,8 +35,10 @@ function adoptSigninScope(role: Role) {
 
 /** Sign up and sign in share one frame: a form on the left, a brand panel on the right. */
 export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: (role: Role) => void }) {
-  const [role, setRole] = useState<Role>("tenant");
-  const [step, setStep] = useState<"role" | "details" | "wallet">(mode === "signup" ? "role" : "wallet");
+  // Everyone starts the same. The account is created as a tenant, and which side of a lease the
+  // user acts on is switched in the app (the role switch in the header), not asked at sign-up.
+  const role: Role = "tenant";
+  const [step, setStep] = useState<"details" | "wallet">("wallet");
   const [details, setDetails] = useState({ name: "", email: "", city: "" });
   // wallet first, profile second: the wallet is the account, a name is optional and asked only after it connects
   const [pending, setPending] = useState<string | null>(null);
@@ -60,9 +57,10 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
       onDone(stored);
       return;
     }
-    // No account yet: profile creation is where the role is chosen.
-    setPending(address);
-    setStep("role");
+    // No account yet: start it like any other, as a tenant; the role is switchable in the app.
+    saveAccount(address, { name: "", email: "", city: "", role, createdAt: Date.now() });
+    adoptSigninScope(role);
+    onDone(role);
   };
   const finish = (address: string) => {
     const prior = loadAccount(address);
@@ -83,7 +81,7 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
     document.title = mode === "signup" ? "Create account · Relstate" : "Sign in · Relstate";
   }, [role, mode]);
 
-  const steps = ["role", "wallet", "details"] as const;
+  const steps = ["wallet", "details"] as const;
   const scope: Role = mode === "signin" ? SIGNIN_SCOPE : role;
 
   return (
@@ -111,54 +109,6 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
                 </li>
               ))}
             </ol>
-          )}
-
-          {step === "role" && (
-            <div key="role" className="rise flex flex-col gap-6">
-              <Heading
-                title={pending ? "Set up your profile" : "Create your account"}
-                text={pending ? "We don't have a profile for this wallet yet. Tell us how you'll use Relstate." : "Free for tenants and landlords. Tell us how you'll use Relstate."}
-              />
-              <div className="grid gap-3" role="radiogroup" aria-label="Account type">
-                {(Object.keys(ROLE_CARDS) as Role[]).map((r) => {
-                  const C = ROLE_CARDS[r];
-                  const on = role === r;
-                  return (
-                    <button
-                      key={r}
-                      role="radio"
-                      aria-checked={on}
-                      onClick={() => setRole(r)}
-                      className={cn(
-                        "flex items-start gap-4 rounded-2xl border bg-card p-4 text-left transition-all",
-                        on ? "border-primary ring-2 ring-primary/20" : "hover:border-input hover:bg-muted/40"
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          "grid size-11 shrink-0 place-items-center rounded-xl",
-                          on ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
-                        )}
-                      >
-                        <C.icon className="size-5" />
-                      </span>
-                      <span className="flex-1">
-                        <span className="block font-semibold">{C.title}</span>
-                        <span className="block text-sm text-muted-foreground">{C.text}</span>
-                      </span>
-                      <span
-                        className={cn("mt-1 grid size-5 place-items-center rounded-full border", on && "border-primary bg-primary text-primary-foreground")}
-                      >
-                        {on && <Check className="size-3" />}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-              <Button size="lg" onClick={() => setStep(pending ? "details" : "wallet")}>
-                Continue <ArrowRight />
-              </Button>
-            </div>
           )}
 
           {step === "details" && (
@@ -193,7 +143,7 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
                   onChange={(e) => setDetails({ ...details, email: e.target.value })}
                 />
               </Field>
-              <Field id="city" label={role === "tenant" ? "City you're moving to" : "City of your properties"}>
+              <Field id="city" label="Your city" hint="Where you are looking, or where your properties are.">
                 <Input
                   id="city"
                   autoComplete="address-level2"
@@ -253,11 +203,6 @@ export function AuthPage({ mode, onDone }: { mode: "signup" | "signin"; onDone: 
                 </LocalWalletProvider>
               </WalletProvider>
 
-              {mode === "signup" && (
-                <button className="flex items-center gap-1.5 self-start text-sm text-muted-foreground hover:text-foreground" onClick={() => setStep("role")}>
-                  <ArrowLeft className="size-4" /> Back
-                </button>
-              )}
               <p className="text-xs leading-relaxed text-muted-foreground">
                 By continuing you agree to the Terms of Service and Privacy Policy. Relstate never asks for your seed phrase.
               </p>

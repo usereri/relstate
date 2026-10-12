@@ -110,8 +110,8 @@ export function WalletButton({ balances }: { balances?: { sol: number; usdc: num
             <Wallet className="size-4" />
           )}
           <span className="font-mono text-xs font-medium">{short(address, 4)}</span>
-          {local.on && !emailAccount && <span className="text-[10px] font-semibold uppercase tracking-wider text-accent">test</span>}
-          {emailAccount && EMBEDDED_IS_MOCK && <span className="text-[10px] font-semibold uppercase tracking-wider text-accent">demo</span>}
+          {local.on && !emailAccount && <span className="hidden text-[10px] font-semibold uppercase tracking-wider text-accent sm:inline">test</span>}
+          {emailAccount && EMBEDDED_IS_MOCK && <span className="hidden text-[10px] font-semibold uppercase tracking-wider text-accent sm:inline">demo</span>}
           {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5 text-muted-foreground" />}
         </button>
         <Button
