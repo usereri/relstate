@@ -68,12 +68,23 @@ Worth recording, because each was a plausible suspect and each was checked:
 interface directly, passing `chain`. The wire handling is the adapter's, byte for byte; the only
 difference is the field the adapter leaves out.
 
-The cluster comes from `CLUSTER` in `app/src/lib/config.ts`. It cannot be read off the RPC URL,
-because with a backend configured that URL is the backend's own read-only proxy and says nothing
-about what is behind it — so `VITE_CLUSTER` is the explicit answer, and without it the app assumes
-the two clusters the demo runs on: localnet when it already knows it is local (`VITE_LOCAL=1`),
-devnet otherwise. **Never mainnet by guess**: naming the wrong cluster makes the wallet's prediction
-wrong, which is worse than the warning this removes. Set `VITE_CLUSTER` on anything else.
+The cluster comes from `CLUSTER` in `app/src/lib/config.ts`, and **the app names one only when it
+knows it**; otherwise it names none and the wallet behaves exactly as it did before this change
+(it simulates against the network the user selected in it, which is right whenever that is the
+app's network). It cannot be read off the RPC URL in general, because with a backend configured that
+URL is the backend's own read-only proxy and says nothing about what is behind it. So:
+
+| What the app knows | Cluster named |
+|---|---|
+| `VITE_CLUSTER` set | that one |
+| `VITE_LOCAL=1`, the default Surfpool endpoint (no backend, no `VITE_RPC`), or an unproxied RPC on a loopback host | `solana:localnet` |
+| an unproxied `VITE_RPC` that names devnet, testnet or `api.mainnet-beta.solana.com` | that one |
+| anything else: a proxied backend, a keyed provider URL | **none** |
+
+**Never guess.** Naming devnet for a proxied or keyed RPC would make a mainnet deploy's wallet
+simulate against the wrong chain, which reintroduces this exact warning in the one environment where
+saying nothing already worked. A deploy whose RPC is proxied therefore **must set `VITE_CLUSTER`**
+to get the fix (including the hosted devnet demo); without it, it behaves as before.
 
 Nothing about the sponsor's checks changes. The app still signs a transaction whose fee-payer slot
 is empty and still posts it to `/api/sponsor`, which still runs every static check and its own
@@ -87,6 +98,13 @@ The chain-aware path is used only when the connected wallet can actually serve i
 cluster**. A wallet that does not list `solana:localnet` among an account's chains would refuse a
 request naming it, and a refusal is worse than a warning — so any of those falls back to the
 adapter's existing chain-less call, which is the behaviour that shipped before this change.
+
+### Errors keep the adapter's shape
+
+The adapter wraps every signing failure — the user pressing Reject included — as
+`WalletSignTransactionError` (and a vanished account as `WalletNotConnectedError`), and
+`chain.errorMessage` keys its wallet guidance ("set to the same network as this app…") on that
+`Wallet…` name. The chain-aware signer does the same wrapping, so that guidance still appears.
 
 ## The case that remains: a local validator
 

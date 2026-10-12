@@ -109,18 +109,40 @@ describe("CLUSTER", () => {
     expect(CLUSTER).toBe("solana:localnet");
   });
 
-  it("a proxied RPC with nothing else set: solana:devnet, never mainnet by guess", async () => {
+  it("a proxied RPC with nothing else set: no cluster is named, never a guessed devnet", async () => {
     vi.stubEnv("VITE_API", "http://localhost:8787");
-    const { CLUSTER } = await load();
-    expect(CLUSTER).toBe("solana:devnet");
+    expect((await load()).CLUSTER).toBeNull();
   });
 
-  it("a VITE_RPC naming testnet or mainnet is reflected, not defaulted to devnet", async () => {
+  it("a keyed provider URL that names no cluster: none", async () => {
+    vi.stubEnv("VITE_RPC", "https://rpc.helius.xyz/?api-key=abc");
+    expect((await load()).CLUSTER).toBeNull();
+  });
+
+  it("the default Surfpool endpoint (no backend, no VITE_RPC) is localnet", async () => {
+    expect((await load()).CLUSTER).toBe("solana:localnet");
+  });
+
+  it("an unproxied loopback RPC is localnet", async () => {
+    vi.stubEnv("VITE_RPC", "http://127.0.0.1:8899");
+    expect((await load()).CLUSTER).toBe("solana:localnet");
+  });
+
+  it("an unproxied VITE_RPC that names its cluster is believed", async () => {
+    vi.stubEnv("VITE_RPC", "https://api.devnet.solana.com");
+    expect((await load()).CLUSTER).toBe("solana:devnet");
+
     vi.stubEnv("VITE_RPC", "https://api.testnet.solana.com");
     expect((await load()).CLUSTER).toBe("solana:testnet");
 
     vi.stubEnv("VITE_RPC", "https://api.mainnet-beta.solana.com");
     expect((await load()).CLUSTER).toBe("solana:mainnet");
+  });
+
+  it("VITE_CLUSTER wins over a proxied backend", async () => {
+    vi.stubEnv("VITE_API", "https://relstate.fly.dev");
+    vi.stubEnv("VITE_CLUSTER", "devnet");
+    expect((await load()).CLUSTER).toBe("solana:devnet");
   });
 });
 

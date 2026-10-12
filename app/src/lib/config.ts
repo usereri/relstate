@@ -17,26 +17,40 @@ export const RPC: string =
 export const IS_LOCAL = /\/api\/rpc\/?$/.test(RPC) ? import.meta.env.VITE_LOCAL === "1" : !/devnet|mainnet|testnet/.test(RPC);
 
 /**
- * Which cluster this app is on, as the Wallet Standard chain identifier a signing request carries.
+ * The cluster to name in a wallet signing request, or null to name none.
  *
- * A wallet simulates what it is asked to sign against the cluster the request names, and shows the
- * user a warning when that simulation fails — so getting this wrong is what produces "this
- * transaction reverted during simulation" over a transaction that is perfectly fine
- * (docs/wallet-simulation.md).
+ * A wallet simulates what it is asked to sign against the cluster the request names. When the
+ * request names none, the wallet uses the network the user selected in it — which is right on
+ * every deployment where the user has selected the app's network, and is the behaviour before
+ * this existed. So a cluster is named only when the app KNOWS it:
  *
- * It cannot be read off {@link RPC}: with a backend configured that is the backend's own read-only
- * proxy, whose URL says nothing about what is behind it. So `VITE_CLUSTER` is the explicit answer,
- * and without it the fallbacks are the two the demo actually runs on — localnet when the app
- * already knows it is local, devnet otherwise. Never mainnet by guess: naming the wrong cluster
- * makes the wallet's prediction wrong, which is worse than the warning this removes.
+ *  - `VITE_CLUSTER`, the explicit answer (docs/env-checklist.md);
+ *  - a local chain: `VITE_LOCAL=1`, the default Surfpool endpoint (no backend, no `VITE_RPC`), or
+ *    an unproxied RPC on a loopback host;
+ *  - an unproxied RPC whose URL names devnet, testnet or the public mainnet endpoint.
+ *
+ * Everything else — a proxied backend, a keyed provider URL — is null. Guessing devnet there would
+ * make a mainnet deploy's wallet simulate against the wrong chain, i.e. reintroduce the warning
+ * (docs/wallet-simulation.md) in the one place where saying nothing already worked.
  */
-export const CLUSTER: string = (() => {
+export const CLUSTER: string | null = (() => {
   const named = (import.meta.env.VITE_CLUSTER ?? "").trim();
   if (named) return named.startsWith("solana:") ? named : `solana:${named}`;
-  if (IS_LOCAL) return "solana:localnet";
+  const proxied = /\/api\/rpc\/?$/.test(RPC);
+  if (import.meta.env.VITE_LOCAL === "1") return "solana:localnet";
+  if (proxied) return null;
+  if (!import.meta.env.VITE_RPC && !API_BASE) return "solana:localnet";
+  let host = "";
+  try {
+    host = new URL(RPC).hostname;
+  } catch {
+    /* not a URL: name nothing */
+  }
+  if (/^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[?::1\]?)$/i.test(host)) return "solana:localnet";
+  if (/\bdevnet\b/i.test(RPC)) return "solana:devnet";
   if (/\btestnet\b/i.test(RPC)) return "solana:testnet";
-  if (/\bmainnet\b/i.test(RPC)) return "solana:mainnet";
-  return "solana:devnet";
+  if (/api\.mainnet-beta\.solana\.com/i.test(RPC)) return "solana:mainnet";
+  return null;
 })();
 export const CAN_FAST_FORWARD = IS_LOCAL;
 export const PERIOD_SECS = IS_LOCAL ? 30 * 86_400 : 45;
