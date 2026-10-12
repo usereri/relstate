@@ -4004,7 +4004,14 @@ export type Relstate = {
             "type": "pubkey"
           },
           {
-            "name": "keyProposals",
+            "name": "landlordKeyProposals",
+            "docs": [
+              "Proposals made so far by each party; each is capped at `MAX_KEY_PROPOSALS_PER_PARTY`."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "tenantKeyProposals",
             "type": "u8"
           },
           {
@@ -4509,6 +4516,11 @@ export type Relstate = {
     },
     {
       "name": "maxDisputeRounds",
+      "type": "u8",
+      "value": "2"
+    },
+    {
+      "name": "maxKeyProposalsPerParty",
       "type": "u8",
       "value": "2"
     },

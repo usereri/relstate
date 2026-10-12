@@ -81,9 +81,9 @@ pub fn handle_propose_appraisers(
 ) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     let lease = &ctx.accounts.lease;
+    let is_landlord = mediation_party(lease, &ctx.accounts.party.key())?;
     let dispute = &mut ctx.accounts.dispute;
     require_selection_open(lease, dispute, now)?;
-    let is_landlord = mediation_party(lease, &ctx.accounts.party.key())?;
     require!(!dispute.name_agreed(), ErrorCode::NameAlreadyAgreed);
     require!(
         (1..=MAX_CANDIDATES).contains(&candidates.len()),
@@ -153,9 +153,9 @@ pub struct PickAppraiser<'info> {
 pub fn handle_pick_appraiser(ctx: Context<PickAppraiser>, name: String) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     let lease = &ctx.accounts.lease;
+    let is_landlord = mediation_party(lease, &ctx.accounts.party.key())?;
     let dispute = &mut ctx.accounts.dispute;
     require_selection_open(lease, dispute, now)?;
-    let is_landlord = mediation_party(lease, &ctx.accounts.party.key())?;
     require!(!dispute.name_agreed(), ErrorCode::NameAlreadyAgreed);
 
     // The union of the two lists, so picking the other side's candidate is allowed, and so a
@@ -209,30 +209,32 @@ pub struct AppraiserKey<'info> {
 /// Phase 2, first half: a party proposes the wallet that will sign for the agreed company.
 ///
 /// Either party may propose a different wallet until it is confirmed: that is how they switch.
-/// `MAX_KEY_PROPOSALS` bounds the ping-pong, so the *last* proposal is final and the other party can
-/// always confirm it or let the mediation expire. Nothing here moves a deadline.
+/// Each party has `MAX_KEY_PROPOSALS_PER_PARTY` proposals of their own, so one party can never burn
+/// the other's budget and the other can always counter once; when both budgets are spent the last
+/// proposal is final and its recipient can confirm it or let the mediation expire. Nothing here
+/// moves a deadline.
 pub fn handle_propose_appraiser_key(ctx: Context<AppraiserKey>, wallet: Pubkey) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     let lease = &ctx.accounts.lease;
+    let is_landlord = mediation_party(lease, &ctx.accounts.party.key())?;
     let dispute = &mut ctx.accounts.dispute;
     require_selection_open(lease, dispute, now)?;
-    mediation_party(lease, &ctx.accounts.party.key())?;
     require!(dispute.name_agreed(), ErrorCode::NameNotAgreed);
     require_keys_neq!(wallet, Pubkey::default(), ErrorCode::InvalidAppraiserKey);
     require_not_a_party(lease, &wallet)?;
     require!(
-        dispute.key_proposals < MAX_KEY_PROPOSALS,
+        dispute.spend_key_proposal(is_landlord),
         ErrorCode::KeyProposalsExhausted
     );
+    let proposals = dispute.landlord_key_proposals + dispute.tenant_key_proposals;
 
     dispute.proposed_key = wallet;
     dispute.key_proposer = ctx.accounts.party.key();
-    dispute.key_proposals += 1;
     emit!(AppraiserKeyProposed {
         lease: lease.key(),
         party: ctx.accounts.party.key(),
         wallet,
-        proposals: dispute.key_proposals,
+        proposals,
     });
     Ok(())
 }
@@ -250,9 +252,10 @@ pub fn handle_propose_appraiser_key(ctx: Context<AppraiserKey>, wallet: Pubkey) 
 pub fn handle_confirm_appraiser_key(ctx: Context<AppraiserKey>, wallet: Pubkey) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     let lease = &ctx.accounts.lease;
+    mediation_party(lease, &ctx.accounts.party.key())?;
     let dispute = &mut ctx.accounts.dispute;
     require_selection_open(lease, dispute, now)?;
-    mediation_party(lease, &ctx.accounts.party.key())?;
+    require!(dispute.name_agreed(), ErrorCode::NameNotAgreed);
     require!(
         dispute.proposed_key != Pubkey::default(),
         ErrorCode::NoKeyProposed

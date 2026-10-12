@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 
 use crate::constants::{
     APPRAISER_FEE_CAP_DIVISOR, BPS_FULL, CLAIM_WINDOW_SECS, DISPUTE_WINDOW_SECS, KYC_LEVEL_BASIC,
-    MAX_ALLOWED_MINTS, MAX_BLURB, MAX_CANDIDATES, MAX_CITY, MAX_DISPUTE_ROUNDS, MAX_NAME_LEN,
+    MAX_ALLOWED_MINTS, MAX_BLURB, MAX_CANDIDATES, MAX_CITY, MAX_DISPUTE_ROUNDS, MAX_KEY_PROPOSALS_PER_PARTY, MAX_NAME_LEN,
     MAX_PHOTO, MAX_TITLE, RENT_HEADROOM_PCT, SELECTION_WINDOW_SECS, VERDICT_WINDOW_SECS,
 };
 use crate::error::ErrorCode;
@@ -233,15 +233,41 @@ pub fn display_name(raw: &str) -> Result<String> {
         out.push_str(word);
     }
     require!(
-        !out.is_empty() && out.len() <= MAX_NAME_LEN && !out.chars().any(char::is_control),
+        !out.is_empty()
+            && out.len() <= MAX_NAME_LEN
+            && !out.chars().any(|c| c.is_control() || is_invisible(c)),
         ErrorCode::InvalidAppraiserName
     );
     Ok(out)
 }
 
+/// Unicode format (Cf) and bidi-control code points, by explicit range: they render as nothing (or
+/// reorder what is around them), so two names differing only by one would look identical to a
+/// person and hash differently. Whitespace-class separators (NBSP, U+2028/2029, U+3000...) are not
+/// listed: `split_whitespace` has already collapsed them.
+fn is_invisible(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}'
+        | '\u{0600}'..='\u{0605}'
+        | '\u{061C}'
+        | '\u{06DD}'
+        | '\u{070F}'
+        | '\u{180E}'
+        | '\u{200B}'..='\u{200F}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{2064}'
+        | '\u{2066}'..='\u{206F}'
+        | '\u{FEFF}'
+        | '\u{FFF9}'..='\u{FFFB}'
+        | '\u{E0001}'
+        | '\u{E0020}'..='\u{E007F}')
+}
+
 /// `sha256(ascii_lowercase(display))`. Only ASCII is case-folded and nothing is Unicode-normalised:
-/// two spellings that differ beyond that read as different companies, which can cost liveness but
-/// never safety, since a side can always pick the other's exact spelling.
+/// two spellings that differ beyond that read as different companies. That costs liveness (a side
+/// can always pick the other's exact spelling), and nothing more is claimed: invisible characters
+/// are rejected (`is_invisible`), but visually confusable *visible* letters (Latin vs Cyrillic "a")
+/// remain possible, so a name is an off-chain assertion the parties check, never a proof (doc §10).
 pub fn name_hash(display: &str) -> [u8; 32] {
     solana_sha256_hasher::hash(display.to_ascii_lowercase().as_bytes()).to_bytes()
 }
@@ -275,7 +301,9 @@ pub struct Dispute {
     pub proposed_key: Pubkey,
     /// Which party made the current proposal; only the other one may confirm it.
     pub key_proposer: Pubkey,
-    pub key_proposals: u8,
+    /// Proposals made so far by each party; each is capped at `MAX_KEY_PROPOSALS_PER_PARTY`.
+    pub landlord_key_proposals: u8,
+    pub tenant_key_proposals: u8,
     /// The bound wallet, all-zero until `confirm_appraiser_key`. Cannot collide with "unset":
     /// `propose_appraiser_key` refuses the all-zero key.
     pub appraiser: Pubkey,
@@ -336,11 +364,27 @@ impl Dispute {
         self.agreed_fee = 0;
         self.proposed_key = Pubkey::default();
         self.key_proposer = Pubkey::default();
-        self.key_proposals = 0;
+        self.landlord_key_proposals = 0;
+        self.tenant_key_proposals = 0;
         self.appraiser = Pubkey::default();
         self.selection_deadline = now.saturating_add(SELECTION_WINDOW_SECS);
         self.verdict_deadline = 0;
         self.bump = bump;
+    }
+
+    /// Spends one of the caller's own key proposals. `false` when that party's budget
+    /// (`MAX_KEY_PROPOSALS_PER_PARTY`) is gone; the other party's budget is never touched.
+    pub fn spend_key_proposal(&mut self, is_landlord: bool) -> bool {
+        let spent = if is_landlord {
+            &mut self.landlord_key_proposals
+        } else {
+            &mut self.tenant_key_proposals
+        };
+        if *spent >= MAX_KEY_PROPOSALS_PER_PARTY {
+            return false;
+        }
+        *spent += 1;
+        true
     }
 
     /// Whether selection (propose, pick, key proposal, confirmation) is still open. The exact
@@ -685,7 +729,7 @@ mod tests {
         assert_eq!(8 + Lease::INIT_SPACE, 218);
         // D2 was never deployed, so Dispute's size is free to change; this pins the new one.
         assert_eq!(8 + Candidate::INIT_SPACE, 8 + 105);
-        assert_eq!(8 + Dispute::INIT_SPACE, 890);
+        assert_eq!(8 + Dispute::INIT_SPACE, 891);
     }
 
     /// D2 invariant 6, the half a layout test cannot show: that the *bytes* the deployed program
@@ -925,7 +969,8 @@ mod tests {
             agreed_fee: 0,
             proposed_key: Pubkey::default(),
             key_proposer: Pubkey::default(),
-            key_proposals: 0,
+            landlord_key_proposals: 0,
+            tenant_key_proposals: 0,
             appraiser: Pubkey::default(),
             selection_deadline: 0,
             verdict_deadline: 0,
@@ -984,6 +1029,27 @@ mod tests {
         }
     }
 
+    /// G4: one party cannot burn the other's budget, the other can always counter, and when both
+    /// budgets are spent no further proposal is possible.
+    #[test]
+    fn key_proposal_budgets_are_per_party() {
+        let mut d = dispute();
+        for _ in 0..MAX_KEY_PROPOSALS_PER_PARTY {
+            assert!(d.spend_key_proposal(true));
+        }
+        assert!(!d.spend_key_proposal(true), "landlord is out");
+        assert_eq!(d.tenant_key_proposals, 0, "tenant's budget untouched");
+        for _ in 0..MAX_KEY_PROPOSALS_PER_PARTY {
+            assert!(d.spend_key_proposal(false), "tenant can always counter");
+        }
+        assert!(!d.spend_key_proposal(false));
+        assert!(!d.spend_key_proposal(true));
+        assert_eq!(
+            d.landlord_key_proposals + d.tenant_key_proposals,
+            2 * MAX_KEY_PROPOSALS_PER_PARTY
+        );
+    }
+
     #[test]
     fn names_are_trimmed_collapsed_and_case_insensitive() {
         let a = cand("  Acme   Wycena ", 1);
@@ -1009,6 +1075,12 @@ mod tests {
         // the bound is bytes, not characters: 33 two-byte characters is 66 bytes
         assert!(Candidate::new(&"ł".repeat(33), 0).is_err());
         assert!(Candidate::new(&"ł".repeat(32), 0).is_ok());
+        // invisible / format / bidi code points are refused, NBSP is just a space
+        for bad in ["a\u{200B}b", "a\u{200D}b", "a\u{FEFF}b", "\u{202E}ab", "a\u{2066}b", "a\u{2060}b", "a\u{00AD}b", "a\u{180E}b", "a\u{200F}b"] {
+            assert!(Candidate::new(bad, 0).is_err(), "{bad:?} should be refused");
+        }
+        assert_eq!(cand("Acme\u{00A0}Wycena", 0).name_hash, cand("acme wycena", 0).name_hash);
+        assert!(Candidate::new("Wycena Łódź", 0).is_ok());
         // the limit applies after normalisation
         assert!(Candidate::new(&format!("  {}  ", "x".repeat(MAX_NAME_LEN)), 0).is_ok());
     }

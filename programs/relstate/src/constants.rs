@@ -113,9 +113,12 @@ pub const APPRAISER_FEE_CAP_DIVISOR: u64 = 10;
 // (docs/contracts/dispute-mediation.md §4). Plain usize: it is the length of a fixed array.
 pub const MAX_NAME_LEN: usize = 64;
 
-// How many times the pair may (re)propose the appraiser's wallet. Two each; the last proposal is
-// final, so the party who did not make it can always confirm it or let the mediation expire.
-pub const MAX_KEY_PROPOSALS: u8 = 4;
+// How many times EACH party may propose the appraiser's wallet. Two each, tracked per party, so one
+// party can never burn the other's budget: the last proposal on the table is always one the other
+// party had the chance to counter, and can confirm or let the mediation expire. `#[constant]` so
+// the app can show "1 proposal left".
+#[constant]
+pub const MAX_KEY_PROPOSALS_PER_PARTY: u8 = 2;
 
 // One deadline covers the whole selection: agreeing on a company AND attaching its wallet. Nothing
 // can be bound at or after it, and an unbound mediation may be expired from then on. The verdict

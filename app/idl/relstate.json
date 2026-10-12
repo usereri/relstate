@@ -3998,7 +3998,14 @@
             "type": "pubkey"
           },
           {
-            "name": "key_proposals",
+            "name": "landlord_key_proposals",
+            "docs": [
+              "Proposals made so far by each party; each is capped at `MAX_KEY_PROPOSALS_PER_PARTY`."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "tenant_key_proposals",
             "type": "u8"
           },
           {
@@ -4503,6 +4510,11 @@
     },
     {
       "name": "MAX_DISPUTE_ROUNDS",
+      "type": "u8",
+      "value": "2"
+    },
+    {
+      "name": "MAX_KEY_PROPOSALS_PER_PARTY",
       "type": "u8",
       "value": "2"
     },
