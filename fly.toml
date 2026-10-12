@@ -19,6 +19,7 @@ primary_region = "fra"            # Warsaw. "fra" (Frankfurt) is the other low-l
 # them in (or override with `fly secrets set` / the Fly dashboard if you'd rather not commit them).
 [env]
   PORT = "8787"
+  UPLOADS_DIR = "/data/uploads"      # listing photos; needs the volume below
   SOLANA_CLUSTER = "devnet"
   BACKEND_MODE = "live"            # flip to "live" only once every secret in docs/env-checklist.md is set
   BACKEND_URL = "https://relstate-backend.fly.dev"
@@ -31,6 +32,17 @@ primary_region = "fra"            # Warsaw. "fra" (Frankfurt) is the other low-l
   ALLOW_MOCK_KYC = "devnet"
   USDC_RESERVE_MINT = "Hob9KuPR5kx73bjkBV2JKRvJkaQMtziW2QNSWH27Tdgr"
   USDC_RESERVE_TOKEN_ACCOUNT = "LsT3YVVTjRb4kHwyuiTU73ud1J7Tgnu8BZ7wMQEaoU6"
+  SPONSOR_MAX_TX_BYTES = "1232"
+  SPONSOR_MAX_INSTRUCTIONS = "16"
+  SPONSOR_MAX_COMPUTE_UNITS = "400000"
+  SPONSOR_MAX_CU_PRICE_MICROLAMPORTS = "400000"
+  SPONSOR_MAX_FEE_LAMPORTS = "200000"
+  SPONSOR_MAX_RENT_LAMPORTS = "50000000"
+  SPONSOR_MAX_PER_WALLET_PER_HOUR = "20"
+  SPONSOR_MAX_GLOBAL_PER_HOUR = "500"
+  SPONSOR_MAX_LAMPORTS_PER_WALLET_PER_DAY = "2000000"
+  SPONSOR_MAX_LAMPORTS_GLOBAL_PER_DAY = "50000000"
+
  
 [http_service]
   internal_port = 8787
@@ -53,3 +65,7 @@ primary_region = "fra"            # Warsaw. "fra" (Frankfurt) is the other low-l
   size = "shared-cpu-1x"
   memory = "512mb"
   min_machines_running = "0"
+
+[mounts]
+  source = "relstate_data"
+  destination = "/data"

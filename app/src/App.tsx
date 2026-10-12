@@ -11,7 +11,7 @@ import { EmbeddedWalletProvider, useEmbeddedWallet } from "@/auth/embedded";
 import { WalletProvider, useWallet } from "@solana/wallet-adapter-react";
 import * as chain from "@/lib/chain";
 import { Role } from "@/lib/chain";
-import { IS_LOCAL, RPC } from "@/lib/config";
+import { IS_LOCAL, LISTING_LANDLORDS, RPC } from "@/lib/config";
 import { Doc } from "@/lib/hash";
 import { ReadErrors, Tick, useChain } from "@/lib/useChain";
 import { invalidateReads } from "@/lib/reads";
@@ -474,7 +474,7 @@ function Shell({
         {/* workstream G: the level-up toast (any tab) and the tenant's onboarding checklist */}
         <Gamify role={role} address={address} balance={balances?.usdc ?? null} showChecklist={tab === "apartments"} />
 
-        {tab === "apartments" && <Listings mode="browse" me={address} listings={listings} h={h} />}
+        {tab === "apartments" && <Listings mode="browse" me={address} listings={listings && LISTING_LANDLORDS.length ? listings.filter((l) => LISTING_LANDLORDS.includes(l.landlord) || l.landlord === address) : listings} h={h} />}
         {tab === "listings" && (
           <Listings
             mode="mine"
