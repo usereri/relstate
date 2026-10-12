@@ -107,6 +107,12 @@ describe("feeCap / feeFor", () => {
   it("feeFor passes the registry fee through when it is under the cap", () => {
     expect(feeFor(1_000, 5, 10)).toBe(5); // cap is 100, registry fee 5 is under it
   });
+
+  it("feeFor is 0 for an appraiser with no fee set, same as topFee([]) -- a real 0, not a missing value", () => {
+    // Load-bearing for the fee line on screen: with an empty registry (topFee([]) === 0) and with
+    // an appraiser whose own fee is 0, the UI must read these as an honest 0, not as "nothing to show".
+    expect(feeFor(1_000, 0, 10)).toBe(0);
+  });
 });
 
 describe("topFee", () => {
@@ -252,12 +258,29 @@ describe("canPropose / canPick / canBindDefault / canExpire", () => {
     expect(canPick(dispute({ selectionDeadline: 10, tenantCandidates: ["T1"] }), "landlord", 50)).toBe(true);
   });
 
+  it("canPick is true the second before the verdict deadline", () => {
+    expect(canPick(dispute({ verdictDeadline: 200, tenantCandidates: ["T1"] }), "landlord", 199)).toBe(true);
+  });
+
+  it("canPick is already false at the exact verdict deadline (BindingWindowClosed) and stays false past it", () => {
+    expect(canPick(dispute({ verdictDeadline: 200, tenantCandidates: ["T1"] }), "landlord", 200)).toBe(false);
+    expect(canPick(dispute({ verdictDeadline: 200, tenantCandidates: ["T1"] }), "landlord", 201)).toBe(false);
+  });
+
   it("canBindDefault is false before the selection deadline", () => {
     expect(canBindDefault(dispute({ selectionDeadline: 100 }), 99)).toBe(false);
   });
 
   it("canBindDefault is already true at the exact selection deadline", () => {
     expect(canBindDefault(dispute({ selectionDeadline: 100 }), 100)).toBe(true);
+  });
+
+  it("canBindDefault is true the second before the verdict deadline too", () => {
+    expect(canBindDefault(dispute({ selectionDeadline: 100, verdictDeadline: 200 }), 199)).toBe(true);
+  });
+
+  it("canBindDefault is already false at the exact verdict deadline (BindingWindowClosed), same bound as canPick", () => {
+    expect(canBindDefault(dispute({ selectionDeadline: 100, verdictDeadline: 200 }), 200)).toBe(false);
   });
 
   it("canBindDefault is false once an appraiser is already bound", () => {
@@ -268,6 +291,20 @@ describe("canPropose / canPick / canBindDefault / canExpire", () => {
     expect(canExpire(dispute({ verdictDeadline: 200 }), 199)).toBe(false);
     expect(canExpire(dispute({ verdictDeadline: 200 }), 200)).toBe(true);
     expect(canExpire(dispute({ verdictDeadline: 200, appraiser: "A" }), 200)).toBe(true);
+  });
+
+  it("canBindDefault and canExpire are exact complements for an unbound dispute, from the selection deadline on", () => {
+    // The liveness property the whole design rests on (S3 F2 / BindingWindowClosed): from the
+    // selection deadline (where the deadlock exit opens) to well past the verdict deadline, exactly
+    // one of "bind the fallback" and "give up and expire" must be possible, or the deposit could
+    // get stuck. Before the selection deadline both are false by design -- the normal pick path is
+    // still live and nothing is deadlocked yet -- so the sweep starts there, not at 0.
+    const d = dispute({ selectionDeadline: 100, verdictDeadline: 200 });
+    for (let now = d.selectionDeadline; now <= d.verdictDeadline + 10; now++) {
+      const bind = canBindDefault(d, now);
+      const expire = canExpire(d, now);
+      expect(bind !== expire, `now=${now} bind=${bind} expire=${expire}`).toBe(true);
+    }
   });
 });
 

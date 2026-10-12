@@ -131,12 +131,10 @@ describe("directoryEntries", () => {
     expect(directoryEntries({})).toEqual([]);
   });
 
-  it("survives junk rows that are still objects, without throwing", () => {
-    // NOT covered here: a `null` or non-object element inside the array (e.g. `[null, "junk", 42, ...]`)
-    // throws instead of being dropped, because `row as {...}` does not guard against a non-object row
-    // before `r.wallet` is read. Reported to the app agent rather than fixed (mediation.test.ts/
-    // appraisers.test.ts are test-only changes); see the handoff report.
-    expect(directoryEntries([{}, { wallet: 7 }, { wallet: "OK" }])).toEqual([{ wallet: "OK", name: "" }]);
+  it("survives junk rows inside the array, including null and primitives, without throwing", () => {
+    // A null or primitive element used to throw on `row.wallet` before the row shape was checked;
+    // fixed in 8566986 by skipping any non-object row first.
+    expect(directoryEntries([null, "junk", 42, {}, { wallet: 7 }, { wallet: "OK" }])).toEqual([{ wallet: "OK", name: "" }]);
   });
 });
 
