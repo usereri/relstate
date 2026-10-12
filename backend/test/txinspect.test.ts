@@ -409,7 +409,7 @@ describe("the verdict's sponsor-paid create-ATA", async () => {
     assert.equal(names[SUBMIT_VERDICT_ACCOUNTS.appraiserAta], "appraiser_ata");
   });
 
-  async function build(mutate: (p: { sponsor: Address; appraiser: TransactionSigner; ata: Address; mint: Address; create: any }) => void = () => {}, extra: { dropVerdict?: boolean; twoCreates?: boolean } = {}) {
+  async function build(mutate: (p: { sponsor: Address; appraiser: TransactionSigner; ata: Address; mint: Address; create: any }) => void = () => {}, extra: { dropVerdict?: boolean; twoCreates?: boolean; createAfterVerdict?: boolean; twoVerdicts?: boolean; appraiserNotSigner?: boolean } = {}) {
     const { sponsor, user: appraiser } = await twoKeys();
     const [ata, mint, other] = (await Promise.all([0, 1, 2].map(async () => (await generateKeyPairSigner()).address))) as [Address, Address, Address];
     const create: any = {
@@ -426,13 +426,19 @@ describe("the verdict's sponsor-paid create-ATA", async () => {
     };
     mutate({ sponsor: sponsor.address, appraiser, ata, mint, create });
     const verdictAccounts = Array.from({ length: 12 }, (_, i) => ({ address: other, role: W }));
-    verdictAccounts[SUBMIT_VERDICT_ACCOUNTS.appraiser] = { address: appraiser.address, role: AccountRole.WRITABLE_SIGNER, signer: appraiser } as never;
+    verdictAccounts[SUBMIT_VERDICT_ACCOUNTS.appraiser] = extra.appraiserNotSigner
+      ? ({ address: appraiser.address, role: W } as never)
+      : ({ address: appraiser.address, role: AccountRole.WRITABLE_SIGNER, signer: appraiser } as never);
     verdictAccounts[SUBMIT_VERDICT_ACCOUNTS.mint] = { address: mint, role: R };
     verdictAccounts[SUBMIT_VERDICT_ACCOUNTS.appraiserAta] = { address: ata, role: W };
+    verdictAccounts[SUBMIT_VERDICT_ACCOUNTS.tokenProgram] = { address: TOKEN_PROGRAM, role: R };
     const data = new Uint8Array(16);
     data.set(instructionDiscriminator("submit_verdict"), 0);
     const verdict = { programAddress: RELSTATE_PROGRAM as Address, accounts: verdictAccounts, data } as unknown as Instruction;
-    const ixs = [create, ...(extra.twoCreates ? [create] : []), ...(extra.dropVerdict ? [] : [verdict])] as Instruction[];
+    const verdicts = extra.dropVerdict ? [] : extra.twoVerdicts ? [verdict, verdict] : [verdict];
+    const ixs = (extra.createAfterVerdict
+      ? [...verdicts, create]
+      : [create, ...(extra.twoCreates ? [create] : []), ...verdicts]) as Instruction[];
     // The sponsor is the fee payer by address; the create's payer slot names it as a signer.
     const b64 = await buildTx({ feePayer: sponsor.address, instructions: ixs });
     return { tx: inspectTransaction(b64), sponsor: sponsor.address };
@@ -465,6 +471,36 @@ describe("the verdict's sponsor-paid create-ATA", async () => {
     assert.equal(await codeOf(() => assertSponsorNotUsedByInstructions(twice.tx, twice.sponsor)), "sponsor-in-instruction", "the sponsor may be the payer only");
     const two = await build(undefined, { twoCreates: true });
     assert.equal(await codeOf(() => assertSponsorNotUsedByInstructions(two.tx, two.sponsor)), "sponsor-in-instruction", "at most one");
+  });
+
+  it("is refused for a create placed after the verdict", async () => {
+    const after = await build(undefined, { createAfterVerdict: true });
+    assert.equal(await codeOf(() => assertSponsorNotUsedByInstructions(after.tx, after.sponsor)), "sponsor-in-instruction", "the create must come before the verdict");
+  });
+
+  it("is refused with two verdicts in one transaction", async () => {
+    const two = await build(undefined, { twoVerdicts: true });
+    assert.equal(await codeOf(() => assertSponsorNotUsedByInstructions(two.tx, two.sponsor)), "sponsor-in-instruction", "two verdicts is not a shape we understand");
+  });
+
+  it("is refused when the verdict's appraiser is not a signer", async () => {
+    const notSigner = await build(undefined, { appraiserNotSigner: true });
+    assert.equal(await codeOf(() => assertSponsorNotUsedByInstructions(notSigner.tx, notSigner.sponsor)), "sponsor-in-instruction", "the verdict's appraiser account must be a signer");
+  });
+
+  it("is refused for a wrong System-program slot in the create", async () => {
+    const { user: foreign } = await twoKeys();
+    const wrongSys = await build((p) => {
+      p.create.accounts[4] = { address: foreign.address, role: R };
+    });
+    assert.equal(await codeOf(() => assertSponsorNotUsedByInstructions(wrongSys.tx, wrongSys.sponsor)), "sponsor-in-instruction", "the system-program slot must be the real System program");
+  });
+
+  it("asserts the ATA token-program slot (5) against the verdict's own token_program", async () => {
+    const wrongTokenProgram = await build((p) => {
+      p.create.accounts[5] = { address: p.mint, role: R };
+    });
+    assert.equal(await codeOf(() => assertSponsorNotUsedByInstructions(wrongTokenProgram.tx, wrongTokenProgram.sponsor)), "sponsor-in-instruction", "a create-ATA naming a foreign token program must be refused");
   });
 
   it("does not exempt the sponsor from a System transfer riding in the same transaction", async () => {

@@ -28,6 +28,7 @@ import {
 import { env } from "./env.ts";
 import { LimitError, type RateLimiter } from "./limits.ts";
 import {
+  ATA_RENT_LAMPORTS,
   RejectedTransaction,
   assertComputeBudgetWithinPolicy,
   assertOnlySponsorSignatureMissing,
@@ -37,6 +38,7 @@ import {
   assertSponsorNotUsedByInstructions,
   inspectTransaction,
   readComputeBudget,
+  sponsorFundedAtaInstructions,
   type SponsorPolicy,
 } from "./txinspect.ts";
 import { jsonSafe } from "./rpc.ts";
@@ -102,10 +104,14 @@ export function createSponsorService(deps: SponsorDeps) {
 
     assertProgramsAllowed(tx, deps.policy.allowlist);
     assertRelstateInstructionsAllowed(tx);
-    assertSponsorNotUsedByInstructions(tx, deps.feePayer.address);
+    const exemptAtaCreates = sponsorFundedAtaInstructions(tx, deps.feePayer.address);
+    assertSponsorNotUsedByInstructions(tx, deps.feePayer.address, exemptAtaCreates);
     assertOnlySponsorSignatureMissing(tx, deps.feePayer.address);
     await assertPresentSignaturesValid(tx);
     const worstCaseFee = assertComputeBudgetWithinPolicy(tx, deps.policy);
+    // The create-ATA the sponsor fronts rent for (S2) is debited by the System program inside the
+    // instruction, invisible to worstCaseFee, so book it explicitly against the caps.
+    const bookedLamports = worstCaseFee + (exemptAtaCreates.size > 0 ? ATA_RENT_LAMPORTS : 0n);
 
     // The session wallet must be a signer of the transaction, so the spend is
     // attributable and one wallet's session cannot spend another's budget.
@@ -123,7 +129,7 @@ export function createSponsorService(deps: SponsorDeps) {
       throw new RejectedTransaction(`the session wallet ${wallet} is not a signer of this transaction`, "wallet-mismatch");
     }
 
-    const reservation = deps.limiter.reserve(wallet, worstCaseFee, now());
+    const reservation = deps.limiter.reserve(wallet, bookedLamports, now());
     try {
       let unitsConsumed: bigint | undefined;
       if (deps.simulate) {
@@ -162,7 +168,7 @@ export function createSponsorService(deps: SponsorDeps) {
 
       if (!deps.broadcast) {
         log(`sponsor: co-signed ${signature} for ${wallet} (not broadcast: mock mode)`);
-        reservation.commit(worstCaseFee);
+        reservation.commit(bookedLamports);
         return {
           signature,
           broadcast: false,
@@ -180,8 +186,8 @@ export function createSponsorService(deps: SponsorDeps) {
           maxRetries: 3n,
         })
         .send();
-      log(`sponsor: sent ${signature} for ${wallet} (${worstCaseFee} lamports worst case)`);
-      reservation.commit(worstCaseFee);
+      log(`sponsor: sent ${signature} for ${wallet} (${worstCaseFee} lamports worst case, ${bookedLamports} booked)`);
+      reservation.commit(bookedLamports);
       return {
         signature,
         broadcast: true,

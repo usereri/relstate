@@ -34,6 +34,21 @@ export const LAMPORTS_PER_SIGNATURE = 5_000n;
 export const DEFAULT_CU_PER_INSTRUCTION = 200_000n;
 export const MAX_CU_PER_TRANSACTION = 1_400_000n;
 
+/**
+ * Rent-exempt minimum the sponsor fronts for the verdict's create-ATA (see
+ * {@link sponsorFundedAtaInstructions}), in lamports.
+ *
+ * A plain SPL token account is 165 bytes, whose rent-exempt minimum is ~2,039,280 lamports at the
+ * network's current rent rate. This is a fixed, slightly conservative constant rather than a
+ * computed one — the sponsor route never builds the create instruction itself, only inspects one
+ * built by the client — so it is rounded up and documented instead of read live from the cluster.
+ * A Token-2022 mint with extensions needs a larger account and a correspondingly larger minimum;
+ * this demo's mints are plain SPL (`ASSOCIATED_TOKEN_PROGRAM`'s legacy derivation, not
+ * Token-2022's), so 165 bytes is the shape actually created. Revisit this constant if a
+ * Token-2022 mint with extensions is ever put behind this route.
+ */
+export const ATA_RENT_LAMPORTS = 2_100_000n;
+
 export class RejectedTransaction extends Error {
   readonly code: string;
   constructor(message: string, code: string) {
@@ -267,7 +282,7 @@ const hexPrefix = (bytes: Uint8Array): string => Buffer.from(bytes).toString("he
  * guarantee instead, so a reordered account list fails loudly rather than silently moving which
  * account the check below constrains.
  */
-export const SUBMIT_VERDICT_ACCOUNTS = { appraiser: 0, mint: 3, appraiserAta: 8 } as const;
+export const SUBMIT_VERDICT_ACCOUNTS = { appraiser: 0, mint: 3, appraiserAta: 8, tokenProgram: 11 } as const;
 
 /** `CreateIdempotent`: a one-byte discriminator and six accounts, in this order. */
 const ATA_CREATE_IDEMPOTENT = 1;
@@ -343,6 +358,7 @@ export function sponsorFundedAtaInstructions(
     if (ix.accounts[ATA_ACCOUNTS.owner]!.address !== appraiser.address) continue;
     if (ix.accounts[ATA_ACCOUNTS.mint]!.address !== account(SUBMIT_VERDICT_ACCOUNTS.mint)) continue;
     if (ix.accounts[ATA_ACCOUNTS.systemProgram]!.address !== SYSTEM_PROGRAM) continue;
+    if (ix.accounts[ATA_ACCOUNTS.tokenProgram]!.address !== account(SUBMIT_VERDICT_ACCOUNTS.tokenProgram)) continue;
     exempt.add(ix.index);
   }
   // One account, one rent. Several matching creates would all be for the same ATA — idempotent, so
