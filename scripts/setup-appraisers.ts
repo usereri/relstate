@@ -14,7 +14,7 @@
 // only written where it differs, and a second run sends nothing. Never prints a secret.
 //
 // Imported through ../backend/src for the reason make-rusdc.ts gives: scripts/ has no node_modules.
-import { accountExists, associatedToken, fetchAllowedMints, fetchAppraiser, fetchMintTokenProgram, singleInstructionPlan, getCreateAppraiserAtaInstruction, getRegisterAppraiserInstruction, getSetAppraiserActiveInstruction, getSetDefaultAppraiserInstruction, type AppraiserRecord } from "../backend/src/appraiser-chain.ts";
+import { accountExists, fetchAllAppraisers, associatedToken, fetchAllowedMints, fetchAppraiser, fetchMintTokenProgram, singleInstructionPlan, getCreateAppraiserAtaInstruction, getRegisterAppraiserInstruction, getSetAppraiserActiveInstruction, getSetDefaultAppraiserInstruction, type AppraiserRecord } from "../backend/src/appraiser-chain.ts";
 import { appraiserNameHash, hex, parseAppraiserDirectory } from "../backend/src/appraisers.ts";
 import { env, redactedRpcUrl } from "../backend/src/env.ts";
 import { loadKeyPairSigner } from "../backend/src/keys.ts";
@@ -51,6 +51,13 @@ async function main(): Promise<void> {
   };
 
   let changes = 0;
+  // A default left over from an earlier directory (an entry no longer in APPRAISERS) would stay
+  // eligible for bind_default_appraiser beside the new one, and the program cannot catch that.
+  const inDirectory = new Set(directory.map((e) => e.wallet as string));
+  for (const stale of (await fetchAllAppraisers(client.rpc)).filter((r) => r.isDefault && !inDirectory.has(r.wallet))) {
+    changes++;
+    await send(`unflag stale default ${stale.wallet} (not in APPRAISERS)`, await getSetDefaultAppraiserInstruction({ admin, wallet: stale.wallet, isDefault: false }));
+  }
   // Unflag first: if a different entry is the default today, two flagged defaults must never coexist.
   for (const entry of directory) {
     const record = current.get(entry.wallet);

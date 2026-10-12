@@ -103,6 +103,7 @@ const secretValues = (): string[] =>
     env.onramp.stripeWebhookSecret,
     env.sessionSecret,
     env.adminToken,
+    env.appraisers.consoleToken,
     // Both the whole variable and each spec in it: one of them may be an inline secret, and the
     // combined string would not match a message that printed only the one that failed.
     env.appraisers.keypairs,

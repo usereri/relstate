@@ -82,3 +82,17 @@ export function assertAdmin(header: string | undefined | null): void {
   const expected = Buffer.from(env.adminToken, "utf8");
   if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) throw new AuthError("bad admin token");
 }
+
+/**
+ * Guards the demo verdict console. A token of its own (VERDICT_CONSOLE_TOKEN) and no fallback to
+ * ADMIN_TOKEN: the console signs with keys that decide deposits, so a stolen treasury-operator token
+ * must not reach it. Constant-time; disabled while the variable is blank.
+ */
+export function assertVerdictConsole(header: string | undefined | null): void {
+  const token = env.appraisers.consoleToken;
+  if (token === "") throw new AuthError("VERDICT_CONSOLE_TOKEN is not configured; the verdict console is disabled");
+  const match = /^Bearer\s+(.+)$/i.exec((header ?? "").trim());
+  const provided = Buffer.from(match?.[1] ?? "", "utf8");
+  const expected = Buffer.from(token, "utf8");
+  if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) throw new AuthError("bad console token");
+}

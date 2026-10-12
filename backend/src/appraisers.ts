@@ -69,13 +69,11 @@ function parseFee(value: unknown, where: string): bigint {
   if (typeof value !== "string" || value.trim() === "") {
     throw new AppraiserConfigError(`${where}: fee is required, as a base-unit integer string (e.g. "2000000" for 2 USDC at 6 decimals)`);
   }
-  let fee: bigint;
-  try {
-    fee = BigInt(value.trim());
-  } catch {
-    throw new AppraiserConfigError(`${where}: fee "${value}" is not an integer`);
-  }
-  if (fee < 0n) throw new AppraiserConfigError(`${where}: fee cannot be negative`);
+  // Digits only: BigInt() would also take "0x10", "0b1" and "0o7", which an operator did not mean as 16, 1, 7.
+  const text = value.trim();
+  if (/^-\d+$/.test(text)) throw new AppraiserConfigError(`${where}: fee cannot be negative`);
+  if (!/^\d+$/.test(text)) throw new AppraiserConfigError(`${where}: fee "${value}" is not an integer (digits only)`);
+  const fee = BigInt(text);
   if (fee > U64_MAX) throw new AppraiserConfigError(`${where}: fee does not fit in a u64`);
   return fee;
 }

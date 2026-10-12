@@ -1,6 +1,7 @@
 // Contract 5: every tunable in one place, with mock defaults so the backend boots with no secrets.
 import { resolve } from "node:path";
-import { parseAppraiserDirectory } from "./appraisers.ts";
+import { isAddress } from "@solana/kit";
+import { parseAppraiserDirectory, parseKeySpecs } from "./appraisers.ts";
 import { parsePln, parseRate, parseUsdc } from "./providers/money.ts";
 
 /** Repo root, independent of cwd, so scripts and the server resolve the same .env. */
@@ -244,6 +245,14 @@ export const env = {
      * Only a wallet whose key is listed here can have a verdict submitted on its behalf.
      */
     keypairs: str("APPRAISER_KEYPAIRS"),
+    /**
+     * SECRET: bearer token for the verdict console, and ONLY for it. Deliberately not ADMIN_TOKEN
+     * and with no fallback to it: a leaked treasury-operator token must not also decide deposits.
+     * Blank disables the console.
+     */
+    consoleToken: str("VERDICT_CONSOLE_TOKEN"),
+    /** Optional comma-separated lease addresses the console may act on; blank means any lease in mediation. */
+    consoleLeases: str("VERDICT_CONSOLE_LEASES"),
   },
 
   sponsor: {
@@ -361,6 +370,23 @@ export function assertEnvConsistent(e: Env = env): void {
     parseAppraiserDirectory(e.appraisers.directory);
   } catch (error) {
     problems.push(error instanceof Error ? error.message : String(error));
+  }
+  // The console holds keys that decide deposits. It exists for the devnet demo and fails closed
+  // anywhere else, rather than trusting an operator to remember to leave APPRAISER_KEYPAIRS blank.
+  if (e.appraisers.keypairs !== "") {
+    if (e.cluster !== "devnet" && e.cluster !== "localnet" && e.cluster !== "testnet") {
+      problems.push(`APPRAISER_KEYPAIRS is a demo feature and is refused on cluster ${e.cluster}; unset it`);
+    }
+    if (e.appraisers.consoleToken === "") problems.push("VERDICT_CONSOLE_TOKEN is required when APPRAISER_KEYPAIRS is set (it is separate from ADMIN_TOKEN)");
+    if (e.appraisers.consoleToken !== "" && e.appraisers.consoleToken === e.adminToken) problems.push("VERDICT_CONSOLE_TOKEN must differ from ADMIN_TOKEN");
+    if (e.mode === "live" && e.appraisers.consoleToken !== "" && weakSecret(e.appraisers.consoleToken)) problems.push("VERDICT_CONSOLE_TOKEN is too weak: use at least 32 characters with real entropy");
+    const others = [e.feePayerKeypair, e.treasuryKeypair, e.attestationIssuerKeypair].filter((v) => v !== "");
+    if (parseKeySpecs(e.appraisers.keypairs).some((spec) => others.includes(spec))) {
+      problems.push("APPRAISER_KEYPAIRS must not contain the fee payer, treasury or attestation issuer key");
+    }
+  }
+  for (const lease of (e.appraisers.consoleLeases || "").split(",").map((l) => l.trim()).filter(Boolean)) {
+    if (!isAddress(lease)) problems.push(`VERDICT_CONSOLE_LEASES: ${lease} is not an address`);
   }
   if (e.kyc.allowMock !== "" && e.kyc.allowMock !== "devnet") problems.push(`ALLOW_MOCK_KYC must be exactly "devnet" or unset, not "${e.kyc.allowMock}"`);
   if (!(e.kyc.mockMaxAttestsPerHour > 0) || !(e.kyc.mockMaxLamportsPerDay > 0n) || !(e.kyc.mockLamportsPerAttest > 0n)) {

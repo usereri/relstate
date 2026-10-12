@@ -183,7 +183,7 @@ export function createServices(log: (...args: unknown[]) => void = console.log):
      */
     appraiserChain() {
       return (appraiserChain ??= (async () => {
-        const [feePayer, signers] = await Promise.all([getKey("feePayer"), getAppraiserSigners()]);
+        const [feePayer, signers, treasuryKey, issuerKey] = await Promise.all([getKey("feePayer"), getAppraiserSigners(), getKey("treasury"), getKey("attestationIssuer")]);
         if (signers.size === 0) {
           throw new ServiceUnavailable("APPRAISER_KEYPAIRS is not set, so this backend holds no appraiser key to sign a verdict with");
         }
@@ -199,6 +199,11 @@ export function createServices(log: (...args: unknown[]) => void = console.log):
           run: createPlanRunner(solana, log),
           payer: feePayer.signer,
           appraisers: signers,
+          forbidden: new Map([
+            [feePayer.signer.address, "fee payer"],
+            [treasuryKey.signer.address, "treasury"],
+            [issuerKey.signer.address, "attestation issuer"],
+          ]),
           log,
         });
       })().catch((error: unknown) => {

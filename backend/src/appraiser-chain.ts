@@ -20,6 +20,7 @@ import {
   AccountRole,
   fetchEncodedAccount,
   getAddressDecoder,
+  getBase58Decoder,
   getBase64Encoder,
   sequentialInstructionPlan,
   singleInstructionPlan,
@@ -27,6 +28,7 @@ import {
   type AccountSignerMeta,
   type Address,
   type GetAccountInfoApi,
+  type GetProgramAccountsApi,
   type Instruction,
   type InstructionWithSigners,
   type Rpc,
@@ -170,13 +172,34 @@ export async function fetchMintTokenProgram(rpc: AppraiserRpc, mint: Address): P
  */
 export async function fetchAllowedMints(rpc: AppraiserRpc): Promise<Address[]> {
   const account = await fetchEncodedAccount(rpc, await configPda());
-  if (!account.exists) return [];
+  // Not "no mints, nothing to do": a missing or short Config means the registry is not set up, and
+  // a script that reported success would leave every verdict failing for want of a token account.
+  if (!account.exists) throw new AppraiserDecodeError("the Config account does not exist: run scripts/setup-demo.ts (init_config) first");
   const data = account.data as Uint8Array;
   const at = 8 + 32 + 1;
-  if (data.length < at + 4) return [];
+  if (data.length < at + 4) throw new AppraiserDecodeError(`the Config account is ${data.length} bytes, too short to hold a mint list`);
   const count = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(at, true);
-  if (data.length < at + 4 + count * 32) return [];
+  if (data.length < at + 4 + count * 32) throw new AppraiserDecodeError("the Config account's mint list runs past its end");
   return Array.from({ length: count }, (_, i) => addressDecoder.decode(data.subarray(at + 4 + i * 32, at + 36 + i * 32)));
+}
+
+/** The Config admin, read the same way: discriminator then the admin key. */
+export async function fetchConfigAdmin(rpc: AppraiserRpc): Promise<Address | null> {
+  const account = await fetchEncodedAccount(rpc, await configPda());
+  if (!account.exists || (account.data as Uint8Array).length < 40) return null;
+  return addressDecoder.decode((account.data as Uint8Array).subarray(8, 40));
+}
+
+/** Every registry entry on chain (getProgramAccounts on the Appraiser discriminator). Setup script only. */
+export async function fetchAllAppraisers(rpc: Rpc<GetProgramAccountsApi>): Promise<AppraiserRecord[]> {
+  const rows = await rpc
+    .getProgramAccounts(PROGRAM, {
+      encoding: "base64",
+      commitment: "confirmed",
+      filters: [{ memcmp: { offset: 0n, bytes: getBase58Decoder().decode(APPRAISER_ACCOUNT) as never, encoding: "base58" } }],
+    })
+    .send();
+  return (rows as unknown as { account: { data: [string, string] } }[]).map((r) => decodeAppraiser(accountBytes(r.account.data[0])));
 }
 
 /** Whether an account exists. submit_verdict transfers fee_paid (even 0) to the appraiser's ATA, so it must. */
@@ -401,6 +424,8 @@ export function createAppraiserChain(deps: {
   payer: TransactionSigner;
   /** By wallet address: only a key in here can sign a verdict. */
   appraisers: ReadonlyMap<string, TransactionSigner>;
+  /** Addresses that must never sign a verdict, with the role that excludes them (fee payer, treasury, issuer). */
+  forbidden?: ReadonlyMap<string, string>;
   log?: (...args: unknown[]) => void;
 }): AppraiserChain {
   const log = deps.log ?? (() => {});
@@ -455,6 +480,13 @@ export function createAppraiserChain(deps: {
           `this backend holds no key for the bound appraiser ${prepared.appraiser}; add it to APPRAISER_KEYPAIRS, or have them submit the verdict themselves`,
           "no-appraiser-key",
         );
+      }
+      const role = deps.forbidden?.get(prepared.appraiser);
+      if (role !== undefined) {
+        throw new VerdictRefused(`the bound appraiser ${prepared.appraiser} is this backend's ${role} key; a platform key must not decide a deposit`, "appraiser-is-platform-key");
+      }
+      if ((await fetchConfigAdmin(deps.rpc)) === prepared.appraiser) {
+        throw new VerdictRefused(`the bound appraiser ${prepared.appraiser} is the Config admin; the admin must not decide a deposit`, "appraiser-is-admin");
       }
       const decoded = await fetchLease(deps.rpc, input.lease, PROGRAM);
 
