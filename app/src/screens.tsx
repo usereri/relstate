@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowUpRight, Clock, FastForward, Gavel, Handshake, HandCoins, KeyRound, Plus, Sparkles, X } from "lucide-react";
+import { ArrowUpRight, Clock, FastForward, Gavel, Handshake, HandCoins, KeyRound, Plus, Scale, Sparkles, Users, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,9 +8,22 @@ import { DocPicker } from "@/components/DocPicker";
 import { ProfileCard } from "@/components/ProfileCard";
 import { Terms, termRows } from "@/components/Terms";
 import { PaySection, useConfidentialRent } from "@/screens/Pay";
+import {
+  AppraiserFee,
+  BoundAppraiser,
+  CandidateChoice,
+  MediationTimeline,
+  OracleNote,
+  RegistryChoice,
+  Rounds,
+  nameOf,
+  optionFor,
+  useAppraiserOptions,
+} from "@/screens/Mediation";
 import { Doc } from "@/lib/hash";
 import * as chain from "@/lib/chain";
-import { ApplicationView, DISCOUNT_PCT, LeaseView, ListingView, NewListing, Role, Snapshot, Status, isWallet, maxDiscountRent, qualifiesForDiscount } from "@/lib/chain";
+import { ApplicationView, DISCOUNT_PCT, DisputeView, LeaseView, ListingView, NewListing, Role, Snapshot, Status, isWallet, maxDiscountRent, qualifiesForDiscount } from "@/lib/chain";
+import * as med from "@/lib/mediation";
 import { CAN_FAST_FORWARD, CLAIM_WINDOW_SECS, PERIOD_SECS, TERM_PERIODS, USDC } from "@/lib/config";
 import { recordLine, unique, useRecords } from "@/lib/records";
 import { useChain } from "@/lib/useChain";
@@ -38,7 +51,14 @@ export interface Handlers {
   markDefault: (l: LeaseView) => Promise<boolean>;
   claim: (l: LeaseView) => Promise<boolean>;
   acceptDeduction: (l: LeaseView) => Promise<boolean>;
+  /** The tenant's rejection while rounds are left: the proposal is void and the lease goes back to active. */
   abandonDispute: (l: LeaseView) => Promise<boolean>;
+  /** The last rejection: the lease enters mediation and an appraiser decides. */
+  escalateToMediation: (l: LeaseView) => Promise<boolean>;
+  proposeAppraisers: (l: LeaseView, wallets: string[]) => Promise<boolean>;
+  pickAppraiser: (l: LeaseView, wallet: string) => Promise<boolean>;
+  bindDefaultAppraiser: (l: LeaseView, wallet: string) => Promise<boolean>;
+  expireMediation: (l: LeaseView) => Promise<boolean>;
   finalizeDeduction: (l: LeaseView) => Promise<boolean>;
   jump: (secs: number) => Promise<boolean>;
 }
@@ -53,6 +73,7 @@ export const statusBadge = (s: Status) =>
     proposed: <Badge variant="warning">Proposed</Badge>,
     active: <Badge variant="success">Active</Badge>,
     disputed: <Badge variant="warning">Deduction proposed</Badge>,
+    mediation: <Badge variant="warning">With an appraiser</Badge>,
     closed: <Badge variant="outline">Completed</Badge>,
     defaulted: <Badge variant="danger">Defaulted</Badge>,
   })[s];
@@ -280,11 +301,18 @@ function Periods({ lease }: { lease: LeaseView }) {
   );
 }
 
-function TimeControls({ lease, now, h }: { lease: LeaseView; now: number; h: Handlers }) {
+function TimeControls({ lease, now, h, dispute }: { lease: LeaseView; now: number; h: Handlers; dispute?: DisputeView | null }) {
   if (!CAN_FAST_FORWARD) return null;
   const t = timing(lease, now);
   const steps: [string, number][] = lease.status === "disputed"
     ? [["Answer window over", lease.disputedAt + chain.DISPUTE_WINDOW_SECS + 1]]
+    : lease.status === "mediation"
+    ? dispute
+      ? [
+        ["Selection window over", dispute.selectionDeadline + 1],
+        ["Verdict window over", dispute.verdictDeadline + 1],
+      ]
+      : []
     : t.allPaid
     ? [
       ["Term ends", t.end],
@@ -432,6 +460,9 @@ export function DisputedLease({ lease, now, role, h }: { lease: LeaseView; now: 
   const open = now < answerBy;
   const kept = lease.proposedDeduction;
   const returned = lease.deposit - kept;
+  // Which instruction this rejection is. The first one voids the proposal and lets the landlord
+  // try again; the last one is `escalate_to_mediation` and hands the deposit to an appraiser.
+  const next = med.rejection(lease.disputeRounds, chain.MAX_DISPUTE_ROUNDS);
   const copy =
     role === "landlord"
       ? open
@@ -451,11 +482,16 @@ export function DisputedLease({ lease, now, role, h }: { lease: LeaseView; now: 
               ["Back to the tenant", `${usdc(returned)} USDC`],
             ]}
           />
-          {role === "tenant" && (
-            <p className="mt-3 text-xs text-muted-foreground">
-              Rejecting returns the whole deposit to you after the usual claim wait; the landlord's proposal is void and the rejection stays on the record.
-            </p>
-          )}
+          <div className="mt-3 flex flex-col gap-2">
+            <Rounds used={lease.disputeRounds} max={chain.MAX_DISPUTE_ROUNDS} />
+            {role === "tenant" && (
+              <p className="text-xs text-muted-foreground">
+                {next === "escalate"
+                  ? "You have rejected once already, so this rejection does not hand you the deposit: the lease goes into mediation, you and the landlord choose an appraiser together, and their verdict splits it."
+                  : "Rejecting returns the whole deposit to you after the usual claim wait; the landlord's proposal is void and the rejection stays on the record."}
+              </p>
+            )}
+          </div>
         </Waiting>
         <TimeControls lease={lease} now={now} h={h} />
       </div>
@@ -465,9 +501,15 @@ export function DisputedLease({ lease, now, role, h }: { lease: LeaseView; now: 
             <Button size="lg" disabled={!!h.busy} onClick={() => h.acceptDeduction(lease)}>
               <KeyRound /> {h.busy ?? `Accept: get ${usdc(returned)} USDC back`}
             </Button>
-            {open && (
-              <Button size="lg" variant="outline" disabled={!!h.busy} onClick={() => h.abandonDispute(lease)}>
-                <X /> Reject the deduction
+            {open && next !== "exhausted" && (
+              <Button
+                size="lg"
+                variant="outline"
+                disabled={!!h.busy}
+                onClick={() => (next === "escalate" ? h.escalateToMediation(lease) : h.abandonDispute(lease))}
+              >
+                {next === "escalate" ? <Scale /> : <X />}
+                {h.busy ?? (next === "escalate" ? "Reject: let an appraiser decide" : "Reject the deduction")}
               </Button>
             )}
           </>
@@ -476,6 +518,235 @@ export function DisputedLease({ lease, now, role, h }: { lease: LeaseView; now: 
           <Button size="lg" disabled={open || !!h.busy} onClick={() => h.finalizeDeduction(lease)}>
             <Gavel /> {h.busy ?? (open ? `Finalize opens in ${duration(answerBy - now)}` : "Finalize deduction")}
           </Button>
+        )}
+      </StickyAction>
+    </>
+  );
+}
+
+// ---- mediation: the two sides choose an appraiser, the appraiser decides -----------------
+
+/**
+ * The deposit is no longer either side's call (docs/contracts/dispute-mediation.md).
+ *
+ * The same screen serves both roles, because the program's selection is symmetric: either side
+ * names up to three registered appraisers, either side picks one from *either* list, and the same
+ * pick from both binds it. The state lives here and the pieces in `screens/Mediation.tsx` render
+ * it, so the sticky action bar and the picker cannot disagree about what is selected.
+ *
+ * Every state on this screen has an exit that needs only one party: past the selection deadline
+ * anyone binds the registry's fallback, and past the verdict deadline either party ends the
+ * mediation and the deposit returns to the tenant through the usual claim. That is the property
+ * the contract's §2 table asserts, and it is what these buttons are.
+ */
+export function MediationLease({
+  lease,
+  dispute,
+  now,
+  role,
+  h,
+}: {
+  lease: LeaseView;
+  dispute: DisputeView | null | undefined;
+  now: number;
+  role: Role;
+  h: Handlers;
+}) {
+  const { options, directoryError } = useAppraiserOptions();
+  const [chosen, setChosen] = useState<string[]>([]);
+  const [pick, setPick] = useState("");
+
+  if (dispute === undefined) return <Waiting title="Loading" text="Reading the mediation from the network." />;
+  if (!dispute)
+    return (
+      <Waiting
+        title="Mediation not found"
+        text="This lease says it is in mediation, but its dispute account could not be read. It is probably a moment out of date: it will appear on the next refresh, or the lease has just been settled from another window."
+      />
+    );
+
+  const phase = med.phase(dispute, now);
+  const expired = phase === "expired";
+  const bound = !!dispute.appraiser;
+  const rows = med.candidates(dispute);
+  const mine = med.pickOf(dispute, role);
+  const canPropose = med.canPropose(dispute, role);
+  const fallback = options?.find((o) => o.isDefault && o.active);
+  const target = pick || mine;
+
+  // The fee: exactly the bound appraiser's once there is one, otherwise the highest among the
+  // names still in play — the whole active registry while nobody has proposed anything yet.
+  const inPlay = bound
+    ? [optionFor(options, dispute.appraiser)?.fee ?? 0]
+    : rows.length
+      ? rows.map((c) => optionFor(options, c.wallet)?.fee ?? 0)
+      : (options ?? []).filter((o) => o.active).map((o) => o.fee);
+  const fee = med.feeFor(lease.deposit, med.topFee(inPlay), chain.APPRAISER_FEE_CAP_DIVISOR);
+
+  const headline = expired
+    ? "The appraiser's window has passed with no verdict. Either side can end the mediation now: the lease returns to active and the deposit goes back to the tenant through the usual claim."
+    : bound
+      ? `The appraiser has ${duration(dispute.verdictDeadline - now)} to decide. Until then the deposit stays in the vault and neither of you can move it.`
+      : now >= dispute.selectionDeadline
+        ? "Nobody was agreed in time. You two can still agree between yourselves, or anyone can bring in the registry's fallback appraiser."
+        : `Each side names up to ${med.MAX_CANDIDATES} appraisers and then both pick one — from either list. Agree within ${duration(dispute.selectionDeadline - now)}, or anyone can bring in the registry's fallback.`;
+
+  return (
+    <>
+      <div className="rise flex flex-col gap-4">
+        <Card>
+          <CardHeader className="flex-row items-start justify-between">
+            <div>
+              <CardTitle>An appraiser decides this deposit</CardTitle>
+              <CardDescription>{headline}</CardDescription>
+            </div>
+            {statusBadge("mediation")}
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <Rounds used={lease.disputeRounds} max={chain.MAX_DISPUTE_ROUNDS} />
+            <MediationTimeline dispute={dispute} openedAt={lease.disputedAt} now={now} />
+            <Terms
+              rows={[
+                ["Deposit in vault", `${usdc(lease.deposit)} USDC`],
+                ["The landlord's proposal", "void — the only numbers left are the verdict and one you both sign"],
+                // claim_pause_secs is only written on the way out, so the stretch running right
+                // now is added here: the tenant waits exactly as long as they would have without
+                // any dispute (§5).
+                ["Tenant's claim clock pushed back", duration(lease.claimPauseSecs + Math.max(0, now - lease.disputedAt))],
+              ]}
+            />
+          </CardContent>
+        </Card>
+
+        {bound && <BoundAppraiser dispute={dispute} options={options} now={now} />}
+
+        {!bound && !expired && (
+          <>
+            {canPropose && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Name the appraisers you would accept</CardTitle>
+                  <CardDescription>
+                    Up to {med.MAX_CANDIDATES}, from the platform's registry. Only registered, active companies can be named — that is what stops
+                    either side nominating their own.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {options ? (
+                    <RegistryChoice options={options} chosen={chosen} onToggle={(w) => setChosen((c) => (c.includes(w) ? c.filter((x) => x !== w) : [...c, w]))} max={med.MAX_CANDIDATES} />
+                  ) : (
+                    <p className="text-sm text-muted-foreground">Reading the registry…</p>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
+            {rows.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Agree on one</CardTitle>
+                  <CardDescription>
+                    Both lists, as one. Picking from the {med.other(role)}'s list is how the two of you converge, and the same pick from both binds
+                    it.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <CandidateChoice dispute={dispute} role={role} options={options} pick={pick} onPick={setPick} />
+                </CardContent>
+              </Card>
+            )}
+
+            {rows.length === 0 && !canPropose && (
+              <Waiting
+                title="Waiting for the other side"
+                text={`You have named your appraisers. Nothing can be picked until the ${med.other(role)} names theirs, or the selection window runs out and the registry's fallback can be brought in.`}
+              />
+            )}
+          </>
+        )}
+
+        <Card>
+          <CardHeader>
+            <CardTitle>What the appraisal costs</CardTitle>
+            <CardDescription>Loser pays, out of the deposit.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <AppraiserFee deposit={lease.deposit} fee={fee} cap={med.feeCap(lease.deposit, chain.APPRAISER_FEE_CAP_DIVISOR)} exact={bound} />
+          </CardContent>
+        </Card>
+
+        {/* The settle exit. There is deliberately no button: one transaction needs both
+            signatures and this app holds one session (see chain.settleDisputeTx). */}
+        <div className="flex flex-col gap-1.5 rounded-2xl border border-dashed border-input p-4">
+          <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            <Users className="size-3.5" /> Or settle it between you
+          </p>
+          <p className="text-xs text-muted-foreground">
+            A figure you both sign closes the lease at any point in mediation, verdict or not. It takes one transaction signed by both wallets, which
+            this window cannot collect on its own, so for now it is a script or multisig flow rather than a button.
+          </p>
+        </div>
+
+        <OracleNote names={(options ?? []).filter((o) => o.active && o.name).map((o) => o.name)} />
+
+        {directoryError && (
+          <p className="text-xs text-muted-foreground">
+            The appraiser directory could not be read ({directoryError}), so the names below the keys may be missing. The registry itself is on
+            chain and is what the program checks.
+          </p>
+        )}
+
+        <TimeControls lease={lease} now={now} h={h} dispute={dispute} />
+      </div>
+
+      <StickyAction>
+        {expired ? (
+          <Button size="lg" disabled={!!h.busy} onClick={() => h.expireMediation(lease)}>
+            <Gavel /> {h.busy ?? "End the mediation and unlock the deposit"}
+          </Button>
+        ) : bound ? (
+          <Button size="lg" variant="secondary" disabled>
+            <Clock /> Waiting for {nameOf(options, dispute.appraiser)} to decide
+          </Button>
+        ) : (
+          <>
+            {canPropose && (
+              <Button
+                size="lg"
+                disabled={chosen.length === 0 || !!h.busy}
+                onClick={async () => {
+                  if (await h.proposeAppraisers(lease, chosen)) setChosen([]);
+                }}
+              >
+                <Users /> {h.busy ?? (chosen.length ? `Put forward ${chosen.length === 1 ? "this appraiser" : `these ${chosen.length}`}` : `Choose up to ${med.MAX_CANDIDATES} appraisers`)}
+              </Button>
+            )}
+            {rows.length > 0 && (
+              <Button
+                size="lg"
+                variant={canPropose ? "outline" : "default"}
+                disabled={!target || target === mine || !!h.busy}
+                onClick={async () => {
+                  if (await h.pickAppraiser(lease, target)) setPick("");
+                }}
+              >
+                <Scale />{" "}
+                {h.busy ??
+                  (!target
+                    ? "Pick an appraiser above"
+                    : target === mine
+                      ? `You picked ${nameOf(options, mine)}`
+                      : mine
+                        ? `Change to ${nameOf(options, target)}`
+                        : `Agree on ${nameOf(options, target)}`)}
+              </Button>
+            )}
+            {med.canBindDefault(dispute, now) && fallback && (
+              <Button size="lg" variant="outline" disabled={!!h.busy} onClick={() => h.bindDefaultAppraiser(lease, fallback.wallet)}>
+                <Gavel /> {h.busy ?? `Bring in the fallback: ${nameOf(options, fallback.wallet)}`}
+              </Button>
+            )}
+          </>
         )}
       </StickyAction>
     </>
@@ -557,9 +828,16 @@ export function LeaseTab({
   const records = useRecords(unique(applicants.map((a) => a.tenant)));
 
   const list = leases ?? [];
-  const open = list.find((l) => l.status === "proposed" || l.status === "active" || l.status === "disputed");
+  const open = list.find((l) => chain.inProgress(l.status));
   const current = sel ?? open?.address ?? list[0]?.address ?? (role === "landlord" ? "new" : "");
   const lease = list.find((l) => l.address === current) ?? null;
+
+  // The Dispute PDA exists exactly while the lease is in Mediation, so it is only read then —
+  // `undefined` is "still loading", `null` is "no such account".
+  const dispute = useChain(
+    () => (lease?.status === "mediation" ? chain.loadDispute(lease.address) : Promise.resolve(null)),
+    [lease?.address, lease?.status],
+  );
 
   const parties = useChain(
     () => (lease ? Promise.all([chain.loadProfile(lease.landlord), chain.loadProfile(lease.tenant)]) : Promise.resolve(null)),
@@ -593,6 +871,7 @@ export function LeaseTab({
   else if (lease.status === "proposed") main = role === "tenant" ? <AcceptLease lease={lease} h={h} /> : <ProposedWaiting lease={lease} />;
   else if (lease.status === "active") main = <ActiveLease lease={lease} now={now} role={role} h={h} />;
   else if (lease.status === "disputed") main = <DisputedLease lease={lease} now={now} role={role} h={h} />;
+  else if (lease.status === "mediation") main = <MediationLease lease={lease} dispute={dispute} now={now} role={role} h={h} />;
   else main = <Finished lease={lease} snap={snap} onNew={role === "landlord" ? () => setSel("new") : undefined} />;
 
   return (

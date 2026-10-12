@@ -308,6 +308,11 @@ function Shell({
     claim: (l) => run("Claiming deposit…", (m) => chain.claimDeposit(m, l)),
     acceptDeduction: (l) => run("Accepting deduction…", (m) => chain.acceptDeduction(m, l)),
     abandonDispute: (l) => run("Rejecting deduction…", (m) => chain.abandonDispute(m, l)),
+    escalateToMediation: (l) => run("Going to mediation…", (m) => chain.escalateToMediation(m, l)),
+    proposeAppraisers: (l, wallets) => run("Naming appraisers…", (m) => chain.proposeAppraisers(m, l, wallets)),
+    pickAppraiser: (l, wallet) => run("Picking an appraiser…", (m) => chain.pickAppraiser(m, l, wallet)),
+    bindDefaultAppraiser: (l, wallet) => run("Bringing in the fallback…", (m) => chain.bindDefaultAppraiser(m, l, wallet)),
+    expireMediation: (l) => run("Ending the mediation…", (m) => chain.expireMediation(m, l)),
     finalizeDeduction: (l) => run("Finalizing deduction…", (m) => chain.finalizeDeduction(m, l)),
     jump: (secs) => run("Moving the clock…", () => chain.fastForward(secs)),
   };
