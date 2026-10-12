@@ -510,18 +510,22 @@ speak and *when*. The disclosure list, in the order a judge would ask:
    may use a throwaway wallet operated by whoever runs the demo; that is not something the program can
    see or depends on.)
 
-**The sharp edge of having no fallback — say it before a judge finds it.** With no default appraiser,
-a mediation binds only if *both* parties cooperate, and a mediation that never binds expires to the
-tenant's full refund. The party who benefits from the default outcome — the tenant — can therefore
-decline to pick, or decline to confirm, and the landlord has no on-chain remedy; the landlord's
-levers are the permanent record of the rejections, `mark_default` during the term, and
-`settle_dispute`. In practice mediation is an **opt-in for the tenant**, and what it adds over D1 is
-a way for a tenant who *does* believe their position to have it decided by someone neutral. A
-default appraiser would fix this, and was removed on purpose because it meant an admin-chosen
-arbiter. Stated here so it is a decision rather than a discovery.
+**The sharp edge of having no fallback — say it before a judge finds it.** **Mediation binds only
+if both parties cooperate; a party who declines forfeits to the status quo, which is a full refund to
+the tenant.** There is no default appraiser, so a mediation that never binds expires, and the tenant
+takes the whole deposit. The party who benefits from that outcome — the tenant — can decline to
+pick or to confirm, and the landlord has no on-chain remedy; the landlord's levers are the permanent
+record of the rejections, `mark_default` during the term, and `settle_dispute`.
 
-Roadmap, in the order it would matter: a bond the appraiser posts and can be slashed against, an
-appeal window before the payout settles, several appraisers with a median verdict, and a public
+This is **no worse for the landlord than D1**, where a rejected deduction already ended in a full
+tenant refund: mediation does not take anything away, it gives a *cooperative* tenant a way to a fair
+split decided by someone neutral. The stall outcome is pinned by a test (§11, item 6). Decided and
+accepted by the product owner; stated here so it is a decision rather than a discovery.
+
+Roadmap, in the order it would matter: an **optional opt-in appraiser directory** as a convenience
+(parties may pick from it; the program never depends on it), a **bond the stalling side forfeits**
+(slashing for declining to pick or confirm), a bond the appraiser posts and can be slashed against,
+an appeal window before the payout settles, several appraisers with a median verdict, and a public
 appraiser reputation record. None of them is built.
 
 ## 11. What the tests must pin
@@ -540,15 +544,18 @@ Each a named test; the mocha suite is written against these.
    whitespace), lower-fee-wins.
 5. **Key phase limits** — at most four proposals; no proposal before the name is agreed or after
    binding; no bind after `selection_deadline`.
-6. **The late-bind complement** — at `now >= selection_deadline`, `propose`/`pick`/`confirm` fail with
+6. **The stall outcome** — a tenant who never picks (or never confirms) leaves the mediation to
+   expire at `selection_deadline`, the lease returns to `Active`, and `claim_deposit` pays the tenant
+   the whole deposit; the same holds when the landlord stalls.
+7. **The late-bind complement** — at `now >= selection_deadline`, `propose`/`pick`/`confirm` fail with
    `SelectionWindowClosed` and `expire_mediation` succeeds; just before it, the reverse; a bound
    mediation's expiry is `verdict_deadline` and cannot be re-armed.
-7. **Payability** — `submit_verdict` with an uncreated `appraiser_ata` fails loudly and moves nothing;
+8. **Payability** — `submit_verdict` with an uncreated `appraiser_ata` fails loudly and moves nothing;
    with a create-idempotent in the same transaction (sponsor pays rent) it pays the fee.
-8. **Round limits** — a third `release_deposit(d>0)` is refused; `abandon_dispute` and
+9. **Round limits** — a third `release_deposit(d>0)` is refused; `abandon_dispute` and
    `escalate_to_mediation` each refuse the other's round; `dispute_rounds` never decrements.
-9. **Claim clock** — the `Disputed` and `Mediation` stretches are each added exactly once.
-10. **Compatibility** — raw bytes written by the pre-D2 program deserialise as `dispute_rounds = 1`
+10. **Claim clock** — the `Disputed` and `Mediation` stretches are each added exactly once.
+11. **Compatibility** — raw bytes written by the pre-D2 program deserialise as `dispute_rounds = 1`
     and `0`; `8 + Lease::INIT_SPACE` is still 218.
 
 Plus the pure-function Rust tests: `verdict_split`, name normalisation and hashing, candidate

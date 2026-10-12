@@ -24,9 +24,6 @@ pub const ATTESTATION_SEED: &[u8] = b"attestation";
 #[constant]
 pub const DISPUTE_SEED: &[u8] = b"dispute";
 
-#[constant]
-pub const APPRAISER_SEED: &[u8] = b"appraiser";
-
 // KYC levels on an Attestation. 0 is "none" and is never stored: an unverified wallet has no
 // account at all, so `attest` refuses level 0 rather than writing a useless record.
 #[constant]
@@ -103,22 +100,31 @@ pub const DISPUTE_WINDOW_SECS: i64 = 1_209_600;
 #[constant]
 pub const MAX_DISPUTE_ROUNDS: u8 = 2;
 
-// How many appraisers one side may nominate. Plain usize like MAX_ALLOWED_MINTS, because it is the
+// How many appraisal companies one side may nominate. Plain usize like MAX_ALLOWED_MINTS, because it is the
 // length of a fixed array on Dispute and the client reads that array's length out of the IDL.
 pub const MAX_CANDIDATES: usize = 3;
 
-// The appraiser's fee is capped at deposit / APPRAISER_FEE_CAP_DIVISOR, so a registry entry with an
+// The appraiser's fee is capped at deposit / APPRAISER_FEE_CAP_DIVISOR, so a candidate with an
 // absurd fee can never eat a deposit. `#[constant]` so the app can show the cap it applies.
 #[constant]
 pub const APPRAISER_FEE_CAP_DIVISOR: u64 = 10;
 
-// How long the two sides have to agree on an appraiser before anyone may bind the registry's
-// default, and how long the bound appraiser then has to submit a verdict. Same `#[constant]`
-// treatment as the two D1 windows: the app reads the value of the build it runs against, and
-// scripts/sync-idl.sh refuses an IDL that is not the demo set.
+// The longest an appraiser company's name may be, in bytes of the normalised display form
+// (docs/contracts/dispute-mediation.md §4). Plain usize: it is the length of a fixed array.
+pub const MAX_NAME_LEN: usize = 64;
+
+// How many times the pair may (re)propose the appraiser's wallet. Two each; the last proposal is
+// final, so the party who did not make it can always confirm it or let the mediation expire.
+pub const MAX_KEY_PROPOSALS: u8 = 4;
+
+// One deadline covers the whole selection: agreeing on a company AND attaching its wallet. Nothing
+// can be bound at or after it, and an unbound mediation may be expired from then on. The verdict
+// window then runs from the moment an appraiser is *bound*. Same `#[constant]` treatment as the D1
+// windows: the app reads the value of the build it runs against, and scripts/sync-idl.sh refuses
+// an IDL that is not the demo set.
 //
 // 7 and 14 days in a real deployment; 30 s and 60 s in the demo so the whole arbitration fits on
-// stage. The verdict window runs from the moment an appraiser is *bound*, not from escalation.
+// stage.
 #[cfg(feature = "demo")]
 #[constant]
 pub const SELECTION_WINDOW_SECS: i64 = 30;

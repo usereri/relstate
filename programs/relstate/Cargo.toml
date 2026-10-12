@@ -34,6 +34,9 @@ solana-instructions-sysvar = "3.0.1"
 # lives here; the token-2022 interface does not re-export it. Version matches the one anchor-spl
 # already pulls in, so this adds no new crate to the tree.
 spl-pod = "0.7.4"
+# The appraiser company name is compared by sha256 of its canonical form (state.rs). Already in the
+# lock file through anchor-lang, so this adds no new crate to the tree.
+solana-sha256-hasher = "3.1.0"
 [dev-dependencies]
 litesvm = "0.10.0"
 litesvm-token = "0.10.0"

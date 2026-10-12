@@ -87,10 +87,6 @@ pub enum ErrorCode {
     NotMediationParty,
     #[msg("Wrong dispute round for this instruction: reject with abandon_dispute until the last round, then with escalate_to_mediation")]
     WrongDisputeRound,
-    #[msg("That appraiser's registry entry is not active")]
-    AppraiserInactive,
-    #[msg("That appraiser is not the registry's default")]
-    AppraiserNotDefault,
     #[msg("An appraiser is already bound to this dispute")]
     AppraiserAlreadyBound,
     #[msg("No appraiser is bound to this dispute yet")]
@@ -99,22 +95,40 @@ pub enum ErrorCode {
     NotBoundAppraiser,
     #[msg("This side has already proposed its appraisers")]
     CandidatesAlreadyProposed,
-    #[msg("The same appraiser was proposed twice")]
+    #[msg("The same appraiser company was proposed twice")]
     DuplicateCandidate,
-    #[msg("That appraiser was not proposed by either side")]
+    #[msg("That appraiser company was not proposed by either side")]
     CandidateNotProposed,
-    #[msg("The sides still have time to agree on an appraiser")]
+    #[msg("Nothing is bound yet and the selection window is still open")]
     SelectionWindowOpen,
     #[msg("The appraiser still has time to submit a verdict")]
     VerdictWindowOpen,
     #[msg("The window for the appraiser's verdict has passed")]
     VerdictWindowClosed,
-    #[msg("An appraiser's key must not be the default (all-zero) pubkey")]
-    InvalidAppraiser,
     #[msg("Settling a lease in mediation needs its dispute account")]
     DisputeAccountRequired,
     #[msg("This lease has no dispute account to pass")]
     UnexpectedDisputeAccount,
-    #[msg("Too late to bind an appraiser: the verdict window has already passed, so the mediation can be expired")]
-    BindingWindowClosed,
+    #[msg("The selection window has closed, so the mediation can be expired")]
+    SelectionWindowClosed,
+    #[msg("An appraiser name must be 1-64 bytes of UTF-8 without control characters")]
+    InvalidAppraiserName,
+    #[msg("Propose between one and three appraiser candidates")]
+    NoCandidates,
+    #[msg("The appraiser fee is above a tenth of the deposit")]
+    FeeAboveCap,
+    #[msg("The appraiser company is already agreed")]
+    NameAlreadyAgreed,
+    #[msg("The two sides have not agreed on an appraiser company yet")]
+    NameNotAgreed,
+    #[msg("An appraiser's wallet must not be the default (all-zero) pubkey")]
+    InvalidAppraiserKey,
+    #[msg("No more appraiser wallet proposals are allowed; confirm the last one or let the mediation expire")]
+    KeyProposalsExhausted,
+    #[msg("No appraiser wallet has been proposed")]
+    NoKeyProposed,
+    #[msg("The other party must confirm the appraiser wallet")]
+    CannotConfirmOwnProposal,
+    #[msg("That is not the appraiser wallet that was proposed")]
+    KeyMismatch,
 }
