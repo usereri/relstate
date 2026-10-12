@@ -1143,11 +1143,18 @@ export function LeaseTab({
     main = (
       <ProposeLease key={draft ? draft.listing + draft.tenant : "blank"} me={me} listings={mine} h={{ ...h, propose: proposeAndSelect }} goListings={goListings} initial={draft ?? undefined} />
     );
+  else if (!lease && sel && sel !== "new")
+    // Just proposed or just selected: the list reloads on the next tick, so this is not "no lease".
+    main = <Waiting title="Loading" text="Reading your new lease from the network." />;
   else if (!lease)
     main = (
       <Waiting
         title="No lease for you yet"
-        text={`You are connected as ${me}. A landlord has to propose the lease to exactly this address; anything proposed to another wallet will not show up. Apply to an apartment in the Apartments tab to make yourself known.`}
+        text={
+          role === "landlord"
+            ? "You have not proposed a lease yet. Choose an applicant in My listings, or start a proposal here."
+            : `You are connected as ${me}. A landlord has to propose the lease to exactly this address; anything proposed to another wallet will not show up. Apply to an apartment in the Apartments tab to make yourself known.`
+        }
       />
     );
   else if (!snap) main = <Waiting title="Loading" text="Reading both records from the network." />;
