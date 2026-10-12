@@ -14,7 +14,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Terms } from "@/components/Terms";
 import * as chain from "@/lib/chain";
 import type { DisputeView, Role } from "@/lib/chain";
-import { DIRECTORY_AVAILABLE, loadAppraiserDirectory, mergeDirectory, trustedLabel, type AppraiserOption } from "@/lib/appraisers";
+import { DIRECTORY_AVAILABLE, loadAppraiserDirectory, mergeDirectory, trustedLabel, trustedLabelFor, type AppraiserOption } from "@/lib/appraisers";
 import * as med from "@/lib/mediation";
 import { sharedRead } from "@/lib/reads";
 import { useChain } from "@/lib/useChain";
@@ -65,7 +65,7 @@ export const nameOf = (options: AppraiserOption[] | undefined, wallet: string): 
  * is the directory's claim, and the key is what the program acts on.
  */
 export const committedName = (options: AppraiserOption[] | undefined, wallet: string): string =>
-  trustedLabel(options?.find((o) => o.wallet === wallet), (k) => short(k, 5));
+  trustedLabelFor(options?.find((o) => o.wallet === wallet), wallet, (k) => short(k, 5));
 
 /** The registry entry for a key, or undefined while the registry loads or if the key left it. */
 export const optionFor = (options: AppraiserOption[] | undefined, wallet: string) => options?.find((o) => o.wallet === wallet);

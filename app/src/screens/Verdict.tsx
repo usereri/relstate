@@ -23,7 +23,7 @@ import { Terms } from "@/components/Terms";
 import * as chain from "@/lib/chain";
 import * as med from "@/lib/mediation";
 import { optionFor, useAppraiserOptions } from "@/screens/Mediation";
-import { trustedLabel } from "@/lib/appraisers";
+import { trustedLabelFor } from "@/lib/appraisers";
 import { CONSOLE_AVAILABLE, asked, parseAmountInput, postVerdict, previewGate, verdictProblem, type VerdictResult } from "@/lib/verdict";
 import { invalidateReads } from "@/lib/reads";
 import { Tick, useChain } from "@/lib/useChain";
@@ -198,7 +198,7 @@ function Console({ bump }: { bump: () => void }) {
                   ["Deposit in vault", `${usdc(lease.deposit)} USDC`],
                   ["Landlord", short(lease.landlord, 6)],
                   ["Tenant", short(lease.tenant, 6)],
-                  ...(bound ? ([["Bound appraiser", trustedLabel(optionFor(options, bound), (k) => short(k, 6))]] as [string, string][]) : []),
+                  ...(bound ? ([["Bound appraiser", trustedLabelFor(optionFor(options, bound), bound, (k) => short(k, 6))]] as [string, string][]) : []),
                   ...(dispute
                     ? ([
                         [

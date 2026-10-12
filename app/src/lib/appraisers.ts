@@ -130,6 +130,18 @@ export function trustedLabel(o: Pick<AppraiserOption, "name" | "nameVerified" | 
   return o?.nameVerified && o.name ? o.name : shorten(o?.wallet ?? "");
 }
 
+/**
+ * `trustedLabel` for a key you already hold.
+ *
+ * The directory is off chain and optional: it 404s on a backend that predates the route, and the
+ * registry itself may not have loaded when a bound appraiser is already on screen. `trustedLabel`
+ * then has no entry and no key to shorten, and would render an empty label exactly where A.4 says
+ * the key belongs — on a commit site, next to the deposit it moves.
+ */
+export function trustedLabelFor(o: Pick<AppraiserOption, "name" | "nameVerified" | "wallet"> | undefined, wallet: string, shorten: (s: string) => string): string {
+  return trustedLabel(o ?? { wallet, name: "", nameVerified: false }, shorten);
+}
+
 /** How to call an appraiser on screen: their directory name, or a shortened key when there is none. */
 export const appraiserLabel = (o: Pick<AppraiserOption, "name" | "wallet">, shorten: (s: string) => string): string =>
   o.name || shorten(o.wallet);
