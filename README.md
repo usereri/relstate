@@ -162,11 +162,11 @@ make demo-setup     # terminal 2: mint + fund the built-in test wallets + four d
 make demo-app       # terminal 2: the web app at http://localhost:5173
 ```
 
-Open **two tabs** at `http://localhost:5173/` and pick a different role in each at sign-in (the role switch in the header changes it any time; it is remembered per tab).
+Open **two tabs** at `http://localhost:5173/`. Sign in with **Demo wallet (landlord)** in one and **Demo wallet (tenant)** in the other. Sign-up does not ask for a role (everyone starts the same, as a tenant); the role switch in the header changes it any time and is remembered per tab.
 
 For scripted demos and tests only, `?role=landlord` / `?role=tenant` opens a tab directly as that role (a testing override, not part of normal navigation; see [`docs/env-checklist.md`](docs/env-checklist.md#role-and-session)).
 
-In each, open **Connect wallet** and pick the built-in **Test wallet**. It is a fixed key per role for local networks, so the two tabs are two different people and no extension is needed.
+The demo wallets are fixed keys per role for local networks, so the two tabs are two different people and no extension is needed.
 
 `make demo-setup` also accepts your own addresses: `make demo-setup WALLETS="<addr> <addr>"`.
 

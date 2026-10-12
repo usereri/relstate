@@ -370,6 +370,7 @@ function Shell({
       <header className="sticky top-0 z-40 border-b bg-card/85 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-7xl items-center gap-3 px-4 sm:gap-6 sm:px-8">
           <Logo className="max-sm:[&>span]:hidden" />
+          <Divider className="hidden lg:block" />
           <nav role="tablist" aria-label="Sections" className="hidden gap-1 lg:flex">
             {TABS[role].map(([t, label]) => (
               <button
@@ -389,7 +390,9 @@ function Shell({
           </nav>
           <div className="ml-auto flex min-w-0 items-center gap-2">
             <RoleSwitch role={role} onPick={pickRole} />
+            <Divider className="hidden sm:block" />
             <WalletButton balances={balances} />
+            <Divider />
             <AccountMenu role={role} name={account?.name} switchRole={switchRole} signOut={signOut} />
           </div>
         </div>
@@ -607,3 +610,5 @@ function RoleSwitch({ role, onPick }: { role: Role; onPick: (r: Role) => void })
     </div>
   );
 }
+
+const Divider = ({ className }: { className?: string }) => <span aria-hidden className={cn("h-6 w-px shrink-0 bg-border", className)} />;
