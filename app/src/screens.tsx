@@ -494,6 +494,14 @@ export function ActiveLease({ lease, listing, now, role, h }: { lease: LeaseView
                 Deduction from the deposit (USDC)
               </label>
               <Input id="deduction" inputMode="decimal" value={deduction} onChange={(e) => setDeduction(e.target.value)} aria-invalid={badDeduction} />
+              {lease.disputeRounds > 0 && (
+                <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
+                  The tenant rejected your earlier proposal, so it is void and the deposit is still in escrow.{" "}
+                  {lease.disputeRounds + 1 < chain.MAX_DISPUTE_ROUNDS
+                    ? "You can propose again."
+                    : "This is your last proposal: if the tenant rejects it too, an independent appraiser decides. Release the full deposit (0) to end it now."}
+                </p>
+              )}
               <p className="text-xs text-muted-foreground">
                 The tenant gets {usdc(Math.max(0, lease.deposit - deductionBase))} USDC back. Leave at 0 to return it in full. A deduction is only a proposal: the tenant can accept or reject it, and it is visible on both records.
               </p>
