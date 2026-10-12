@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import * as anchor from "@anchor-lang/core";
 import { ed25519 } from "@noble/curves/ed25519.js";
+import { WalletNotConnectedError, WalletSignTransactionError } from "@solana/wallet-adapter-base";
+import { errorMessage } from "../chain";
 import {
   CONFIDENTIAL_DERIVATION_MESSAGE as MSG,
   adapterWallet,
@@ -238,38 +240,93 @@ describe("chainAwareAccount", () => {
 
 describe("adapterWallet with a Wallet Standard wallet attached", () => {
   const CHAIN = "solana:localnet";
-  const publicKey = localKeypair("tenant").publicKey;
+  const user = localKeypair("tenant"); // the connected wallet
+  const sponsor = anchor.web3.Keypair.generate(); // fee payer: its slot stays empty, as in sponsored mode
+  const publicKey = user.publicKey;
   const address = publicKey.toBase58();
+  const blockhash = anchor.web3.Keypair.generate().publicKey.toBase58();
+  const ix = new anchor.web3.TransactionInstruction({
+    keys: [{ pubkey: publicKey, isSigner: true, isWritable: false }],
+    programId: anchor.web3.PublicKey.default,
+    data: Buffer.alloc(0),
+  });
 
-  // A real legacy transaction, so the adapter's wire handling (serialize without requiring every
-  // signature, deserialize back) runs for real instead of being stubbed out.
-  const legacyTx = () => {
-    const tx = new anchor.web3.Transaction({ feePayer: publicKey, recentBlockhash: anchor.web3.PublicKey.default.toBase58() });
-    tx.add(
-      new anchor.web3.TransactionInstruction({ keys: [], programId: anchor.web3.PublicKey.default, data: Buffer.alloc(0) }),
+  const legacyTx = () => new anchor.web3.Transaction({ feePayer: sponsor.publicKey, recentBlockhash: blockhash }).add(ix);
+  const versionedTx = () =>
+    new anchor.web3.VersionedTransaction(
+      new anchor.web3.TransactionMessage({ payerKey: sponsor.publicKey, recentBlockhash: blockhash, instructions: [ix] }).compileToV0Message(),
     );
-    return tx;
-  };
 
-  it("signs through the standard feature, naming the chain, when the wallet can serve it", async () => {
-    // Echoes the serialized bytes back unchanged: a real wallet would add its signature, but this
-    // only has to prove the request named the right account and chain, and that the bytes round-trip.
+  // A wallet that really signs: it decodes the bytes it was sent and adds the user's signature, so a
+  // test can tell bytes that came back from the wallet from bytes that were merely echoed.
+  const signingWallet = (opts: { kind: "legacy" | "versioned" } = { kind: "legacy" }) => {
+    const calls: { account: unknown; chain?: string }[] = [];
     const signTransaction = vi.fn(async (...inputs: { account: unknown; chain?: string; transaction: Uint8Array }[]) =>
-      inputs.map((i) => ({ signedTransaction: i.transaction })),
+      inputs.map((i) => {
+        calls.push({ account: i.account, chain: i.chain });
+        if (opts.kind === "versioned") {
+          const tx = anchor.web3.VersionedTransaction.deserialize(i.transaction);
+          tx.sign([user]);
+          return { signedTransaction: tx.serialize() };
+        }
+        const tx = anchor.web3.Transaction.from(i.transaction);
+        tx.partialSign(user);
+        return { signedTransaction: new Uint8Array(tx.serialize({ requireAllSignatures: false, verifySignatures: false })) };
+      }),
     );
     const standard: StandardWallet = {
       accounts: [{ address, features: ["solana:signTransaction"], chains: [CHAIN] }],
       features: { "solana:signTransaction": { signTransaction } },
     };
-    const adapterSign = vi.fn();
-    const w = adapterWallet({ publicKey, signTransaction: adapterSign, signAllTransactions: vi.fn(), standard }, CHAIN);
+    return { standard, signTransaction, calls };
+  };
+  const adapterSign = () => vi.fn(async (t: any) => t);
+  const wrap = (standard: StandardWallet | null, chain: string | null = CHAIN) => {
+    const raw = adapterSign();
+    return { raw, w: adapterWallet({ publicKey, signTransaction: raw, signAllTransactions: vi.fn(), standard }, chain) };
+  };
+  const userSigOf = (tx: any): Uint8Array | null | undefined =>
+    "version" in tx
+      ? tx.signatures[tx.message.staticAccountKeys.findIndex((k: any) => k.equals(publicKey))]
+      : tx.signatures.find((x: any) => x.publicKey.equals(publicKey))?.signature;
 
+  it("legacy: the returned transaction is the WALLET's bytes (its signature is on it), the sponsor slot stays empty", async () => {
+    const { standard, calls } = signingWallet();
+    const { w, raw } = wrap(standard);
     const out = await w.signTransaction(legacyTx());
-    expect(out.feePayer?.equals(publicKey)).toBe(true);
-    expect(signTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ chain: CHAIN, account: expect.objectContaining({ address }) }),
-    );
-    expect(adapterSign).not.toHaveBeenCalled();
+
+    const sig = userSigOf(out);
+    expect(sig).toBeTruthy();
+    expect(ed25519.verify(sig!, out.serializeMessage(), publicKey.toBytes())).toBe(true);
+    expect(out.signatures.find((x) => x.publicKey.equals(sponsor.publicKey))?.signature).toBeNull();
+    expect(calls).toEqual([{ account: expect.objectContaining({ address }), chain: CHAIN }]);
+    expect(raw).not.toHaveBeenCalled();
+  });
+
+  it("versioned (the confidential rent flow): the wallet's signature survives the round trip", async () => {
+    const { standard, calls } = signingWallet({ kind: "versioned" });
+    const { w } = wrap(standard);
+    const out = await w.signTransaction(versionedTx());
+
+    expect("version" in out).toBe(true);
+    const sig = userSigOf(out);
+    expect(sig && sig.some((b) => b !== 0)).toBe(true);
+    expect(ed25519.verify(sig!, out.message.serialize(), publicKey.toBytes())).toBe(true);
+    expect(calls[0]!.chain).toBe(CHAIN);
+  });
+
+  it("signAllTransactions: one request carrying every transaction, outputs mapped back in order", async () => {
+    const { standard, signTransaction } = signingWallet();
+    const { w } = wrap(standard);
+    const a = legacyTx();
+    const b = legacyTx();
+    b.recentBlockhash = anchor.web3.Keypair.generate().publicKey.toBase58(); // a different message
+    const out = await w.signAllTransactions([a, b]);
+
+    expect(signTransaction).toHaveBeenCalledTimes(1);
+    expect(signTransaction.mock.calls[0]).toHaveLength(2);
+    expect(out.map((t) => t.recentBlockhash)).toEqual([a.recentBlockhash, b.recentBlockhash]);
+    out.forEach((t) => expect(ed25519.verify(userSigOf(t)!, t.serializeMessage(), publicKey.toBytes())).toBe(true));
   });
 
   it("falls back to the adapter's own signer when the standard account does not list the chain", async () => {
@@ -277,14 +334,74 @@ describe("adapterWallet with a Wallet Standard wallet attached", () => {
       accounts: [{ address, features: ["solana:signTransaction"], chains: ["solana:devnet"] }],
       features: { "solana:signTransaction": { signTransaction: vi.fn() } },
     };
-    const adapterSign = vi.fn(async (t: any) => t);
-    const w = adapterWallet(
-      { publicKey, signTransaction: adapterSign, signAllTransactions: vi.fn(), standard },
-      CHAIN,
-    );
+    const { w, raw } = wrap(standard);
     const tx = { n: 1 } as any;
     await w.signTransaction(tx);
-    expect(adapterSign).toHaveBeenCalledWith(tx);
+    expect(raw).toHaveBeenCalledWith(tx);
+  });
+
+  it("names no cluster (null) -> the adapter's signer is used untouched", async () => {
+    const { standard, signTransaction } = signingWallet();
+    const { w, raw } = wrap(standard, null);
+    const tx = { n: 2 } as any;
+    await w.signTransaction(tx);
+    expect(raw).toHaveBeenCalledWith(tx);
+    expect(signTransaction).not.toHaveBeenCalled();
+  });
+
+  describe("failures keep the adapter's shape", () => {
+    // What a Wallet Standard wallet throws when the user presses Reject: a plain Error carrying the
+    // EIP-1193-style code 4001, which is how Phantom reports it. The adapter re-wraps it, and
+    // chain.errorMessage's wallet guidance is keyed on the resulting `Wallet…` name.
+    const rejection = () => Object.assign(new Error("User rejected the request."), { code: 4001 });
+    const rejecting = (): StandardWallet => ({
+      accounts: [{ address, features: ["solana:signTransaction"], chains: [CHAIN] }],
+      features: { "solana:signTransaction": { signTransaction: vi.fn(async () => Promise.reject(rejection())) } },
+    });
+
+    it("a rejection becomes WalletSignTransactionError, with the cause and message kept", async () => {
+      const { w } = wrap(rejecting());
+      const err = await w.signTransaction(legacyTx()).then(
+        () => null,
+        (e) => e,
+      );
+      expect(err).toBeInstanceOf(WalletSignTransactionError);
+      expect(err.name).toBe("WalletSignTransactionError");
+      expect(err.message).toBe("User rejected the request.");
+      expect(err.error.code).toBe(4001);
+    });
+
+    it("so errorMessage still says to check the wallet's network", async () => {
+      const { w } = wrap(rejecting());
+      const err = await w.signTransaction(legacyTx()).then(
+        () => null,
+        (e) => e,
+      );
+      expect(errorMessage(err)).toMatch(/User rejected the request\. \(WalletSignTransactionError\)/);
+      expect(errorMessage(err)).toMatch(/set to the same network as this app/);
+    });
+
+    it("signAllTransactions wraps the same way", async () => {
+      const { w } = wrap(rejecting());
+      await expect(w.signAllTransactions([legacyTx()])).rejects.toBeInstanceOf(WalletSignTransactionError);
+    });
+
+    it("an error the wallet already typed as a WalletError passes through unwrapped", async () => {
+      const typed = new WalletNotConnectedError();
+      const standard: StandardWallet = {
+        accounts: [{ address, features: ["solana:signTransaction"], chains: [CHAIN] }],
+        features: { "solana:signTransaction": { signTransaction: vi.fn(async () => Promise.reject(typed)) } },
+      };
+      await expect(wrap(standard).w.signTransaction(legacyTx())).rejects.toBe(typed);
+    });
+
+    it("an account that vanished since connecting is WalletNotConnectedError, and nothing is sent", async () => {
+      const { standard, signTransaction } = signingWallet();
+      const { w } = wrap(standard);
+      (standard.accounts as StandardWallet["accounts"] & unknown[]) = [];
+      await expect(w.signTransaction(legacyTx())).rejects.toBeInstanceOf(WalletNotConnectedError);
+      expect(signTransaction).not.toHaveBeenCalled();
+    });
   });
 });
 

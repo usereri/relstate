@@ -6,6 +6,7 @@
 import * as anchor from "@anchor-lang/core";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2";
+import { WalletError, WalletNotConnectedError, WalletSignTransactionError } from "@solana/wallet-adapter-base";
 import { CLUSTER } from "./config";
 
 const { Keypair, PublicKey } = anchor.web3;
@@ -144,13 +145,24 @@ function chainAwareSigner(wallet: StandardWallet, account: StandardAccount, chai
     "version" in tx ? tx.serialize() : new Uint8Array(tx.serialize({ requireAllSignatures: false, verifySignatures: false }));
   const back = <T extends AnyTransaction>(tx: T, bytes: Uint8Array): T =>
     ("version" in tx ? anchor.web3.VersionedTransaction.deserialize(bytes) : anchor.web3.Transaction.from(bytes)) as T;
+  // What `StandardWalletAdapter` does around the same call: a disconnected wallet is
+  // WalletNotConnectedError, and any other failure — including the user pressing Reject — is
+  // re-wrapped as WalletSignTransactionError. `chain.errorMessage` keys its wallet guidance ("set to
+  // the same network as this app…") on that `Wallet…` name, so a bare Error from the extension would
+  // silently lose it.
+  const request = async (txs: AnyTransaction[]) => {
+    if (!wallet.accounts.some((a) => a.address === account.address)) throw new WalletNotConnectedError();
+    try {
+      return await feature.signTransaction(...txs.map((tx) => ({ account, chain, transaction: wire(tx) })));
+    } catch (error) {
+      if (error instanceof WalletError) throw error;
+      throw new WalletSignTransactionError((error as { message?: string } | null)?.message, error);
+    }
+  };
   return {
-    signTransaction: async <T extends AnyTransaction>(tx: T): Promise<T> => {
-      const [out] = await feature.signTransaction({ account, chain, transaction: wire(tx) });
-      return back(tx, out!.signedTransaction);
-    },
+    signTransaction: async <T extends AnyTransaction>(tx: T): Promise<T> => back(tx, (await request([tx]))[0]!.signedTransaction),
     signAllTransactions: async <T extends AnyTransaction>(txs: T[]): Promise<T[]> => {
-      const out = await feature.signTransaction(...txs.map((tx) => ({ account, chain, transaction: wire(tx) })));
+      const out = await request(txs);
       return txs.map((tx, i) => back(tx, out[i]!.signedTransaction));
     },
   };
@@ -159,13 +171,13 @@ function chainAwareSigner(wallet: StandardWallet, account: StandardAccount, chai
 /**
  * A browser-extension wallet as a `WalletProvider`.
  *
- * `chain` is the cluster to name in the signing request; it defaults to the one the app's own RPC
- * points at. A wallet that cannot be reached through its standard interface keeps the adapter's
- * signers unchanged.
+ * `chain` is the cluster to name in the signing request, `CLUSTER` by default, and null when the app
+ * does not know it — in which case, like a wallet that cannot be reached through its standard
+ * interface, the adapter's own signers are used unchanged.
  */
-export function adapterWallet(w: AdapterWallet, chain = CLUSTER): WalletProvider {
-  const account = chainAwareAccount(w.standard, w.publicKey, chain);
-  const signers = account ? chainAwareSigner(w.standard!, account, chain) : { signTransaction: w.signTransaction, signAllTransactions: w.signAllTransactions };
+export function adapterWallet(w: AdapterWallet, chain: string | null = CLUSTER): WalletProvider {
+  const account = chain ? chainAwareAccount(w.standard, w.publicKey, chain) : null;
+  const signers = account ? chainAwareSigner(w.standard!, account, chain!) : { signTransaction: w.signTransaction, signAllTransactions: w.signAllTransactions };
   return {
     kind: "adapter",
     publicKey: w.publicKey,
