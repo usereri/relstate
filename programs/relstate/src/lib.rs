@@ -148,39 +148,28 @@ pub mod relstate {
 
     // ---- D2 appraiser arbitration (docs/contracts/dispute-mediation.md)
 
-    /// Admin: adds an appraisal company to the registry, active from the start.
-    pub fn register_appraiser(
-        ctx: Context<RegisterAppraiser>,
-        wallet: Pubkey,
-        fee: u64,
-        name_hash: [u8; 32],
+    /// Landlord or tenant, phase 1: nominates one to three appraisal companies by name, each with
+    /// a fee. Once per side.
+    pub fn propose_appraisers(
+        ctx: Context<ProposeAppraisers>,
+        candidates: Vec<CandidateInput>,
     ) -> Result<()> {
-        crate::instructions::appraiser::handle_register_appraiser(ctx, wallet, fee, name_hash)
+        crate::instructions::mediation::handle_propose_appraisers(ctx, candidates)
     }
 
-    /// Admin: suspends or restores a registry entry.
-    pub fn set_appraiser_active(ctx: Context<UpdateAppraiser>, active: bool) -> Result<()> {
-        crate::instructions::appraiser::handle_set_appraiser_active(ctx, active)
+    /// Landlord or tenant, phase 1: names one company from either list. Matching picks agree it.
+    pub fn pick_appraiser(ctx: Context<PickAppraiser>, name: String) -> Result<()> {
+        crate::instructions::mediation::handle_pick_appraiser(ctx, name)
     }
 
-    /// Admin: flags the appraiser bound when the two sides fail to agree in time.
-    pub fn set_default_appraiser(ctx: Context<UpdateAppraiser>, is_default: bool) -> Result<()> {
-        crate::instructions::appraiser::handle_set_default_appraiser(ctx, is_default)
+    /// Landlord or tenant, phase 2: proposes the wallet that signs for the agreed company.
+    pub fn propose_appraiser_key(ctx: Context<AppraiserKey>, wallet: Pubkey) -> Result<()> {
+        crate::instructions::mediation::handle_propose_appraiser_key(ctx, wallet)
     }
 
-    /// Landlord or tenant: nominates one to three registered, active appraisers. Once per side.
-    pub fn propose_appraisers(ctx: Context<ProposeAppraisers>) -> Result<()> {
-        crate::instructions::mediation::handle_propose_appraisers(ctx)
-    }
-
-    /// Landlord or tenant: names one appraiser from either side's list. Matching picks bind it.
-    pub fn pick_appraiser(ctx: Context<PickAppraiser>) -> Result<()> {
-        crate::instructions::mediation::handle_pick_appraiser(ctx)
-    }
-
-    /// Anyone, once the selection window has passed: binds the registry's default appraiser.
-    pub fn bind_default_appraiser(ctx: Context<BindDefaultAppraiser>) -> Result<()> {
-        crate::instructions::mediation::handle_bind_default_appraiser(ctx)
+    /// The party that did not propose, phase 2: confirms the same wallet and binds it.
+    pub fn confirm_appraiser_key(ctx: Context<AppraiserKey>, wallet: Pubkey) -> Result<()> {
+        crate::instructions::mediation::handle_confirm_appraiser_key(ctx, wallet)
     }
 
     /// The bound appraiser decides the deduction; the deposit is split and the lease closes.
@@ -188,8 +177,8 @@ pub mod relstate {
         crate::instructions::mediation::handle_submit_verdict(ctx, deduction)
     }
 
-    /// Landlord or tenant, after the verdict window: the lease returns to `Active` and the claim
-    /// clock resumes.
+    /// Landlord or tenant: past the selection deadline with nothing bound, or past the verdict
+    /// deadline once bound. The lease returns to `Active` and the claim clock resumes.
     pub fn expire_mediation(ctx: Context<ExpireMediation>) -> Result<()> {
         crate::instructions::mediation::handle_expire_mediation(ctx)
     }

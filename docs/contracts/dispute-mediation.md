@@ -4,26 +4,40 @@ The escalation that sits behind the D1 settlement primitive (`docs/contracts/pro
 §5). D1 ends a contested deduction one of two ways: the tenant accepts it, or the tenant rejects it
 and gets the whole deposit. The second is not a *decision* — it is the program admitting it cannot
 tell who is right. D2 adds the missing decision-maker: a third-party appraiser (*rzeczoznawca*) the
-two sides choose together, whose signed verdict the program pays out.
+two sides choose **together**, whose signed verdict the program pays out.
 
-**Status: specified here, implemented on branch `d2-mediation`. Not deployed.** Only claim as
-working what is merged and deployed; see §10.
+**Status: specified here (revision 2, open appraisers), implemented on branch `open-appraisers`. Not
+deployed.** Only claim as working what is merged and deployed; see §10.
+
+Revision 2 removes the admin-maintained appraiser registry that revision 1 had. The platform cannot
+pre-register appraisers in every city, and a registry made the platform the gatekeeper of who may
+arbitrate. Now **the two parties choose the appraiser, and only they do**: there is no `Appraiser`
+account, no `register_appraiser` / `set_appraiser_active` / `set_default_appraiser`, no default
+appraiser and no admin instruction anywhere in mediation. D2 was never deployed, so the `Dispute`
+layout and the D2 error numbers change freely; `Lease` (218 bytes) does not (§8).
 
 Program id is unchanged (`G4iMjveQKXztnGoxigAeWPrb5evT9yt6qaLkgQEp2dXm`) and this is an **in-place
-upgrade**, not a fresh deploy — §8 is the compatibility argument.
+upgrade** of the pre-D2 devnet program, not a fresh deploy — §8 is the compatibility argument.
 
 ## 1. The flow in one paragraph
 
 The term ends. The landlord proposes a deduction (`release_deposit(d>0)`) and the lease goes
 `Disputed`, exactly as in D1. The tenant rejects (`abandon_dispute`): the proposal is void and the
 lease returns to `Active` with the claim clock resumed — **round 1**. The landlord may propose once
-more. The tenant rejects again (`escalate_to_mediation`): this time the lease enters
-**`Mediation`** and the deposit stays locked. Each side names up to three appraisal companies from
-an on-chain registry; each then picks one *from either list*, and the same pick from both binds it.
-Nobody agrees in time, and anyone can bind the registry's default appraiser. The bound appraiser
-submits a verdict; the program splits the deposit and closes the lease. The appraiser goes silent
-and either party expires the mediation, which returns the lease to `Active` and the deposit to the
-tenant through the normal claim.
+more. The tenant rejects again (`escalate_to_mediation`): this time the lease enters **`Mediation`**
+and the deposit stays locked. Selection then has two phases under **one deadline**:
+
+* **Phase 1 — agree on a company.** Each side proposes up to three appraisal *companies by name*,
+  each with a fee. Each side picks one candidate from either list. When both picks name the same
+  company, the name is agreed (and so is the fee).
+* **Phase 2 — attach a wallet.** One party proposes the wallet that will sign for that company; the
+  *other* party confirms the same wallet. Only then is the appraiser **bound**, and the verdict
+  window starts.
+
+The bound wallet submits a verdict; the program splits the deposit and closes the lease. If nothing
+is bound by `selection_deadline`, or the bound wallet is silent past `verdict_deadline`, either party
+expires the mediation, which returns the lease to `Active` and the deposit to the tenant through the
+normal claim. Both parties together can `settle_dispute` at any time.
 
 Two rejections, then it is no longer the parties' call. `MAX_DISPUTE_ROUNDS = 2`.
 
@@ -37,11 +51,19 @@ stateDiagram-v2
     Disputed --> Active: abandon_dispute (rounds+1 < MAX)
     Disputed --> Mediation: escalate_to_mediation (rounds+1 == MAX)
     Disputed --> Closed: settle_dispute (both sign)
-    Mediation --> Mediation: propose_appraisers / pick_appraiser
-    Mediation --> Mediation: bind_default_appraiser (after selection window)
-    Mediation --> Closed: submit_verdict (bound appraiser, inside verdict window)
+
+    state Mediation {
+        [*] --> NoName
+        NoName --> NoName: propose_appraisers / pick_appraiser (names differ)
+        NoName --> NameAgreed: pick_appraiser (both picks name the same company)
+        NameAgreed --> NameAgreed: propose_appraiser_key (re-propose, bounded)
+        NameAgreed --> Bound: confirm_appraiser_key (other party, same wallet)
+    }
+
+    Mediation --> Closed: submit_verdict (bound wallet, now < verdict_deadline)
     Mediation --> Closed: settle_dispute (both sign, any time)
-    Mediation --> Active: expire_mediation (verdict window passed)
+    Mediation --> Active: expire_mediation (unbound and now >= selection_deadline)
+    Mediation --> Active: expire_mediation (bound and now >= verdict_deadline)
     Active --> Closed: claim_deposit / release_deposit(0)
 ```
 
@@ -50,8 +72,7 @@ stateDiagram-v2
 
 ### Why nothing is ever stuck
 
-Every state has at least two exits, and in each state at least two of them need only one party to
-act. This is the rule the D1 module comment states and the thing a reviewer should attack first.
+Every state has at least two exits, and in each state at least one needs only one party to act.
 
 | State | Exit | Who must act | Needs a counterparty? |
 |---|---|---|---|
@@ -59,39 +80,71 @@ act. This is the rule the D1 module comment states and the thing a reviewer shou
 | `Disputed` | `abandon_dispute` / `escalate_to_mediation` (inside the window) | tenant | no |
 | `Disputed` | `finalize_deduction` (after the window) | landlord | no |
 | `Disputed` | `settle_dispute` | both | yes |
-| `Mediation`, unbound | `bind_default_appraiser` (after the selection window) | **anyone** | no |
-| `Mediation`, unbound | `pick_appraiser` matching the other side | the other side | yes |
-| `Mediation`, bound | `submit_verdict` (inside the verdict window) | appraiser | no |
-| `Mediation`, any | `expire_mediation` (after the verdict window) | landlord **or** tenant | no |
+| `Mediation`, unbound | `expire_mediation` (`now >= selection_deadline`) | landlord **or** tenant | no |
+| `Mediation`, unbound | phase 1 / phase 2 to a binding (before `selection_deadline`) | both, in turn | yes |
+| `Mediation`, bound | `submit_verdict` (`now < verdict_deadline`) | bound wallet | no |
+| `Mediation`, bound | `expire_mediation` (`now >= verdict_deadline`) | landlord **or** tenant | no |
 | `Mediation`, any | `settle_dispute` | both | yes |
 | `Active`, term paid | `claim_deposit` (after the claim deadline) | tenant | no |
 | `Active`, term paid | `release_deposit(0)` | landlord | no |
 
-The worst case — the appraiser never signs and the two sides never agree — ends at
-`expire_mediation`, which puts the lease back in `Active` with the claim clock resumed. The tenant
-then takes the whole deposit through `claim_deposit`. That is the same trade-off D1 already
-documents and accepts: with no oracle willing to speak, the program defaults to the tenant.
+**There is no fallback appraiser.** Revision 1 let *anyone* bind an admin-designated default after
+the selection window. Revision 2 has nothing to bind unless both parties agree, so the guarantee is
+carried entirely by `expire_mediation`: a mediation that never binds expires, and the tenant then
+takes the whole deposit through `claim_deposit`. That is the same trade-off D1 already documents —
+with no oracle willing to speak, the program defaults to the tenant — and §10 states its sharp edge
+plainly.
 
-### Timing
+### Timing: one selection deadline, then one verdict window
 
-`escalate_to_mediation` at time `M` sets both deadlines up front, so a mediation nobody
-participates in still expires:
+`escalate_to_mediation` at time `M` sets a single deadline:
 
 ```
-selection_deadline = M + SELECTION_WINDOW_SECS
-verdict_deadline   = selection_deadline + VERDICT_WINDOW_SECS      (provisional)
+selection_deadline = M + SELECTION_WINDOW_SECS      (covers phase 1 AND phase 2)
+verdict_deadline   = 0                              (unset until bound)
 ```
 
-Binding an appraiser at time `B` **re-bases** the verdict window on the binding, which is the
-moment the appraiser actually acquires the obligation:
+Everything that moves the selection forward — `propose_appraisers`, `pick_appraiser`,
+`propose_appraiser_key`, `confirm_appraiser_key` — requires `now < selection_deadline`
+(`SelectionWindowClosed`). Binding at time `B < selection_deadline` sets
 
 ```
 verdict_deadline = B + VERDICT_WINDOW_SECS
 ```
 
-Binding early therefore shortens the absolute expiry. That is deliberate: the appraiser always gets
-the full window from being bound, and binding requires either both sides to agree or the selection
-window to have run out, so neither party can shorten it unilaterally.
+and the appraiser always gets the full verdict window from the moment they are bound. Selection is
+frozen from then on (`AppraiserAlreadyBound`).
+
+`expire_mediation` is allowed exactly when
+
+```
+unbound:  now >= selection_deadline
+bound:    now >= verdict_deadline
+```
+
+**The late-bind complement, proved.** Binding and expiry must never both be open and never both be
+closed at an instant at which the mediation could still be bound:
+
+| Instant | unbound: bind open? | unbound: expire open? | bound: expire open? |
+|---|---|---|---|
+| `now < selection_deadline` | yes | no (`SelectionWindowOpen`) | `now < verdict_deadline` ⇒ no (`VerdictWindowOpen`) |
+| `now >= selection_deadline` | no (`SelectionWindowClosed`) | **yes** | only once `now >= verdict_deadline` |
+
+The bind guard is `now < selection_deadline` and the unbound expiry guard is `now >= selection_deadline`
+— exact complements, no gap and no overlap. So no confirmation can land at or after the moment
+expiry becomes available, and none can re-arm a lapsed mediation (the S3 F2 failure of revision 1,
+where a late pick pushed an already-owed expiry out by a full window). A binding at `B < selection_deadline`
+takes away no entitlement, because the tenant had none yet. `verdict_deadline` is only ever written
+by a binding, only once (`AppraiserAlreadyBound`), and always to `B + VERDICT_WINDOW_SECS` with
+`B < selection_deadline`. The absolute worst-case lock-up is therefore
+
+```
+M + SELECTION_WINDOW_SECS + VERDICT_WINDOW_SECS
+```
+
+(revision 1 had `+ 2 * VERDICT_WINDOW_SECS`; there is no provisional deadline any more).
+`submit_verdict` requires `now < verdict_deadline` and `expire_mediation` (bound) requires
+`now >= verdict_deadline`: the same exact-complement boundary as before.
 
 | Constant | Demo build (`--features demo`) | Release build |
 |---|---|---|
@@ -101,169 +154,193 @@ window to have run out, so neither party can shorten it unilaterally.
 | `VERDICT_WINDOW_SECS` | **60 s** | **14 days** |
 
 All four are `#[constant]`, so they land in the IDL and the app reads the value of the build it runs
-against instead of mirroring it. `scripts/sync-idl.sh` refuses an IDL whose four values are not the
-demo set, so a release build cannot be shipped to the app by accident.
-
-**Binding has an upper bound too.** `pick_appraiser` and `bind_default_appraiser` refuse once
-`now >= verdict_deadline` (`BindingWindowClosed`), the exact complement of `expire_mediation`'s
-`now >= verdict_deadline`. Without it, a binding after the provisional deadline would re-base the
-expiry to `now + VERDICT_WINDOW_SECS` and take away an exit the tenant was already entitled to; a
-party could hold a good-faith pick of the other side in reserve and re-arm a lapsed mediation at a
-moment of its choosing. The absolute worst-case lock-up is therefore
-`M + SELECTION_WINDOW_SECS + 2 * VERDICT_WINDOW_SECS` (a binding just before the provisional
-deadline, then a full verdict window).
-
-Proposing and picking are **not** barred after `selection_deadline` — only after
-`verdict_deadline`, per the paragraph above. Past the *selection* deadline,
-`bind_default_appraiser` becomes available to anyone, but as long as no appraiser is bound the two
-sides may still converge on their own; whichever transaction lands first binds, and the other then
-fails with `AppraiserAlreadyBound`. Allowing both is strictly more live than racing them.
-
-Said once, because it is the sentence most likely to be quoted on its own: **the deadline that
-closes picking is `verdict_deadline`, not `selection_deadline`.** The selection deadline only
-*opens* the fallback.
+against. `scripts/sync-idl.sh` refuses an IDL whose four values are not the demo set. The selection
+window now has to fit two hand-offs including an out-of-band invitation to a person who may not have
+an account yet; 7 days in a release build is meant for that, and 30 s in the demo is meant for a
+stage.
 
 ## 3. Accounts
 
 ### `Lease` — one field changes meaning, the layout does not
 
-`dispute_rejected: bool` becomes **`dispute_rounds: u8`** at the same offset (byte 217), so
-`Lease` stays **218 bytes**. Borsh writes `false` as `0x00` and `true` as `0x01`; those read back as
-`0` and `1`. §8 has the full compatibility argument.
+`dispute_rejected: bool` becomes **`dispute_rounds: u8`** at the same offset (byte 217), so `Lease`
+stays **218 bytes**. §8 has the compatibility argument. No other `Lease` field is added or moved.
+`lease.disputed_at` is reused as "when the current dispute *or* mediation started" and stays the only
+copy of that timestamp (§5).
 
-No other `Lease` field is added or moved. Everything mediation-specific lives on the new `Dispute`
-account, so the audited money-bearing account is untouched.
+### `Dispute` — PDA `[b"dispute", lease]`, 891 bytes
 
-`lease.disputed_at` is reused as **"when the current dispute *or* mediation started"**. It is what
-the claim-pause arithmetic reads, and it is deliberately the only copy of that timestamp — a second
-one on `Dispute` would be a second source of truth for the same fact.
-
-### `Dispute` — PDA `[b"dispute", lease]`, 347 bytes
-
-Created by `escalate_to_mediation` (so it exists for the whole of `Mediation` and never otherwise),
-paid for by the tenant, and **closed on every exit** with the rent going back to `lease.tenant`.
+Created by `escalate_to_mediation`, paid for by the tenant, **closed on every exit** with the rent
+going back to `lease.tenant`. There is no `Appraiser` account: everything the program knows about the
+appraiser is on this one.
 
 ```rust
+pub struct Candidate {
+    pub name: [u8; MAX_NAME_LEN],   // 64; only [..name_len] is meaningful, display form (§4)
+    pub name_len: u8,
+    pub name_hash: [u8; 32],        // sha256(canonical name), the comparison key (§4)
+    pub fee: u64,                   // base units of the lease mint; <= deposit / 10 at proposal
+}
+
 pub struct Dispute {
-    pub lease: Pubkey,                                  // redundant with the seeds, kept for has_one
-    pub landlord_candidates: [Pubkey; MAX_CANDIDATES],  // 3; only [..landlord_count] is meaningful
-    pub tenant_candidates: [Pubkey; MAX_CANDIDATES],
+    pub lease: Pubkey,                                   // redundant with the seeds; kept for has_one
+    pub landlord_candidates: [Candidate; MAX_CANDIDATES],// 3; only [..landlord_count] is meaningful
+    pub tenant_candidates: [Candidate; MAX_CANDIDATES],
     pub landlord_count: u8,
     pub tenant_count: u8,
-    pub landlord_pick: Pubkey,                          // all-zero = has not picked
-    pub tenant_pick: Pubkey,
-    pub appraiser: Pubkey,                              // all-zero = not bound yet
+    pub landlord_pick: [u8; 32],                         // name_hash; all-zero = has not picked
+    pub tenant_pick: [u8; 32],
+    pub agreed_name_hash: [u8; 32],                      // all-zero = phase 1 not done
+    pub agreed_fee: u64,                                 // the bound fee (§4)
+    pub proposed_key: Pubkey,                            // all-zero = no wallet proposed yet
+    pub key_proposer: Pubkey,                            // which party proposed it
+    pub landlord_key_proposals: u8,                      // each party's own proposals, <= MAX_KEY_PROPOSALS_PER_PARTY
+    pub tenant_key_proposals: u8,
+    pub appraiser: Pubkey,                               // the bound wallet; all-zero = not bound
     pub selection_deadline: i64,
-    pub verdict_deadline: i64,
+    pub verdict_deadline: i64,                           // 0 until bound
     pub bump: u8,
 }
 ```
 
-The all-zero pubkey is "unset" throughout, the same convention `Config::issuer` already uses. It can
-never collide with a real value: `Pubkey::default()` is not a registered appraiser, because
-`register_appraiser` refuses it.
+The all-zero value is "unset" throughout, the same convention `Config::issuer` uses. It cannot
+collide with a real value: a SHA-256 of a non-empty name is never all-zero in practice, and the
+all-zero *wallet* is refused by `propose_appraiser_key` (`InvalidAppraiserKey`).
 
-### `Appraiser` — PDA `[b"appraiser", wallet]`, 83 bytes
+There is no `Appraiser` account and `Config` is untouched.
 
-One account per registered company, created and maintained by the **Config admin**. This registry
-is what stops a landlord nominating their own sockpuppet: a candidate that has no account, or whose
-account is not `active`, cannot be proposed, picked or bound.
-
-```rust
-pub struct Appraiser {
-    pub wallet: Pubkey,       // the key that signs verdicts; also the seed
-    pub active: bool,         // admin can suspend without deleting the record
-    pub is_default: bool,     // eligible for bind_default_appraiser
-    pub fee: u64,             // base units of the lease mint, capped per lease (§6)
-    pub name_hash: [u8; 32],  // sha256 of the company's name; no personal data on chain
-    pub bump: u8,
-}
-```
-
-`name_hash` keeps the chain free of strings while still committing to a name: the directory of
-human-readable names lives off chain (`/api/appraisers`) and anyone can verify it hashes to what the
-registry holds. Nothing on chain depends on it.
-
-**Known limitation.** `fee` is a fixed number of base units but the registry is global, while a
-lease's mint is per lease. Two mints with different decimals would read the same `fee` differently.
-The per-lease cap (`deposit / 10`) bounds the damage in either direction, and every mint in the demo
-has 6 decimals. A fee in basis points of the deposit would be mint-agnostic and is the obvious
-follow-up.
+**Known limitation.** `fee` is a fixed number of base units but a lease's mint is per lease. Two
+mints with different decimals would read the same number differently. The per-lease cap
+(`deposit / 10`) bounds the damage either way, and every mint in the demo has 6 decimals. A fee in
+basis points of the deposit would be mint-agnostic and is the obvious follow-up.
 
 ## 4. Instructions
 
-New, unless marked. Every money-moving instruction takes the lease mint's `token_program`
-explicitly (`TOKEN_PROGRAM_ID` or `TOKEN_2022_PROGRAM_ID`); the Anchor client fills in the PDAs it
-can derive, but **not** `Appraiser` PDAs, which are derived from a wallet the client chooses.
-
 | Instruction | Signer | Effect |
 |---|---|---|
-| `register_appraiser(wallet, fee, name_hash)` | Config admin | creates the registry entry, `active = true`, `is_default = false` |
-| `set_appraiser_active(active)` | Config admin | suspends or restores an entry |
-| `set_default_appraiser(is_default)` | Config admin | flags the deadlock fallback; setting `true` requires `active` |
 | `abandon_dispute()` *(changed)* | tenant | round 1 rejection: `dispute_rounds += 1`, lease back to `Active`, claim clock resumed |
-| `escalate_to_mediation()` *(new; the round-2 half of the old `abandon_dispute`)* | tenant | `dispute_rounds += 1` to `MAX`, lease to `Mediation`, creates `Dispute`, sets both deadlines |
-| `release_deposit(d)` *(changed)* | landlord | `d > 0` allowed while `dispute_rounds < MAX_DISPUTE_ROUNDS`; `d == 0` always allowed |
-| `propose_appraisers()` | landlord or tenant | records 1–3 registered, active candidates for the signer's side; once per side |
-| `pick_appraiser()` | landlord or tenant | records the signer's pick; when both picks match, binds the appraiser and re-bases the verdict deadline |
-| `bind_default_appraiser()` | **anyone** | after `selection_deadline` with nothing bound: binds a registered, active, default appraiser |
-| `submit_verdict(deduction)` | the bound appraiser | inside the verdict window: pays out per §6, closes the lease and the `Dispute` |
-| `expire_mediation()` | landlord or tenant | after `verdict_deadline`: lease back to `Active`, claim clock resumed, `Dispute` closed |
-| `settle_dispute(d)` *(changed)* | tenant **and** landlord | now accepts `Disputed` **or** `Mediation`; closes the `Dispute` when there is one |
+| `escalate_to_mediation()` *(new)* | tenant | `dispute_rounds += 1` to `MAX`, lease to `Mediation`, creates `Dispute`, sets `selection_deadline` |
+| `release_deposit(d)` *(changed)* | landlord | `d > 0` allowed while `dispute_rounds < MAX_DISPUTE_ROUNDS`; `d == 0` always |
+| `propose_appraisers(candidates)` | landlord or tenant | phase 1: records 1–3 `(name, fee)` candidates for the signer's side; once per side |
+| `pick_appraiser(name)` | landlord or tenant | phase 1: records the signer's pick; when both picks name the same company, the name and fee are agreed |
+| `propose_appraiser_key(wallet)` | landlord or tenant | phase 2: proposes the wallet for the agreed company; at most two proposals per party |
+| `confirm_appraiser_key(wallet)` | the party that did **not** propose | phase 2: confirms the same wallet; binds the appraiser and starts the verdict window |
+| `submit_verdict(deduction)` | the bound wallet | inside the verdict window: pays out per §6, closes the lease and the `Dispute` |
+| `expire_mediation()` | landlord or tenant | unbound and past `selection_deadline`, or bound and past `verdict_deadline`: lease back to `Active`, claim clock resumed, `Dispute` closed |
+| `settle_dispute(d)` *(changed)* | tenant **and** landlord | accepts `Disputed` **or** `Mediation`; closes the `Dispute` when there is one |
 
-`accept_deduction` and `finalize_deduction` are unchanged and remain `Disputed`-only: once the lease
-is in `Mediation` the landlord's proposal is void, and the only numbers left are the appraiser's
-verdict and one both parties sign.
+`accept_deduction` and `finalize_deduction` are unchanged and remain `Disputed`-only. There are no
+admin instructions in mediation.
 
-### Candidates and picks are accounts, not arguments
+### Phase 1: names
 
-`propose_appraisers` and `pick_appraiser` take **no instruction arguments**. The candidates are the
-`Appraiser` accounts passed in:
+`propose_appraisers(candidates: Vec<CandidateInput { name: String, fee: u64 }>)` — 1 to 3 entries.
+Per candidate:
+
+* **Name validation, on chain.** The name is trimmed, internal whitespace runs (including NBSP) are
+  collapsed to one space, and the result must be **1 to 64 bytes of valid UTF-8 with no control
+  characters** (which excludes NUL) **and no invisible code points**: zero-width, format and bidi
+  characters (U+200B–200F, U+202A–202E, U+2060–2064, U+2066–206F, U+FEFF, U+180E, U+00AD, the
+  reachable Cf blocks by explicit range, and the variation selectors U+FE00–FE0F and
+  U+E0100–E01EF) are refused, so two rows a person cannot tell apart cannot
+  carry different hashes. Violations are `InvalidAppraiserName`. The stored `name` is that normalised display
+  form.
+* **Canonical form for comparison.** `canonical = ascii_lowercase(display)`; `name_hash =
+  sha256(canonical)` is stored next to the name and is the **only** thing compared. So `"Acme  Wycena"`
+  and `"acme wycena "` are the same company. Only ASCII is case-folded and no Unicode normalisation
+  is applied: `"Wycena Łódź"` and `"WYCENA ŁÓDŹ"` are *different* companies to the program. That costs
+  liveness only (a side can always pick the other side's candidate exactly as spelled, which is how
+  the two converge). **What remains, and is disclosed (§10 item 3):** visually confusable *visible*
+  letters (Latin vs Cyrillic `a`) are still distinct hashes, so a name is an assertion the parties
+  check off chain, never something the program verifies.
+  **U+200C and U+200D (zero-width non-joiner / joiner) are blocked as a deliberate trade-off:** they
+  have legitimate uses in some scripts but none in the Polish names this is built for, and allowing
+  them would reopen invisible duplicates.
+* **Fee cap.** `fee <= deposit / APPRAISER_FEE_CAP_DIVISOR` at proposal (`FeeAboveCap`). The verdict
+  still clamps (`verdict_split` is unchanged), so this is a UX gate, not the safety property.
+* Candidates are distinct **within** a side by `name_hash` (`DuplicateCandidate`); across sides they
+  need not be — overlap is agreement arriving early.
+* Once per side (`CandidatesAlreadyProposed`). Only while unbound and `now < selection_deadline`.
+
+`pick_appraiser(name: String)` canonicalises `name` and requires its hash to be in
+`landlord_candidates ∪ tenant_candidates` (`CandidateNotProposed`). Picking from the other side's
+list is the intended way to converge; a side may change its pick while the name is not agreed; a side
+that proposed nothing may still pick. When `landlord_pick == tenant_pick` (both non-zero):
 
 ```
-propose_appraisers:  appraiser_one (required), appraiser_two, appraiser_three (optional)
-pick_appraiser:      appraiser     (required)
+agreed_name_hash = that hash
+agreed_fee       = min(fee of every candidate on either side with that hash)
 ```
 
-each constrained `seeds = [APPRAISER_SEED, appraiser_x.wallet.as_ref()], bump = appraiser_x.bump`
-and `constraint = appraiser_x.active`. The candidate list is then read off `appraiser_x.wallet`.
+**If both sides proposed the same company with different fees, the lower fee wins.** Either party can
+therefore lower the fee by listing the same name cheaper, and the appraiser who is later invited must
+check the fee before accepting (§10). After this, `propose_appraisers` and `pick_appraiser` fail with
+`NameAlreadyAgreed`.
 
-This is a deliberate deviation from a `Vec<Pubkey>` argument. With a list of raw pubkeys the program
-would have to look each one up to prove it is registered, which Anchor cannot express as a
-constraint and which would have to be re-done by hand in the handler. With accounts, Anchor's own
-seed and discriminator checks *are* the registry lookup: there is no path on which an unregistered
-or inactive key reaches a candidate list. The cost is that the caller must derive the PDAs, which
-the app does from `/api/appraisers` anyway.
+If neither side proposes anything there is nothing to pick; the mediation resolves through
+`settle_dispute` or expires.
 
-Within one side candidates must be distinct (`DuplicateCandidate`). **Across** sides they need not
-be — overlap is exactly how the two converge.
+### Phase 2: the wallet
 
-### Picking
+The program cannot know which key belongs to "Acme Wycena", and a name cannot be checked against a
+wallet. So the link is made by **two matching calls**, one from each party, exactly as phase 1 is:
 
-A pick must be in `landlord_candidates ∪ tenant_candidates` (`CandidateNotProposed`). Picking from
-the *other* side's list is the intended way to converge, and a side may change its pick as long as
-nothing is bound — a side that picked badly must not be able to deadlock the mediation out of pride.
-A side that proposed nothing may still pick from the other side's list.
+* `propose_appraiser_key(wallet)` — either party. Requires: name agreed (`NameNotAgreed`), unbound,
+  `now < selection_deadline`, `wallet` non-zero (`InvalidAppraiserKey`), **`wallet` is neither
+  `lease.landlord` nor `lease.tenant`** (`NotMediationParty`), and the **signer's own** proposal
+  budget not spent (`MAX_KEY_PROPOSALS_PER_PARTY` = 2, `KeyProposalsExhausted`). Sets `proposed_key =
+  wallet`, `key_proposer = signer` and spends one of the signer's two proposals.
+* `confirm_appraiser_key(wallet)` — the party that is **not** `key_proposer` (`CannotConfirmOwnProposal`).
+  Requires a proposal (`NoKeyProposed`), `wallet == proposed_key` (`KeyMismatch`), unbound,
+  `now < selection_deadline` (`SelectionWindowClosed`), the party exclusion again (the same check on
+  the money-adjacent step), and then **binds**: `appraiser = wallet`, `verdict_deadline = now +
+  VERDICT_WINDOW_SECS`, selection frozen.
 
-If neither side proposes anything, there is nothing to pick and the mediation resolves through
-`bind_default_appraiser` or `settle_dispute`.
+Why `confirm` takes the wallet as an argument and does not just confirm "whatever is proposed": a
+proposer who swaps the key in the same slot as the other party's confirmation cannot bind a wallet
+the confirmer did not look at. The confirmation fails with `KeyMismatch` instead.
 
-### The default appraiser
+**Grief bounds.** Either party may propose a different key until confirmed — that is how the
+parties switch. Each party has **its own budget of two proposals** (`MAX_KEY_PROPOSALS_PER_PARTY`,
+an IDL constant), tracked per party, so one party can never burn the other's budget: whatever the
+first party does, the other can always counter-propose, and when both budgets are spent (four
+proposals in all) the last proposal is final and its recipient can confirm it or let the mediation
+expire. (An earlier draft shared one counter of four; the party landing the fourth proposal would
+then have chosen the only confirmable wallet. Review G4.) Nothing here extends any deadline: all of
+it is inside `selection_deadline`. A party who refuses to confirm does not stall anything — they
+simply decline to bind, and the mediation expires (§10 on who that favours).
 
-`bind_default_appraiser` requires the passed `Appraiser` account to be `active` **and**
-`is_default`, PDA-checked, so the fallback can only ever be a key the Config admin designated.
+The budgets are symmetric, but **whoever proposes last owns the only confirmable key at
+exhaustion**: the other party can confirm it or let the mediation expire, never substitute their
+own. That is the anti-sockpuppet property (a key only binds with the other party's explicit
+consent), not a defect.
 
-**The program does not enforce that exactly one entry is flagged default.** Doing so would mean
-iterating the registry, which has no on-chain index. If the admin flags several, any of them can be
-bound — all of them are admin-chosen, registered and active, so this is an operational wart, not a
-safety hole. Keep one.
+### Phase 3: the verdict, and the appraiser's token account
 
-For the demo the default appraiser is a **platform key we hold**, disclosed as such (§10).
+`submit_verdict(deduction)` is signed by `dispute.appraiser` and goes through `close_with_fee`
+unchanged (§7), with `fee = dispute.agreed_fee`. There is no appraiser record to look up.
+
+**Payability: the verdict transaction creates the appraiser's token account.** `appraiser_ata`
+remains a required, initialised account (`token::mint = mint, token::authority = appraiser`), and the
+client **must** put an idempotent create-associated-token-account instruction for it *before*
+`submit_verdict` in the same transaction, paid by the sponsor/fee payer. The appraiser's wallet is
+brand new (an embedded wallet created at login) and holds neither a token account nor SOL, so rent
+has to come from the sponsor, and a create-idempotent in the same transaction is safe to repeat.
+
+Why that and not `init_if_needed` in the program: `SubmitVerdict` is already the widest account list
+in the program and was the SBF stack-frame overflow of S3 F1; adding the payer, the system program
+and the associated-token program, plus the init code, spends stack on the one instruction that moves
+the money, to save the client one instruction. Why not requiring the account at confirm: the
+appraiser's account for the lease's mint is not the parties' to create, and a requirement there
+would add a dependency on state the appraiser can undo (close it) afterwards. The failure mode of
+forgetting the instruction is loud — `AccountNotInitialized` at validation, nothing moves, no fee is
+lost — and a pinned test proves it; funds are never stranded because `expire_mediation` and
+`settle_dispute` are open regardless.
 
 ## 5. The claim clock
 
-Unchanged in principle, extended to the new state: **time the deposit spends unavailable is added to
-`claim_pause_secs`, so the tenant waits exactly as long as they would have without any dispute.**
+Unchanged in principle: **time the deposit spends unavailable is added to `claim_pause_secs`, so the
+tenant waits exactly as long as they would have without any dispute.**
 
 | Transition | Effect on `claim_pause_secs` |
 |---|---|
@@ -273,18 +350,15 @@ Unchanged in principle, extended to the new state: **time the deposit spends una
 | `expire_mediation` → `Active` | `+= now - disputed_at` (the `Mediation` stretch), `disputed_at = 0` |
 | any `Closed` exit | irrelevant; the lease is over |
 
-Each stretch is counted once, on the transition that ends it. A landlord cannot shorten the tenant's
-claim by disputing, and a tenant loses nothing by rejecting. `claim_deposit` requires
+Each stretch is counted once, on the transition that ends it. `claim_deposit` requires
 `Status::Active`, so it is blocked throughout `Disputed` and `Mediation`.
 
 ## 6. The fee rule: loser pays, out of the deposit
 
-The appraiser is paid from the deposit. There is **no second escrow and no new custody** — the whole
-point of reusing the vault is that the money is already there and nobody has to post a stake before
-the appraisal starts.
+The appraiser is paid from the deposit. There is **no second escrow and no new custody**.
 
 ```
-fee     = min(appraiser.fee, deposit / 10)      # per-lease cap, integer division
+fee     = min(dispute.agreed_fee, deposit / 10)   # per-lease cap, integer division
 d       = the verdict deduction, 0 <= d <= deposit
 ```
 
@@ -306,50 +380,29 @@ to_tenant     = deposit - d - from_tenant
 fee_paid      = fee
 ```
 
-In both branches `to_tenant + to_landlord + fee_paid == deposit` exactly, and the vault drains to
-zero. There is no division except the cap, so there is nothing to round. Neither branch can
-underflow: in the first, `fee_paid` is clamped to the refund; in the second, `from_tenant` is at most
-`fee - d` and `deposit - d >= d`, so `deposit - d - from_tenant >= deposit - fee >= 0`.
+In both branches `to_tenant + to_landlord + fee_paid == deposit` exactly and the vault drains to
+zero. The split is a pure function (`verdict_split(deposit, deduction, fee)`) with Rust unit tests;
+**it is unchanged by revision 2**, as are its tests.
 
-The split is a pure function (`verdict_split(deposit, deduction, fee)`) with Rust unit tests, so the
-arithmetic can be attacked without a validator.
-
-**Known limitation, say it before a judge finds it.** A verdict of `d = 0` is a total win for the
-tenant, and the tenant still pays the fee — because the landlord's share is zero and the fee can
-only come out of the deposit. Fixing it properly needs the dual fee escrow D2 originally sketched
-(both sides post the fee up front, the winner is reimbursed), which is a second custody path and a
-second set of timeouts. This is why the fee rule is the **first cut line** (plan §4): shipping
-without it costs nothing but the "loser pays" sentence.
+**Known limitation.** A verdict of `d = 0` is a total win for the tenant, and the tenant still pays
+the fee — the landlord's share is zero and the fee can only come out of the deposit. Fixing it needs
+a dual fee escrow, a second custody path (cut line 1).
 
 **Second limitation: the appraiser's pay depends on the number they sign.** In the landlord-won
 branch `fee_paid = min(fee, deposit - d)`, so for `d > deposit - fee` the appraiser is paid less than
-the fee they are owed (at `d = deposit` they are paid nothing). A fee-maximising appraiser therefore
-has a stake against awarding the landlord the last `fee` of the deposit, which is exactly where the
-landlord's claim is strongest. The clamp is deliberate (the fee must not eat into the award the
-appraiser just made) and conservation holds either way. Taking the fee off the top (`fee` first, then
-split `deposit - fee`) would make pay verdict-independent at the cost of the "loser pays" sentence;
-that trade was not made before the demo. State it rather than let a judge find it.
+the fee (at `d = deposit`, nothing). A fee-maximising appraiser has a stake against awarding the
+landlord the last `fee` of the deposit. The clamp is deliberate and conservation holds either way.
 
 **Counters on a `d = 0` verdict.** `deposits_returned_full` is credited only when the tenant actually
-received the whole deposit (`to_tenant == deposit`), not when the verdict number is zero. A `d = 0`
-verdict still pays the appraiser out of the deposit, so it is not a full return, and the landlord who
-lost the arbitration did not choose to give one. Without this, losing an arbitration you started would
-have bought a spotless record. `last_deposit_return_bps` still follows the verdict, so a `d = 0`
-verdict reads as 10000 while the tenant's net is `deposit - fee`.
-
-Reputation records the **verdict**, not the fee: `record_deposit_outcome(deposit, d)`, so
-`last_deposit_return_bps` is the share the appraiser said the tenant was owed. The fee is a cost of
-the arbitration, not a deduction the landlord won.
-
-The appraiser must have a token account for the lease mint; `submit_verdict` takes it as
-`appraiser_ata` and transfers `fee_paid` (possibly 0) to it.
+received the whole deposit (`to_tenant == deposit`), not when the verdict number is zero.
+`last_deposit_return_bps` follows the verdict, so a `d = 0` verdict reads as 10000 while the tenant's
+net is `deposit - fee`. Reputation records the **verdict**, not the fee.
 
 ## 7. Payout path
 
-`submit_verdict` does **not** introduce a new way to move money. `pay_out_vault` gains a third,
-optional recipient and `close_with_deduction` keeps its exact signature, so the four existing
-callers (`release_deposit(0)`, `accept_deduction`, `finalize_deduction`, `settle_dispute`) are
-untouched and the split and reputation arithmetic cannot drift between them:
+`submit_verdict` does **not** introduce a new way to move money. `pay_out_vault` has a third,
+optional recipient and `close_with_deduction` keeps its signature, so the four existing callers are
+untouched:
 
 ```
 close_with_deduction(..., deduction)              ->  close_with_fee(..., deduction, None, 0)
@@ -357,178 +410,193 @@ close_with_fee(..., deduction, Some(ata), fee)    ->  verdict_split + three PDA-
                                                       + record_deposit_outcome + Status::Closed
 ```
 
-The vault's only authority is still the lease PDA, signing with `[b"lease", landlord, lease_id]`.
-The appraiser signs the *verdict*; they never gain authority over the vault.
+The vault's only authority is still the lease PDA. The appraiser signs the *verdict*; they never gain
+authority over the vault. Revision 2 changes only what is passed as `fee` (`dispute.agreed_fee`).
 
 ## 8. Upgrade compatibility
 
-This is an **in-place `solana program deploy`** over the live devnet program. Three things make that
-safe, and a Rust fixture test (`invariant 6`) pins the first two against raw bytes written by the
-current program.
+This is an **in-place `solana program deploy`** over the live devnet program, which still runs the
+**pre-D2** program: D2 (either revision) has not been deployed anywhere and local chains reset. So
+the `Dispute` layout and the D2 error numbering of revision 1 never reached a chain and are free to
+change. What must hold against the *deployed* program:
 
-1. **`dispute_rejected: bool` → `dispute_rounds: u8` is byte-identical.** Both occupy byte 217 and
+1. **`dispute_rejected: bool` → `dispute_rounds: u8` is byte-identical.** Both occupy byte 217;
    Borsh encodes `false`/`true` as `0x00`/`0x01`. An existing lease deserialises with
-   `dispute_rounds ∈ {0, 1}`, and `Lease` stays 218 bytes, so the backend's rent-dust sizing and
-   `FALLBACK_LAYOUTS` need only the field *name* changed.
-2. **`Status::Mediation` is appended.** Variant indexes 0–4 are unchanged, so every stored status
-   still reads as itself.
-3. **New accounts are new PDAs.** `Dispute` and `Appraiser` have their own seeds and cannot collide
-   with anything already allocated. No existing account is resized, and `Config` is deliberately
-   **not** touched: adding a field to it would make every already-allocated config fail to
-   deserialise until something reallocated it, which would break `propose_lease`, `apply` and
-   `fund_deposit` on the deployed network. That is why the default appraiser is a flag on the
-   registry entry rather than a `Config` field.
+   `dispute_rounds ∈ {0, 1}`, and `Lease` stays 218 bytes. A Rust fixture test pins it.
+2. **`Status::Mediation` is appended.** Variant indexes 0–4 are unchanged.
+3. **`Dispute` is a new PDA** and cannot collide with anything already allocated. No existing account
+   is resized, and `Config` is deliberately **not** touched.
 
-**Behaviour change on existing leases, intended.** A lease that already carries
-`dispute_rejected = true` reads as `dispute_rounds = 1`, which under `MAX_DISPUTE_ROUNDS = 2` means
-the landlord may propose *one more* deduction where the old program refused all of them. That is the
-new rule applied to an old lease, not a bug; `release_deposit(0)` remains available throughout and
-no deposit becomes less reachable.
+**Behaviour change on existing leases, intended.** A lease that carries `dispute_rejected = true`
+reads as `dispute_rounds = 1`, which under `MAX_DISPUTE_ROUNDS = 2` means the landlord may propose
+*one more* deduction where the old program refused all of them. `release_deposit(0)` remains
+available throughout.
 
 **Sequencing: ship the app before the upgrade.** On an old lease with `dispute_rejected = true`
-(now `dispute_rounds = 1`), `abandon_dispute` is refused (`WrongDisputeRound`) and the tenant's only
-rejection is `escalate_to_mediation`, which the currently deployed app has no button for. Upgrade the
-program only together with, or after, an app that calls `escalate_to_mediation`, or confirm that no
-devnet lease is sitting at `dispute_rejected = true`.
+(now `dispute_rounds = 1`), `abandon_dispute` is refused and the tenant's only rejection is
+`escalate_to_mediation`, which the currently deployed app has no button for. Upgrade the program only
+together with, or after, an app that calls `escalate_to_mediation`, or confirm that no devnet lease
+is sitting at `dispute_rejected = true`.
 
 **The upgrade is one-way.** A lease that reaches `dispute_rounds = 2` stores `0x02` at byte 217,
-which the old program would reject as an invalid bool (`AccountDidNotDeserialize`). Rolling the
-program back over such a lease would strand it. Only roll forward.
+which the old program would reject as an invalid bool. Only roll forward.
 
-Error codes are append-only: new variants start at **6038**, after `TermTooLong` (6037). One
-existing variant is **renamed in place** — `DisputeAlreadyRejected` (6034) becomes
-`DisputeRoundsExhausted`, same number, new message, because "already rejected" is now true at round
-1 where a further proposal *is* allowed. Clients matching on the number are unaffected; clients
-matching on the name must update.
+Error codes: the pre-D2 numbers (≤ 6037) are unchanged, and `DisputeAlreadyRejected` (6034) is
+**renamed in place** to `DisputeRoundsExhausted`. Everything from 6038 is D2-only and, since D2 was
+never deployed, was re-laid out in revision 2 (the registry errors are gone, new ones are appended);
+**take the numbers from the IDL, not from revision 1.**
 
 ## 9. Errors
 
-Appended, 6038 onwards:
+D2 errors, in IDL order (numbers from 6038 are in the IDL):
 
 | Error | Raised when |
 |---|---|
-| `NotMediationParty` | the signer is neither `lease.landlord` nor `lease.tenant` |
+| `NotMediationParty` | the signer is neither `lease.landlord` nor `lease.tenant`; or a proposed/confirmed appraiser wallet **is** one of them; or `submit_verdict` is signed by one |
 | `WrongDisputeRound` | `abandon_dispute` at the last round, or `escalate_to_mediation` before it |
-| `AppraiserInactive` | a candidate, pick or verdict signer whose registry entry is suspended |
-| `AppraiserNotDefault` | `bind_default_appraiser` passed an entry that is not flagged default |
-| `AppraiserAlreadyBound` | proposing, picking or binding after an appraiser is bound |
+| `AppraiserAlreadyBound` | any selection instruction after an appraiser is bound |
 | `AppraiserNotBound` | `submit_verdict` with nothing bound |
 | `NotBoundAppraiser` | `submit_verdict` signed by someone other than `dispute.appraiser` |
 | `CandidatesAlreadyProposed` | a side proposing twice |
-| `DuplicateCandidate` | the same key twice in one side's list |
+| `DuplicateCandidate` | the same canonical name twice in one side's list |
 | `CandidateNotProposed` | a pick that is in neither list |
-| `SelectionWindowOpen` | `bind_default_appraiser` before `selection_deadline` |
-| `VerdictWindowOpen` | `expire_mediation` before `verdict_deadline` |
+| `SelectionWindowOpen` | `expire_mediation` on an unbound dispute before `selection_deadline` |
+| `VerdictWindowOpen` | `expire_mediation` on a bound dispute before `verdict_deadline` |
 | `VerdictWindowClosed` | `submit_verdict` at or after `verdict_deadline` |
-| `InvalidAppraiser` | `register_appraiser` given the all-zero pubkey |
 | `DisputeAccountRequired` | `settle_dispute` in `Mediation` without the `Dispute` account |
 | `UnexpectedDisputeAccount` | `settle_dispute` in `Disputed` *with* a `Dispute` account |
-| `BindingWindowClosed` (6054) | `pick_appraiser` or `bind_default_appraiser` at or after `verdict_deadline` |
+| `SelectionWindowClosed` | `propose_appraisers`, `pick_appraiser`, `propose_appraiser_key` or `confirm_appraiser_key` at or after `selection_deadline` |
+| `InvalidAppraiserName` | a name that is empty, over 64 bytes after normalisation, not UTF-8, or contains a control character |
+| `NoCandidates` | `propose_appraisers` with zero or more than `MAX_CANDIDATES` entries |
+| `FeeAboveCap` | a candidate fee above `deposit / 10` |
+| `NameAlreadyAgreed` | phase 1 instructions after the company is agreed |
+| `NameNotAgreed` | `propose_appraiser_key` before both picks match |
+| `InvalidAppraiserKey` | an all-zero wallet |
+| `KeyProposalsExhausted` | a third proposal from the same party |
+| `NoKeyProposed` | `confirm_appraiser_key` with nothing proposed |
+| `CannotConfirmOwnProposal` | `confirm_appraiser_key` by `key_proposer` |
+| `KeyMismatch` | `confirm_appraiser_key(wallet)` where `wallet != proposed_key` |
 
-Renamed in place: `DisputeAlreadyRejected` (6034) → `DisputeRoundsExhausted`, "no dispute rounds are
-left on this lease, so the deposit returns in full".
+Removed (registry/default only): `AppraiserInactive`, `AppraiserNotDefault`, `InvalidAppraiser`,
+`BindingWindowClosed` (renamed `SelectionWindowClosed`).
 
 ### Two of these are defence in depth the state machine cannot reach
 
-Kept deliberately, and recorded here so they are not mistaken for checks that were never wired up.
-Neither is reachable through the public interface, and both are cheap:
-
-- **`NotMediationParty` in `submit_verdict`.** To get that far, `dispute.appraiser` must equal the
-  signer, and the only two instructions that can set it — `pick_appraiser` and
-  `bind_default_appraiser` — already refuse a party. So a party can never be bound in the first
-  place. The check stays because the money path should not depend on those three instructions
-  having been the only route in.
-- **`UnexpectedDisputeAccount` in `settle_dispute`.** The `Dispute` account is seeded by the lease,
-  so the only one that can satisfy a given lease's seeds is the one its own
-  `escalate_to_mediation` created — and that same instruction moves the lease to `Mediation`. A
-  lease therefore can never be `Disputed` while its own `Dispute` account exists, and passing
-  *another* lease's account fails Anchor's seed derivation (`ConstraintSeeds`) before the handler
-  runs. The check stays as the explicit statement of the correspondence; its sibling
-  `DisputeAccountRequired` is reachable and tested. **It is unreachable only because
-  `dispute_rounds` stays at the cap after `expire_mediation`.** If `MAX_DISPUTE_ROUNDS` or that rule
-  changes (cut line 3 sets it to 1), re-check this claim: `Disputed` with a live `Dispute` could
-  then become reachable.
+* **`NotMediationParty` in `submit_verdict`.** To get that far, `dispute.appraiser` must equal the
+  signer, and the only instruction that can set it, `confirm_appraiser_key`, already refuses a party
+  wallet (as does `propose_appraiser_key`). The check stays because the money path should not depend
+  on those two instructions having been the only route in.
+* **`UnexpectedDisputeAccount` in `settle_dispute`.** A lease can never be `Disputed` while its own
+  `Dispute` account exists, and another lease's account fails Anchor's seed check. **It is
+  unreachable only because `dispute_rounds` stays at the cap after `expire_mediation`.** If
+  `MAX_DISPUTE_ROUNDS` or that rule changes (cut line 3 sets it to 1), re-check this claim.
 
 ## 10. Trust, and what to say about it
 
-**The appraiser is an oracle.** The program cannot make a real appraisal company look at a flat,
-and it cannot check that the number they sign reflects any damage. What it can do — and does — is
-constrain *who* may speak and *when*:
+**The appraiser is an oracle.** The program cannot make a real appraisal company look at a flat, and
+it cannot check that the number they sign reflects any damage. What it does is constrain *who* may
+speak and *when*. The disclosure list, in the order a judge would ask:
 
-- only a key the Config admin registered, that is still active, that **both parties selected** (or
-  that the admin designated as the fallback after the two failed to agree), may submit a verdict;
-- **the appraiser may not be a party to the lease.** Checked at proposal, pick, binding and
-  verdict. Nothing else would catch it: the registry says who *may* arbitrate and the picks say who
-  *did*, and a landlord whom the admin had registered and who nominated and picked themselves would
-  pass both. Conservation would still hold, so no money could be conjured; what they would get is a
-  deduction of their own choosing, which is the unilateral deduction this subsystem exists to
-  remove;
-- exactly one verdict per dispute: `submit_verdict` closes the lease, so there is nothing to replay;
-- a verdict cannot be moved to another lease — the `Dispute` PDA is seeded by the lease and the
-  vault is signed by the lease PDA;
-- the verdict is bounded by `0 <= deduction <= deposit` and the fee by `deposit / 10`;
-- an appraiser who stays silent decides nothing: the mediation expires.
+1. **The appraiser is chosen by the parties, not by the platform.** There is no registry, no
+   default appraiser, no admin instruction in mediation. The platform cannot install an arbiter, cannot
+   suspend one, and cannot end a mediation. (Revision 1 disclosed that it could; that reach is gone.)
+2. **Only a wallet both parties agreed on can speak.** A verdict is accepted only from the wallet
+   that one party proposed and the *other* party confirmed (`confirm_appraiser_key`), after both had
+   already agreed on a company name. A party cannot bind a sockpuppet alone: **collusion between one
+   party and a sockpuppet appraiser needs the other party's consent to bind.** The consent is only as
+   good as the other party's understanding of whose key it is (item 3).
+3. **The link between a company name and a wallet is an assertion the parties confirm out of
+   band.** The program sees a name string and, separately, a wallet; it cannot check that they belong
+   together. Off chain, the app/backend carries an invitation (an e-mail link) from the parties to the
+   appraiser and the wallet the appraiser creates at login reaches both parties' apps; each party then
+   confirms it. If the e-mail is intercepted or the app shows the wrong address, the parties will
+   confirm a key that is not the company's, and the program cannot tell. The program's guarantee is
+   exactly "both parties confirmed this wallet", not "this wallet is Acme Wycena".
+4. **The appraiser may not be a party to the lease** — checked on the wallet at proposal, at
+   confirmation and at verdict. A name cannot be checked (the program cannot know that "Acme Wycena" is
+   the landlord's company); that is what item 2 is for.
+5. **Fee stake.** The appraiser's pay depends on the verdict (§6) and is capped at a tenth of the
+   deposit. And the fee is the *lower* of two proposals for the same name (§4): either party can lower
+   it by listing the same company cheaper, so the appraiser must read the fee before accepting.
+6. **Exactly one verdict per dispute** (`submit_verdict` closes the lease); a verdict cannot be moved
+   to another lease (the `Dispute` PDA is seeded by the lease, the vault is signed by the lease PDA);
+   the verdict is bounded by `0 <= deduction <= deposit`; an appraiser who stays silent decides
+   nothing.
+7. **The name is on chain.** Names are public. Use a company name, not a person's: a sole trader's
+   name is personal data, and the chain cannot forget it.
+8. **There is no backend-held appraiser key.** The appraiser signs with their own wallet. (The demo
+   may use a throwaway wallet operated by whoever runs the demo; that is not something the program can
+   see or depends on.)
 
-**What the Config admin can do, stated plainly.** Suspending a *bound* appraiser
-(`set_appraiser_active(false)`) blocks `submit_verdict`, so the admin can end any live mediation in
-the tenant's favour (it expires to a full refund). And `bind_default_appraiser` is open to anyone
-once the selection window passes, with the default being a platform key, so the platform can be
-installed as arbiter of any mediation that reaches that deadline and sign any number in
-`[0, deposit]`. Both are inside the trust class below, and neither can mint funds.
+**Expiry strictly dominates any verdict for a rational tenant.** Stalling costs the tenant nothing
+and returns the whole deposit with no fee (`expire_mediation` then `claim_deposit`); any verdict
+costs them at least the appraiser's fee and possibly a deduction. So mediation runs only with a
+cooperative tenant — one who wants a neutral decision more than the free option of stalling. The
+roadmap mitigations below (a bond forfeited by the stalling side, an opt-in directory that makes
+cooperation cheap) exist to change that arithmetic; none is built.
 
-**Operational: every appraiser needs a token account for every allowed mint.** `submit_verdict`
-requires `appraiser_ata` even when the fee paid is zero, so a bound appraiser with no account for the
-lease's mint cannot submit at all, and the failure looks like a silent appraiser. The appraiser setup
-script must create one per appraiser per mint in `Config::mints`, and the appraiser console should
-check for it before offering to sign.
+**The sharp edge of having no fallback — say it before a judge finds it.** **Mediation binds only
+if both parties cooperate; a party who declines forfeits to the status quo, which is a full refund to
+the tenant.** There is no default appraiser, so a mediation that never binds expires, and the tenant
+takes the whole deposit. The party who benefits from that outcome — the tenant — can decline to
+pick or to confirm, and the landlord has no on-chain remedy; the landlord's levers are the permanent
+record of the rejections, `mark_default` during the term, and `settle_dispute`.
 
-This is the same trust class as the KYC issuer key, and it should be said out loud rather than
-discovered. For the demo the registry holds three clearly fictional companies — **Rzeczoznawca A**,
-**Rzeczoznawca B**, **Rzeczoznawca C** — and the default appraiser is a platform key we hold. No
-real firm's name appears anywhere on chain or in the UI, because using one would need its consent.
+This is **no worse for the landlord than D1**, where a rejected deduction already ended in a full
+tenant refund: mediation does not take anything away, it gives a *cooperative* tenant a way to a fair
+split decided by someone neutral. The stall outcome is pinned by a test (§11, item 6). Decided and
+accepted by the product owner; stated here so it is a decision rather than a discovery.
 
-Roadmap, in the order it would matter: a bond the appraiser posts and can be slashed against, an
-appeal window before the payout settles, several appraisers with a median verdict, and a public
-appraiser reputation record. Each of those decentralises a part of this; none of them is built.
-
-Collusion is bounded rather than prevented: an appraiser colluding with one party can move at most
-the disputed deposit, needs the *other* party to have picked them (or the admin to have made them
-the default), and the fee cap plus the two-round limit cap what the attempt is worth.
+Roadmap, in the order it would matter: an **optional opt-in appraiser directory** as a convenience
+(parties may pick from it; the program never depends on it), a **bond the stalling side forfeits**
+(slashing for declining to pick or confirm), a bond the appraiser posts and can be slashed against,
+an appeal window before the payout settles, several appraisers with a median verdict, and a public
+appraiser reputation record. None of them is built.
 
 ## 11. What the tests must pin
 
-The invariants the mocha suite is written against (plan §2), each a named test:
+Each a named test; the mocha suite is written against these.
 
-1. **Conservation** — in every terminal path the vault drains exactly to
-   `tenant + landlord + fee_paid`, and never more than `deposit_amount`.
-2. **No stuck state** — for `Disputed` and for `Mediation`, at least two exits that do not depend on
-   the counterparty (the table in §2).
-3. **Authority** — only the bound, registered, active appraiser can submit; an unregistered or
-   inactive candidate is refused at proposal, pick and verdict; a party to the lease is refused as
-   an appraiser at all four (`NotMediationParty`); one verdict per dispute; a verdict cannot be
-   replayed against another lease.
-4. **Round limits** — a third `release_deposit(d>0)` is refused (`DisputeRoundsExhausted`);
-   `abandon_dispute` and `escalate_to_mediation` each refuse the other's round
-   (`WrongDisputeRound`); `dispute_rounds` never decrements.
-5. **Claim clock** — the `Disputed` stretch and the `Mediation` stretch are each added to
-   `claim_pause_secs` exactly once.
-6. **Compatibility** — raw bytes written by the *current* program (a `Lease` with
-   `dispute_rejected = true` and with `false`) deserialise as `dispute_rounds = 1` and `0`, and
-   `8 + Lease::INIT_SPACE` is still 218.
+1. **Conservation** — in every terminal path the vault drains exactly to `tenant + landlord +
+   fee_paid`, never more than `deposit_amount`.
+2. **No stuck state** — for `Disputed` and for `Mediation` (unbound, name-agreed with a proposal
+   pending, bound), at least one exit that does not depend on the counterparty and `settle_dispute`.
+3. **Authority** — only the bound wallet can submit; a party's wallet is refused as an appraiser at
+   propose, confirm and verdict; the proposer cannot confirm their own proposal; a confirmation of a
+   different wallet fails; one verdict per dispute; a verdict cannot be replayed against another lease.
+4. **Candidate limits** — 1–3 per side, distinct by canonical name, once per side, fee cap, name
+   validation (empty, 65 bytes, control char, NUL, zero-width/format/bidi code points; invalid
+   UTF-8 cannot be sent by any client and is guaranteed by Borsh, not by `display_name`), canonicalisation (case and
+   whitespace), lower-fee-wins.
+5. **Key phase limits** — two proposals per party (one party cannot exhaust the other's; the other
+   can always counter; both spent ⇒ no more proposals and the last stays confirmable); no proposal before the name is agreed or after
+   binding; no bind after `selection_deadline`.
+6. **The stall outcome** — a tenant who never picks (or never confirms) leaves the mediation to
+   expire at `selection_deadline`, the lease returns to `Active`, and `claim_deposit` pays the tenant
+   the whole deposit; the same holds when the landlord stalls.
+7. **The late-bind complement** — at `now >= selection_deadline`, `propose`/`pick`/`confirm` fail with
+   `SelectionWindowClosed` and `expire_mediation` succeeds; just before it, the reverse; a bound
+   mediation's expiry is `verdict_deadline` and cannot be re-armed.
+8. **Payability** — `submit_verdict` with an uncreated `appraiser_ata` fails loudly and moves nothing;
+   with a create-idempotent in the same transaction (sponsor pays rent) it pays the fee.
+9. **Round limits** — a third `release_deposit(d>0)` is refused; `abandon_dispute` and
+   `escalate_to_mediation` each refuse the other's round; `dispute_rounds` never decrements.
+10. **Claim clock** — the `Disputed` and `Mediation` stretches are each added exactly once.
+11. **Compatibility** — raw bytes written by the pre-D2 program deserialise as `dispute_rounds = 1`
+    and `0`; `8 + Lease::INIT_SPACE` is still 218.
 
-Plus the pure-function Rust tests: `verdict_split` over both branches and the clamping edges, the
-candidate-union membership check, and the deadline arithmetic.
+Plus the pure-function Rust tests: `verdict_split`, name normalisation and hashing, candidate
+membership, `agreed_fee` selection, and the deadline arithmetic.
 
 ## 12. Cut lines
 
-In this order, if time runs out (plan §4). Each is a small, local change:
+In this order, if time runs out. Each is a small, local change:
 
-1. **The fee rule.** Pass `None` for the fee everywhere, drop `appraiser_ata` and `Appraiser.fee`,
-   and say the appraiser's fee is settled off chain with loser-pays on the roadmap.
-2. **`bind_default_appraiser`.** Keep `selection_deadline` as information only; a deadlock then
-   resolves through `settle_dispute` or `expire_mediation`, which is still no stuck state.
-3. **The second round.** `MAX_DISPUTE_ROUNDS = 1`, a one-constant change: `abandon_dispute` becomes
-   unreachable and the first rejection goes straight to `Mediation`.
+1. **The fee rule.** Pass `None` for the fee everywhere, drop `appraiser_ata` and the candidate `fee`,
+   and say the appraiser's fee is settled off chain.
+2. **Phase 2.** Not recommended — it is the only protection against a one-sided sockpuppet.
+3. **The second round.** `MAX_DISPUTE_ROUNDS = 1`: `abandon_dispute` becomes unreachable and the first
+   rejection goes straight to `Mediation`.
 
 **Never cut:** conservation, the appraiser authority checks, `expire_mediation`, the compatibility
 fixture, and the independent review of the money path before any deploy.

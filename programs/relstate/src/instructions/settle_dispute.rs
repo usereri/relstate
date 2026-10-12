@@ -51,7 +51,7 @@ pub struct SettleDispute<'info> {
         seeds = [LEASE_SEED, landlord.key().as_ref(), &lease.lease_id.to_le_bytes()],
         bump = lease.bump
     )]
-    pub lease: Account<'info, Lease>,
+    pub lease: Box<Account<'info, Lease>>,
     /// Required in `Mediation`, where it is closed and its rent returned to the tenant who paid
     /// for it; must be absent in `Disputed`.
     #[account(
@@ -85,13 +85,13 @@ pub struct SettleDispute<'info> {
         seeds = [PROFILE_SEED, tenant.key().as_ref()],
         bump
     )]
-    pub tenant_profile: Account<'info, Profile>,
+    pub tenant_profile: Box<Account<'info, Profile>>,
     #[account(
         mut,
         seeds = [PROFILE_SEED, landlord.key().as_ref()],
         bump
     )]
-    pub landlord_profile: Account<'info, Profile>,
+    pub landlord_profile: Box<Account<'info, Profile>>,
     pub token_program: Interface<'info, TokenInterface>,
 }
 
@@ -301,8 +301,9 @@ pub struct EscalateToMediation<'info> {
 /// The tenant rejects for the last time: the number is no longer theirs or the landlord's to pick.
 ///
 /// The `Disputed` stretch is added to the claim clock here, and `disputed_at` is re-stamped to now
-/// so the same field times the `Mediation` stretch for `expire_mediation`. Both deadlines are set
-/// up front, so a mediation that nobody takes part in still expires rather than sitting forever.
+/// so the same field times the `Mediation` stretch for `expire_mediation`. The selection
+/// deadline is set up front, so a mediation that nobody takes part in still expires rather than
+/// sitting forever.
 pub fn handle_escalate_to_mediation(ctx: Context<EscalateToMediation>) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     let lease_key = ctx.accounts.lease.key();
@@ -329,7 +330,6 @@ pub fn handle_escalate_to_mediation(ctx: Context<EscalateToMediation>) -> Result
         lease: lease_key,
         dispute: dispute.key(),
         selection_deadline: dispute.selection_deadline,
-        verdict_deadline: dispute.verdict_deadline,
     });
     Ok(())
 }

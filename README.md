@@ -194,6 +194,13 @@ On devnet a rent period is 45 seconds and the demo-clock is hidden. The built-in
 
 ```bash
 make test-demo      # anchor test -- --features demo   (needs port 8899 free)
+
+> **Never start a second Surfpool from a directory that has, or will get, a `txtx.yml`.** Surfpool
+> writes `txtx.yml` with `rpc_api_url: http://127.0.0.1:8899` and ignores `--port`, and its default
+> deployment runbook then upgrades the program on whatever is listening on 8899, i.e. your running
+> demo chain. A second validator must start from an empty scratch directory with `--no-deploy`, and
+> the program must be deployed to it explicitly (`solana program deploy -u http://127.0.0.1:<port>`).
+> `anchor test` itself needs 8899, so the authoritative run is with your chain stopped.
 ```
 
 44 program tests cover the lease lifecycle, listings, applications, the discount rules, defaults, the mint allowlist, a Token-2022 lease and every rejection path. They run against Surfpool and jump its clock to simulate months. `anchor test` runs 10 Rust unit tests first, covering the confidential-transfer introspection in `pay_rent`.

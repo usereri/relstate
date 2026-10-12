@@ -2,8 +2,8 @@ use anchor_lang::prelude::*;
 
 use crate::constants::{
     APPRAISER_FEE_CAP_DIVISOR, BPS_FULL, CLAIM_WINDOW_SECS, DISPUTE_WINDOW_SECS, KYC_LEVEL_BASIC,
-    MAX_ALLOWED_MINTS, MAX_BLURB, MAX_CANDIDATES, MAX_CITY, MAX_DISPUTE_ROUNDS, MAX_PHOTO,
-    MAX_TITLE, RENT_HEADROOM_PCT, SELECTION_WINDOW_SECS, VERDICT_WINDOW_SECS,
+    MAX_ALLOWED_MINTS, MAX_BLURB, MAX_CANDIDATES, MAX_CITY, MAX_DISPUTE_ROUNDS, MAX_KEY_PROPOSALS_PER_PARTY, MAX_NAME_LEN,
+    MAX_PHOTO, MAX_TITLE, RENT_HEADROOM_PCT, SELECTION_WINDOW_SECS, VERDICT_WINDOW_SECS,
 };
 use crate::error::ErrorCode;
 
@@ -187,35 +187,92 @@ impl Lease {
     }
 }
 
-/// One appraisal company in the registry, at seeds `[APPRAISER_SEED, wallet]`. Only the Config
-/// admin writes these.
-///
-/// The registry is the whole reason a landlord cannot nominate their own sockpuppet: a key with no
-/// account here, or whose account is not `active`, cannot be proposed, picked or bound, because
-/// every one of those instructions takes this account and Anchor's seed check proves which key it
-/// belongs to.
-#[account]
-#[derive(InitSpace)]
-pub struct Appraiser {
-    /// The key that signs verdicts, and the account's own seed.
-    pub wallet: Pubkey,
-    /// Suspended entries keep their record but cannot be proposed, picked, bound or submit. The
-    /// admin suspending an appraiser mid-dispute does not strand the deposit: `expire_mediation`
-    /// and `settle_dispute` are still open.
-    pub active: bool,
-    /// Eligible for `bind_default_appraiser`, the deadlock fallback. The program cannot enforce
-    /// that only one entry carries this — there is no on-chain index to iterate — so keeping it
-    /// unique is the admin's job. Every flagged entry is still admin-chosen and active, so the
-    /// worst case is an unexpected but legitimate appraiser.
-    pub is_default: bool,
-    /// Base units of the lease mint, capped per lease at `deposit / APPRAISER_FEE_CAP_DIVISOR`.
-    /// Mint-agnostic base units against a per-lease mint is a known wart
-    /// (docs/contracts/dispute-mediation.md §3); the cap bounds it either way.
-    pub fee: u64,
-    /// `sha256(company name)`. Keeps strings and the directory off chain while still committing to
-    /// a name anyone can verify against `/api/appraisers`. Nothing on chain reads it.
+/// One appraisal company a party proposed. The name is the display form; `name_hash` is what is
+/// compared (docs/contracts/dispute-mediation.md §4).
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, InitSpace)]
+pub struct Candidate {
+    /// Only `[..name_len]` is meaningful; the rest is zero padding.
+    pub name: [u8; MAX_NAME_LEN],
+    pub name_len: u8,
+    /// `sha256(canonical(name))`, the only thing two names are compared by.
     pub name_hash: [u8; 32],
-    pub bump: u8,
+    /// Base units of the lease mint, at most `deposit / APPRAISER_FEE_CAP_DIVISOR` when proposed.
+    pub fee: u64,
+}
+
+impl Candidate {
+    pub const EMPTY: Candidate = Candidate {
+        name: [0; MAX_NAME_LEN],
+        name_len: 0,
+        name_hash: [0; 32],
+        fee: 0,
+    };
+
+    /// Validates and normalises `raw`, then builds the candidate. The fee cap is the caller's.
+    pub fn new(raw: &str, fee: u64) -> Result<Candidate> {
+        let display = display_name(raw)?;
+        let mut name = [0u8; MAX_NAME_LEN];
+        name[..display.len()].copy_from_slice(display.as_bytes());
+        Ok(Candidate {
+            name,
+            name_len: display.len() as u8,
+            name_hash: name_hash(&display),
+            fee,
+        })
+    }
+}
+
+/// Trims, collapses every run of whitespace to one space, and requires 1 to `MAX_NAME_LEN` bytes
+/// with no control character (which excludes NUL). Valid UTF-8 is guaranteed by the `&str`.
+pub fn display_name(raw: &str) -> Result<String> {
+    let mut out = String::with_capacity(raw.len().min(MAX_NAME_LEN));
+    for word in raw.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    require!(
+        !out.is_empty()
+            && out.len() <= MAX_NAME_LEN
+            && !out.chars().any(|c| c.is_control() || is_invisible(c)),
+        ErrorCode::InvalidAppraiserName
+    );
+    Ok(out)
+}
+
+/// Unicode format (Cf), bidi-control and variation-selector (Mn, U+FE00-FE0F and U+E0100-E01EF)
+/// code points, by explicit range: they render as nothing (or
+/// reorder what is around them), so two names differing only by one would look identical to a
+/// person and hash differently. Whitespace-class separators (NBSP, U+2028/2029, U+3000...) are not
+/// listed: `split_whitespace` has already collapsed them.
+fn is_invisible(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}'
+        | '\u{0600}'..='\u{0605}'
+        | '\u{061C}'
+        | '\u{06DD}'
+        | '\u{070F}'
+        | '\u{180E}'
+        | '\u{200B}'..='\u{200F}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{2064}'
+        | '\u{2066}'..='\u{206F}'
+        | '\u{FEFF}'
+        | '\u{FE00}'..='\u{FE0F}'
+        | '\u{E0100}'..='\u{E01EF}'
+        | '\u{FFF9}'..='\u{FFFB}'
+        | '\u{E0001}'
+        | '\u{E0020}'..='\u{E007F}')
+}
+
+/// `sha256(ascii_lowercase(display))`. Only ASCII is case-folded and nothing is Unicode-normalised:
+/// two spellings that differ beyond that read as different companies. That costs liveness (a side
+/// can always pick the other's exact spelling), and nothing more is claimed: invisible characters
+/// are rejected (`is_invisible`), but visually confusable *visible* letters (Latin vs Cyrillic "a")
+/// remain possible, so a name is an off-chain assertion the parties check, never a proof (doc §10).
+pub fn name_hash(display: &str) -> [u8; 32] {
+    solana_sha256_hasher::hash(display.to_ascii_lowercase().as_bytes()).to_bytes()
 }
 
 /// Everything mediation-specific, at seeds `[DISPUTE_SEED, lease]`. Created by
@@ -223,29 +280,40 @@ pub struct Appraiser {
 /// paid for it, so it exists exactly while the lease is in `Mediation`.
 ///
 /// `Lease` gains nothing for mediation: the audited, money-bearing account keeps its 218-byte
-/// layout and the new surface is all here.
+/// layout and the new surface is all here. There is no appraiser registry: everything the program
+/// knows about the appraiser is on this account.
 #[account]
 #[derive(InitSpace)]
 pub struct Dispute {
     /// Redundant with the seeds; kept so every instruction can assert `has_one = lease`.
     pub lease: Pubkey,
-    /// Only `[..landlord_count]` is meaningful; the rest is zero padding.
-    pub landlord_candidates: [Pubkey; MAX_CANDIDATES],
-    pub tenant_candidates: [Pubkey; MAX_CANDIDATES],
+    /// Only `[..landlord_count]` is meaningful; the rest is `Candidate::EMPTY`.
+    pub landlord_candidates: [Candidate; MAX_CANDIDATES],
+    pub tenant_candidates: [Candidate; MAX_CANDIDATES],
     pub landlord_count: u8,
     pub tenant_count: u8,
-    /// All-zero until that side picks. A side may change its pick while nothing is bound.
-    pub landlord_pick: Pubkey,
-    pub tenant_pick: Pubkey,
-    /// The bound appraiser, all-zero until both picks match or the default is bound. Cannot
-    /// collide with "unset": `register_appraiser` refuses the all-zero key.
+    /// `name_hash` of the pick; all-zero until that side picks. A side may change its pick until
+    /// the company is agreed.
+    pub landlord_pick: [u8; 32],
+    pub tenant_pick: [u8; 32],
+    /// All-zero until both picks name the same company.
+    pub agreed_name_hash: [u8; 32],
+    /// The lower of the fees proposed for the agreed company.
+    pub agreed_fee: u64,
+    /// The wallet one party proposed for the agreed company; all-zero until proposed.
+    pub proposed_key: Pubkey,
+    /// Which party made the current proposal; only the other one may confirm it.
+    pub key_proposer: Pubkey,
+    /// Proposals made so far by each party; each is capped at `MAX_KEY_PROPOSALS_PER_PARTY`.
+    pub landlord_key_proposals: u8,
+    pub tenant_key_proposals: u8,
+    /// The bound wallet, all-zero until `confirm_appraiser_key`. Cannot collide with "unset":
+    /// `propose_appraiser_key` refuses the all-zero key.
     pub appraiser: Pubkey,
-    /// After this, anyone may `bind_default_appraiser`. Proposing and picking stay open past it,
-    /// so the two sides can still converge on their own until something is actually bound.
+    /// Nothing may be proposed, picked or bound at or after this, and an unbound mediation may be
+    /// expired from then on.
     pub selection_deadline: i64,
-    /// After this, either party may `expire_mediation`. Set provisionally at escalation so a
-    /// mediation nobody takes part in still expires, then re-based on the binding, because that is
-    /// the moment the appraiser acquires the obligation.
+    /// 0 until bound; then `bound_at + VERDICT_WINDOW_SECS`. Only a binding writes it.
     pub verdict_deadline: i64,
     pub bump: u8,
 }
@@ -255,35 +323,91 @@ impl Dispute {
         self.appraiser != Pubkey::default()
     }
 
-    /// Whether `key` was nominated by either side. Picking from the *other* side's list is how the
-    /// two converge, so the union — not the signer's own list — is what a pick is checked against.
-    pub fn was_proposed(&self, key: &Pubkey) -> bool {
-        self.landlord_candidates[..self.landlord_count as usize].contains(key)
-            || self.tenant_candidates[..self.tenant_count as usize].contains(key)
+    pub fn name_agreed(&self) -> bool {
+        self.agreed_name_hash != [0u8; 32]
     }
 
-    /// Both sides named the same appraiser. Guards against the all-zero "has not picked" value
-    /// counting as agreement.
+    /// `[..count]` of each side, concatenated.
+    fn all_candidates(&self) -> impl Iterator<Item = &Candidate> {
+        self.landlord_candidates[..self.landlord_count as usize]
+            .iter()
+            .chain(self.tenant_candidates[..self.tenant_count as usize].iter())
+    }
+
+    /// Whether either side proposed a company with this hash. Picking from the *other* side's list
+    /// is how the two converge, so the union, not the signer's own list, is what a pick is checked
+    /// against. Padding past `*_count` never counts.
+    pub fn was_proposed(&self, hash: &[u8; 32]) -> bool {
+        self.all_candidates().any(|c| &c.name_hash == hash)
+    }
+
+    /// The lowest fee anyone proposed for this company.
+    pub fn lowest_fee(&self, hash: &[u8; 32]) -> Option<u64> {
+        self.all_candidates()
+            .filter(|c| &c.name_hash == hash)
+            .map(|c| c.fee)
+            .min()
+    }
+
+    /// Both sides named the same company. The all-zero "has not picked" value never agrees.
     pub fn picks_agree(&self) -> bool {
-        self.landlord_pick != Pubkey::default() && self.landlord_pick == self.tenant_pick
+        self.landlord_pick != [0u8; 32] && self.landlord_pick == self.tenant_pick
     }
 
-    /// Opens the selection phase. The verdict deadline is provisional: binding re-bases it.
+    /// Opens the selection phase. `verdict_deadline` stays 0: only a binding sets it.
     pub fn open(&mut self, lease: Pubkey, now: i64, bump: u8) {
         self.lease = lease;
-        self.landlord_candidates = [Pubkey::default(); MAX_CANDIDATES];
-        self.tenant_candidates = [Pubkey::default(); MAX_CANDIDATES];
+        self.landlord_candidates = [Candidate::EMPTY; MAX_CANDIDATES];
+        self.tenant_candidates = [Candidate::EMPTY; MAX_CANDIDATES];
         self.landlord_count = 0;
         self.tenant_count = 0;
-        self.landlord_pick = Pubkey::default();
-        self.tenant_pick = Pubkey::default();
+        self.landlord_pick = [0; 32];
+        self.tenant_pick = [0; 32];
+        self.agreed_name_hash = [0; 32];
+        self.agreed_fee = 0;
+        self.proposed_key = Pubkey::default();
+        self.key_proposer = Pubkey::default();
+        self.landlord_key_proposals = 0;
+        self.tenant_key_proposals = 0;
         self.appraiser = Pubkey::default();
         self.selection_deadline = now.saturating_add(SELECTION_WINDOW_SECS);
-        self.verdict_deadline = self.selection_deadline.saturating_add(VERDICT_WINDOW_SECS);
+        self.verdict_deadline = 0;
         self.bump = bump;
     }
 
-    /// Binds `appraiser` and gives them the full verdict window from this instant.
+    /// Spends one of the caller's own key proposals. `false` when that party's budget
+    /// (`MAX_KEY_PROPOSALS_PER_PARTY`) is gone; the other party's budget is never touched.
+    pub fn spend_key_proposal(&mut self, is_landlord: bool) -> bool {
+        let spent = if is_landlord {
+            &mut self.landlord_key_proposals
+        } else {
+            &mut self.tenant_key_proposals
+        };
+        if *spent >= MAX_KEY_PROPOSALS_PER_PARTY {
+            return false;
+        }
+        *spent += 1;
+        true
+    }
+
+    /// Whether selection (propose, pick, key proposal, confirmation) is still open. The exact
+    /// complement of `may_expire`'s unbound branch.
+    pub fn selection_open(&self, now: i64) -> bool {
+        !self.is_bound() && now < self.selection_deadline
+    }
+
+    /// Whether `expire_mediation` is allowed: unbound past the selection deadline, or bound past
+    /// the verdict deadline.
+    pub fn may_expire(&self, now: i64) -> bool {
+        if self.is_bound() {
+            now >= self.verdict_deadline
+        } else {
+            now >= self.selection_deadline
+        }
+    }
+
+    /// Binds `appraiser` and gives them the full verdict window from this instant. Only callable
+    /// while `selection_open`, so `now < selection_deadline`.
     pub fn bind(&mut self, appraiser: Pubkey, now: i64) {
         self.appraiser = appraiser;
         self.verdict_deadline = now.saturating_add(VERDICT_WINDOW_SECS);
@@ -298,8 +422,7 @@ pub struct VerdictSplit {
     pub to_appraiser: u64,
 }
 
-/// The most the appraiser can be paid out of a deposit of this size, whatever their registry entry
-/// says. Integer division, so a deposit below the divisor caps the fee at zero.
+/// The most the appraiser can be paid out of a deposit of this size, whatever fee was agreed. Integer division, so a deposit below the divisor caps the fee at zero.
 pub fn appraiser_fee_cap(deposit: u64) -> u64 {
     deposit / APPRAISER_FEE_CAP_DIVISOR
 }
@@ -316,11 +439,11 @@ pub fn appraiser_fee_cap(deposit: u64) -> u64 {
 /// still pays the whole fee, because the landlord's share is zero and the fee can only be taken
 /// from the deposit. Only a dual fee escrow fixes that, and that is a second custody path
 /// (docs/contracts/dispute-mediation.md §6).
-pub fn verdict_split(deposit: u64, deduction: u64, registry_fee: u64) -> Result<VerdictSplit> {
+pub fn verdict_split(deposit: u64, deduction: u64, agreed_fee: u64) -> Result<VerdictSplit> {
     let refund = deposit
         .checked_sub(deduction)
         .ok_or_else(|| error!(ErrorCode::DeductionTooLarge))?;
-    let fee = registry_fee.min(appraiser_fee_cap(deposit));
+    let fee = agreed_fee.min(appraiser_fee_cap(deposit));
 
     // u128 so a deposit above i64::MAX cannot wrap the comparison into the wrong branch.
     let landlord_won = (deduction as u128) * 2 > deposit as u128;
@@ -530,11 +653,9 @@ pub struct MediationOpened {
     pub lease: Pubkey,
     pub dispute: Pubkey,
     pub selection_deadline: i64,
-    /// Provisional — binding an appraiser re-bases it on the binding.
-    pub verdict_deadline: i64,
 }
 
-/// One side nominated its candidates. The keys are on the `Dispute` account; the event carries
+/// One side nominated its candidates. The names are on the `Dispute` account; the event carries
 /// only who acted and how many, so the app knows to refetch.
 #[event]
 pub struct AppraisersProposed {
@@ -547,17 +668,32 @@ pub struct AppraisersProposed {
 pub struct AppraiserPicked {
     pub lease: Pubkey,
     pub party: Pubkey,
-    pub pick: Pubkey,
+    pub name_hash: [u8; 32],
 }
 
-/// An appraiser is bound and the verdict window has started.
+/// Both sides picked the same company; the fee is the lowest anyone proposed for it.
+#[event]
+pub struct AppraiserNameAgreed {
+    pub lease: Pubkey,
+    pub name_hash: [u8; 32],
+    pub fee: u64,
+}
+
+#[event]
+pub struct AppraiserKeyProposed {
+    pub lease: Pubkey,
+    pub party: Pubkey,
+    pub wallet: Pubkey,
+    pub proposals: u8,
+}
+
+/// Both parties confirmed the wallet: an appraiser is bound and the verdict window has started.
 #[event]
 pub struct AppraiserBound {
     pub lease: Pubkey,
     pub appraiser: Pubkey,
-    /// True when the selection window ran out and the registry default was bound instead of the
-    /// two sides agreeing.
-    pub by_default: bool,
+    pub name_hash: [u8; 32],
+    pub fee: u64,
     pub verdict_deadline: i64,
 }
 
@@ -594,8 +730,9 @@ mod tests {
         // so this must NOT have moved. A change here means the devnet upgrade is no longer in
         // place and every existing lease would stop deserialising.
         assert_eq!(8 + Lease::INIT_SPACE, 218);
-        assert_eq!(8 + Appraiser::INIT_SPACE, 83);
-        assert_eq!(8 + Dispute::INIT_SPACE, 347);
+        // D2 was never deployed, so Dispute's size is free to change; this pins the new one.
+        assert_eq!(8 + Candidate::INIT_SPACE, 8 + 105);
+        assert_eq!(8 + Dispute::INIT_SPACE, 891);
     }
 
     /// D2 invariant 6, the half a layout test cannot show: that the *bytes* the deployed program
@@ -825,12 +962,18 @@ mod tests {
     fn dispute() -> Dispute {
         let mut d = Dispute {
             lease: Pubkey::new_unique(),
-            landlord_candidates: [Pubkey::default(); MAX_CANDIDATES],
-            tenant_candidates: [Pubkey::default(); MAX_CANDIDATES],
+            landlord_candidates: [Candidate::EMPTY; MAX_CANDIDATES],
+            tenant_candidates: [Candidate::EMPTY; MAX_CANDIDATES],
             landlord_count: 0,
             tenant_count: 0,
-            landlord_pick: Pubkey::default(),
-            tenant_pick: Pubkey::default(),
+            landlord_pick: [0; 32],
+            tenant_pick: [0; 32],
+            agreed_name_hash: [0; 32],
+            agreed_fee: 0,
+            proposed_key: Pubkey::default(),
+            key_proposer: Pubkey::default(),
+            landlord_key_proposals: 0,
+            tenant_key_proposals: 0,
             appraiser: Pubkey::default(),
             selection_deadline: 0,
             verdict_deadline: 0,
@@ -840,33 +983,116 @@ mod tests {
         d
     }
 
-    #[test]
-    fn open_sets_both_deadlines_so_an_untouched_mediation_still_expires() {
-        let d = dispute();
-        assert_eq!(d.selection_deadline, 1_000 + SELECTION_WINDOW_SECS);
-        assert_eq!(
-            d.verdict_deadline,
-            1_000 + SELECTION_WINDOW_SECS + VERDICT_WINDOW_SECS
-        );
-        assert!(!d.is_bound());
-        assert!(!d.picks_agree());
+    fn cand(name: &str, fee: u64) -> Candidate {
+        Candidate::new(name, fee).unwrap()
     }
 
     #[test]
-    fn binding_re_bases_the_verdict_window_on_the_binding() {
+    fn open_sets_one_selection_deadline_and_leaves_the_verdict_deadline_unset() {
+        let d = dispute();
+        assert_eq!(d.selection_deadline, 1_000 + SELECTION_WINDOW_SECS);
+        assert_eq!(d.verdict_deadline, 0);
+        assert!(!d.is_bound() && !d.name_agreed() && !d.picks_agree());
+    }
+
+    #[test]
+    fn binding_starts_the_verdict_window_on_the_binding() {
         let mut d = dispute();
-        let appraiser = Pubkey::new_unique();
-        d.bind(appraiser, 1_005);
+        d.bind(Pubkey::new_unique(), 1_005);
         assert!(d.is_bound());
         assert_eq!(d.verdict_deadline, 1_005 + VERDICT_WINDOW_SECS);
     }
 
-    /// A pick is checked against the *union* of both lists, which is what lets the two sides
-    /// converge, and padding past `*_count` must never count as a nomination.
+    /// The late-bind complement (doc §2): unbound, selection is open exactly while expiry is not,
+    /// at every instant around the deadline, so a binding can never re-arm a lapsed mediation.
+    #[test]
+    fn selection_and_unbound_expiry_are_exact_complements() {
+        let d = dispute();
+        let sd = d.selection_deadline;
+        for now in [0, 999, sd - 2, sd - 1, sd, sd + 1, sd + 10_000] {
+            assert_ne!(d.selection_open(now), d.may_expire(now), "overlap or gap at {now}");
+        }
+        assert!(d.selection_open(sd - 1) && !d.may_expire(sd - 1));
+        assert!(!d.selection_open(sd) && d.may_expire(sd));
+    }
+
+    /// Bound: selection is closed for good, and expiry waits for the verdict deadline, which is
+    /// the exact complement of `submit_verdict`'s `now < verdict_deadline`.
+    #[test]
+    fn a_bound_dispute_expires_at_the_verdict_deadline_and_never_reopens_selection() {
+        let mut d = dispute();
+        d.bind(Pubkey::new_unique(), d.selection_deadline - 1);
+        let vd = d.verdict_deadline;
+        assert_eq!(vd, d.selection_deadline - 1 + VERDICT_WINDOW_SECS);
+        // worst-case lock-up: bound at the last instant, expires one verdict window later
+        assert!(vd < d.selection_deadline + VERDICT_WINDOW_SECS);
+        for now in [0, d.selection_deadline, vd - 1, vd, vd + 1] {
+            assert!(!d.selection_open(now));
+            assert_eq!(d.may_expire(now), now >= vd);
+        }
+    }
+
+    /// G4: one party cannot burn the other's budget, the other can always counter, and when both
+    /// budgets are spent no further proposal is possible.
+    #[test]
+    fn key_proposal_budgets_are_per_party() {
+        let mut d = dispute();
+        for _ in 0..MAX_KEY_PROPOSALS_PER_PARTY {
+            assert!(d.spend_key_proposal(true));
+        }
+        assert!(!d.spend_key_proposal(true), "landlord is out");
+        assert_eq!(d.tenant_key_proposals, 0, "tenant's budget untouched");
+        for _ in 0..MAX_KEY_PROPOSALS_PER_PARTY {
+            assert!(d.spend_key_proposal(false), "tenant can always counter");
+        }
+        assert!(!d.spend_key_proposal(false));
+        assert!(!d.spend_key_proposal(true));
+        assert_eq!(
+            d.landlord_key_proposals + d.tenant_key_proposals,
+            2 * MAX_KEY_PROPOSALS_PER_PARTY
+        );
+    }
+
+    #[test]
+    fn names_are_trimmed_collapsed_and_case_insensitive() {
+        let a = cand("  Acme   Wycena ", 1);
+        let b = cand("acme wycena", 2);
+        assert_eq!(a.name_hash, b.name_hash);
+        assert_eq!(&a.name[..a.name_len as usize], b"Acme Wycena");
+        assert_ne!(cand("Acme Wycena 2", 1).name_hash, a.name_hash);
+        // tabs and newlines collapse like spaces
+        assert_eq!(cand("Acme\t\nWycena", 0).name_hash, a.name_hash);
+        // non-ASCII is not case-folded: different spelling, different company
+        assert_ne!(cand("Wycena Łódź", 0).name_hash, cand("WYCENA ŁÓDŹ", 0).name_hash);
+    }
+
+    #[test]
+    fn name_validation_edges() {
+        assert!(Candidate::new("", 0).is_err());
+        assert!(Candidate::new("   \t ", 0).is_err());
+        assert!(Candidate::new("a\u{0}b", 0).is_err());
+        assert!(Candidate::new("a\u{7}b", 0).is_err());
+        assert!(Candidate::new("a\u{7f}b", 0).is_err());
+        assert!(Candidate::new(&"x".repeat(MAX_NAME_LEN), 0).is_ok());
+        assert!(Candidate::new(&"x".repeat(MAX_NAME_LEN + 1), 0).is_err());
+        // the bound is bytes, not characters: 33 two-byte characters is 66 bytes
+        assert!(Candidate::new(&"ł".repeat(33), 0).is_err());
+        assert!(Candidate::new(&"ł".repeat(32), 0).is_ok());
+        // invisible / format / bidi code points are refused, NBSP is just a space
+        for bad in ["a\u{200B}b", "a\u{200D}b", "a\u{FEFF}b", "\u{202E}ab", "a\u{2066}b", "a\u{2060}b", "a\u{00AD}b", "a\u{180E}b", "a\u{200F}b", "Acme\u{FE0F} Wycena", "a\u{FE00}b", "a\u{E0100}b", "a\u{E01EF}b"] {
+            assert!(Candidate::new(bad, 0).is_err(), "{bad:?} should be refused");
+        }
+        assert_eq!(cand("Acme\u{00A0}Wycena", 0).name_hash, cand("acme wycena", 0).name_hash);
+        assert!(Candidate::new("Wycena Łódź", 0).is_ok());
+        // the limit applies after normalisation
+        assert!(Candidate::new(&format!("  {}  ", "x".repeat(MAX_NAME_LEN)), 0).is_ok());
+    }
+
+    /// A pick is checked against the *union* of both lists, and padding past `*_count` never counts.
     #[test]
     fn was_proposed_covers_the_union_and_ignores_the_padding() {
         let mut d = dispute();
-        let (a, b, outsider) = (Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique());
+        let (a, b, outsider) = (cand("A", 1), cand("B", 2), cand("Outsider", 3));
         d.landlord_candidates[0] = a;
         d.landlord_count = 1;
         d.tenant_candidates[0] = b;
@@ -874,23 +1100,34 @@ mod tests {
         // written but not counted: a side that proposed one must not be able to smuggle a second
         d.tenant_candidates[1] = outsider;
 
-        assert!(d.was_proposed(&a));
-        assert!(d.was_proposed(&b));
-        assert!(!d.was_proposed(&outsider));
-        assert!(!d.was_proposed(&Pubkey::default()));
+        assert!(d.was_proposed(&a.name_hash));
+        assert!(d.was_proposed(&b.name_hash));
+        assert!(!d.was_proposed(&outsider.name_hash));
+        assert!(!d.was_proposed(&[0u8; 32]));
     }
 
-    /// The all-zero "has not picked" value must never read as agreement, or an unbound dispute
-    /// would bind nobody and look bound.
+    #[test]
+    fn the_lowest_fee_proposed_for_a_company_wins() {
+        let mut d = dispute();
+        d.landlord_candidates[0] = cand("Acme Wycena", 90);
+        d.landlord_count = 1;
+        d.tenant_candidates[0] = cand("other", 5);
+        d.tenant_candidates[1] = cand("ACME wycena", 40);
+        d.tenant_count = 2;
+        let h = cand("acme wycena", 0).name_hash;
+        assert_eq!(d.lowest_fee(&h), Some(40));
+        assert_eq!(d.lowest_fee(&cand("nobody", 0).name_hash), None);
+    }
+
+    /// The all-zero "has not picked" value must never read as agreement.
     #[test]
     fn two_sides_that_have_not_picked_do_not_agree() {
         let mut d = dispute();
         assert!(!d.picks_agree());
-
-        let pick = Pubkey::new_unique();
+        let pick = cand("A", 0).name_hash;
         d.landlord_pick = pick;
         assert!(!d.picks_agree());
-        d.tenant_pick = Pubkey::new_unique();
+        d.tenant_pick = cand("B", 0).name_hash;
         assert!(!d.picks_agree());
         d.tenant_pick = pick;
         assert!(d.picks_agree());
@@ -916,7 +1153,7 @@ mod tests {
         // integer division: a deposit smaller than the divisor pays no fee at all
         assert_eq!(appraiser_fee_cap(9), 0);
         assert_eq!(appraiser_fee_cap(0), 0);
-        // a registry entry asking for more than the cap gets the cap
+        // a candidate asking for more than the cap gets the cap
         assert_eq!(split(1_000, 900, 500).to_appraiser, 100);
         assert_eq!(split(9, 9, 500).to_appraiser, 0);
     }

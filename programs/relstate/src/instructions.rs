@@ -1,6 +1,5 @@
 pub mod claim_deposit;
 pub mod apply;
-pub mod appraiser;
 pub mod attest;
 pub mod close_application;
 pub mod config;
@@ -17,7 +16,6 @@ pub mod settle_dispute;
 
 pub use claim_deposit::*;
 pub use apply::*;
-pub use appraiser::*;
 pub use attest::*;
 pub use close_application::*;
 pub use config::*;
