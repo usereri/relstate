@@ -3730,6 +3730,11 @@ export type Relstate = {
       "code": 6053,
       "name": "unexpectedDisputeAccount",
       "msg": "This lease has no dispute account to pass"
+    },
+    {
+      "code": 6054,
+      "name": "bindingWindowClosed",
+      "msg": "Too late to bind an appraiser: the verdict window has already passed, so the mediation can be expired"
     }
   ],
   "types": [

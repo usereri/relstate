@@ -104,6 +104,15 @@ All four are `#[constant]`, so they land in the IDL and the app reads the value 
 against instead of mirroring it. `scripts/sync-idl.sh` refuses an IDL whose four values are not the
 demo set, so a release build cannot be shipped to the app by accident.
 
+**Binding has an upper bound too.** `pick_appraiser` and `bind_default_appraiser` refuse once
+`now >= verdict_deadline` (`BindingWindowClosed`), the exact complement of `expire_mediation`'s
+`now >= verdict_deadline`. Without it, a binding after the provisional deadline would re-base the
+expiry to `now + VERDICT_WINDOW_SECS` and take away an exit the tenant was already entitled to; a
+party could hold a good-faith pick of the other side in reserve and re-arm a lapsed mediation at a
+moment of its choosing. The absolute worst-case lock-up is therefore
+`M + SELECTION_WINDOW_SECS + 2 * VERDICT_WINDOW_SECS` (a binding just before the provisional
+deadline, then a full verdict window).
+
 Proposing and picking are **not** barred after `selection_deadline`. Past it,
 `bind_default_appraiser` becomes available to anyone, but as long as no appraiser is bound the two
 sides may still converge on their own; whichever transaction lands first binds, and the other then
@@ -307,6 +316,22 @@ only come out of the deposit. Fixing it properly needs the dual fee escrow D2 or
 second set of timeouts. This is why the fee rule is the **first cut line** (plan §4): shipping
 without it costs nothing but the "loser pays" sentence.
 
+**Second limitation: the appraiser's pay depends on the number they sign.** In the landlord-won
+branch `fee_paid = min(fee, deposit - d)`, so for `d > deposit - fee` the appraiser is paid less than
+the fee they are owed (at `d = deposit` they are paid nothing). A fee-maximising appraiser therefore
+has a stake against awarding the landlord the last `fee` of the deposit, which is exactly where the
+landlord's claim is strongest. The clamp is deliberate (the fee must not eat into the award the
+appraiser just made) and conservation holds either way. Taking the fee off the top (`fee` first, then
+split `deposit - fee`) would make pay verdict-independent at the cost of the "loser pays" sentence;
+that trade was not made before the demo. State it rather than let a judge find it.
+
+**Counters on a `d = 0` verdict.** `deposits_returned_full` is credited only when the tenant actually
+received the whole deposit (`to_tenant == deposit`), not when the verdict number is zero. A `d = 0`
+verdict still pays the appraiser out of the deposit, so it is not a full return, and the landlord who
+lost the arbitration did not choose to give one. Without this, losing an arbitration you started would
+have bought a spotless record. `last_deposit_return_bps` still follows the verdict, so a `d = 0`
+verdict reads as 10000 while the tenant's net is `deposit - fee`.
+
 Reputation records the **verdict**, not the fee: `record_deposit_outcome(deposit, d)`, so
 `last_deposit_return_bps` is the share the appraiser said the tenant was owed. The fee is a cost of
 the arbitration, not a deduction the landlord won.
@@ -355,6 +380,12 @@ the landlord may propose *one more* deduction where the old program refused all 
 new rule applied to an old lease, not a bug; `release_deposit(0)` remains available throughout and
 no deposit becomes less reachable.
 
+**Sequencing: ship the app before the upgrade.** On an old lease with `dispute_rejected = true`
+(now `dispute_rounds = 1`), `abandon_dispute` is refused (`WrongDisputeRound`) and the tenant's only
+rejection is `escalate_to_mediation`, which the currently deployed app has no button for. Upgrade the
+program only together with, or after, an app that calls `escalate_to_mediation`, or confirm that no
+devnet lease is sitting at `dispute_rejected = true`.
+
 **The upgrade is one-way.** A lease that reaches `dispute_rounds = 2` stores `0x02` at byte 217,
 which the old program would reject as an invalid bool (`AccountDidNotDeserialize`). Rolling the
 program back over such a lease would strand it. Only roll forward.
@@ -387,9 +418,31 @@ Appended, 6038 onwards:
 | `InvalidAppraiser` | `register_appraiser` given the all-zero pubkey |
 | `DisputeAccountRequired` | `settle_dispute` in `Mediation` without the `Dispute` account |
 | `UnexpectedDisputeAccount` | `settle_dispute` in `Disputed` *with* a `Dispute` account |
+| `BindingWindowClosed` (6054) | `pick_appraiser` or `bind_default_appraiser` at or after `verdict_deadline` |
 
 Renamed in place: `DisputeAlreadyRejected` (6034) → `DisputeRoundsExhausted`, "no dispute rounds are
 left on this lease, so the deposit returns in full".
+
+### Two of these are defence in depth the state machine cannot reach
+
+Kept deliberately, and recorded here so they are not mistaken for checks that were never wired up.
+Neither is reachable through the public interface, and both are cheap:
+
+- **`NotMediationParty` in `submit_verdict`.** To get that far, `dispute.appraiser` must equal the
+  signer, and the only two instructions that can set it — `pick_appraiser` and
+  `bind_default_appraiser` — already refuse a party. So a party can never be bound in the first
+  place. The check stays because the money path should not depend on those three instructions
+  having been the only route in.
+- **`UnexpectedDisputeAccount` in `settle_dispute`.** The `Dispute` account is seeded by the lease,
+  so the only one that can satisfy a given lease's seeds is the one its own
+  `escalate_to_mediation` created — and that same instruction moves the lease to `Mediation`. A
+  lease therefore can never be `Disputed` while its own `Dispute` account exists, and passing
+  *another* lease's account fails Anchor's seed derivation (`ConstraintSeeds`) before the handler
+  runs. The check stays as the explicit statement of the correspondence; its sibling
+  `DisputeAccountRequired` is reachable and tested. **It is unreachable only because
+  `dispute_rounds` stays at the cap after `expire_mediation`.** If `MAX_DISPUTE_ROUNDS` or that rule
+  changes (cut line 3 sets it to 1), re-check this claim: `Disputed` with a live `Dispute` could
+  then become reachable.
 
 ## 10. Trust, and what to say about it
 
@@ -410,6 +463,19 @@ constrain *who* may speak and *when*:
   vault is signed by the lease PDA;
 - the verdict is bounded by `0 <= deduction <= deposit` and the fee by `deposit / 10`;
 - an appraiser who stays silent decides nothing: the mediation expires.
+
+**What the Config admin can do, stated plainly.** Suspending a *bound* appraiser
+(`set_appraiser_active(false)`) blocks `submit_verdict`, so the admin can end any live mediation in
+the tenant's favour (it expires to a full refund). And `bind_default_appraiser` is open to anyone
+once the selection window passes, with the default being a platform key, so the platform can be
+installed as arbiter of any mediation that reaches that deadline and sign any number in
+`[0, deposit]`. Both are inside the trust class below, and neither can mint funds.
+
+**Operational: every appraiser needs a token account for every allowed mint.** `submit_verdict`
+requires `appraiser_ata` even when the fee paid is zero, so a bound appraiser with no account for the
+lease's mint cannot submit at all, and the failure looks like a silent appraiser. The appraiser setup
+script must create one per appraiser per mint in `Config::mints`, and the appraiser console should
+check for it before offering to sign.
 
 This is the same trust class as the KYC issuer key, and it should be said out loud rather than
 discovered. For the demo the registry holds three clearly fictional companies — **Rzeczoznawca A**,
