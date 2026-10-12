@@ -6,7 +6,9 @@ import { Hono } from "hono";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
-import { AuthError, assertAdmin, createSessionToken, sessionFromAuthorizationHeader } from "./auth.ts";
+import { VerdictRefused, fetchAppraiser } from "./appraiser-chain.ts";
+import { appraiserNameHash, hex } from "./appraisers.ts";
+import { AuthError, assertAdmin, assertVerdictConsole, createSessionToken, sessionFromAuthorizationHeader } from "./auth.ts";
 import { verifyRentPayment } from "./confidential.ts";
 import { RELSTATE_PROGRAM, type HealthResponse, type SponsorInfoResponse, type SponsorRequest, type TreasuryInvariantView } from "./contracts.ts";
 import { env, redactedRpcUrl } from "./env.ts";
@@ -29,6 +31,7 @@ const asInvariantView = (report: InvariantReport): TreasuryInvariantView => repo
 /** Maps a thrown error to a status and a message safe to return to a caller. */
 function problem(error: unknown): { status: 400 | 401 | 403 | 404 | 409 | 429 | 500 | 502 | 503; body: Record<string, unknown> } {
   if (error instanceof RejectedTransaction) return { status: 400, body: { error: error.message, code: error.code } };
+  if (error instanceof VerdictRefused) return { status: 409, body: { error: error.message, code: error.code } };
   if (error instanceof AuthError) return { status: 401, body: { error: error.message, code: "unauthorized" } };
   if (error instanceof RateLimited) return { status: 429, body: { error: error.message, code: "rate-limited", scope: "ip" } };
   if (error instanceof LimitError) return { status: 429, body: { error: error.message, code: "rate-limited", scope: error.scope } };
@@ -70,6 +73,27 @@ async function readJson<T>(c: { req: { json(): Promise<unknown> } }): Promise<T>
   } catch {
     throw new RejectedTransaction("body must be JSON", "malformed-body");
   }
+}
+
+/**
+ * A verdict deduction: base-unit digits only, as a string, or a safe non-negative integer. Not
+ * `BigInt(x)`, which maps "", " ", true, [] and "0x10" to values and would turn an empty form field
+ * into a live verdict of 0.
+ */
+export function parseDeduction(value: unknown): bigint {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === "string" && /^\d+$/.test(value) && value.length <= 20) {
+    const n = BigInt(value);
+    if (n <= 18_446_744_073_709_551_615n) return n;
+  }
+  throw new RejectedTransaction("deduction must be a non-negative base-unit integer (digits only)", "malformed-body");
+}
+
+/** A flag that, if present, must be a real boolean: "true", 1 and "yes" are refused, not guessed at. */
+export function parseOptionalBoolean(value: unknown, field: string): boolean {
+  if (value === undefined) return false;
+  if (typeof value === "boolean") return value;
+  throw new RejectedTransaction(`${field} must be true or false`, "malformed-body");
 }
 
 /** Positive base-unit amount from an untrusted string. */
@@ -604,6 +628,93 @@ export function createApp(
       return c.html(mockVerificationPage(session, safeReturnBase(c.req.query("back"), env.appUrl, "/#/app?tab=identity&kyc=")));
     });
   }
+
+  // --- Appraisers (D2, docs/contracts/dispute-mediation.md §3, §10) -------------
+
+  /**
+   * The human-readable directory the chain deliberately does not hold. Public: names are fictional,
+   * wallets are public keys. `nameHash` is what `Appraiser.name_hash` must equal, so anyone can check
+   * the directory against the registry. Empty until APPRAISERS is configured.
+   */
+  app.get("/api/appraisers", async (c) => {
+    // In live mode the registry is the truth for fee/active/default: the program applies ITS fee, so
+    // a directory that disagrees would show a verdict preview the chain will not honour. Best effort
+    // with a short timeout (a slow RPC must not take the directory down); drift is flagged, not hidden.
+    const onChain = async (wallet: Address) => {
+      if (env.mode !== "live") return undefined;
+      try {
+        return await Promise.race([
+          fetchAppraiser(services.client().rpc, wallet),
+          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 3000)),
+        ]);
+      } catch {
+        return undefined;
+      }
+    };
+    const appraisers = await Promise.all(
+      services.appraisers().map(async (a) => {
+        const record = await onChain(a.wallet);
+        const fee = record ? record.fee : a.fee;
+        return {
+          name: a.name,
+          wallet: a.wallet,
+          fee: fee.toString(),
+          feeSource: record ? "chain" : "directory",
+          isDefault: record ? record.isDefault : a.isDefault,
+          active: record ? record.active : null,
+          registered: record === undefined ? null : record !== null,
+          // The directory and the registry disagree: the setup script cannot edit a fee, so say so.
+          drift: record ? record.fee !== a.fee || record.nameHash !== hex(appraiserNameHash(a.name)) || record.isDefault !== a.isDefault : false,
+          nameHash: hex(appraiserNameHash(a.name)),
+        };
+      }),
+    );
+    return c.json({ appraisers });
+  });
+
+  /**
+   * Demo appraiser console: signs a verdict with a configured appraiser key. Operator-only (its own
+   * VERDICT_CONSOLE_TOKEN, never ADMIN_TOKEN) because the key decides a deposit. The route never takes a key or a signer from the body:
+   * the appraiser is whoever the chain says is bound, and the backend must hold that key or it refuses.
+   * `dryRun: true` returns what the verdict would pay and sends nothing.
+   */
+  app.post("/api/admin/appraiser/verdict", async (c) => {
+    treasuryLimit(`a:${clientIp(c)}`);
+    assertVerdictConsole(c.req.header("authorization"));
+    const body = await readJson<{ lease?: unknown; deduction?: unknown; dryRun?: unknown }>(c);
+    if (typeof body.lease !== "string" || !isAddress(body.lease)) {
+      throw new RejectedTransaction("lease must be the lease account's address", "malformed-body");
+    }
+    const deduction = parseDeduction(body.deduction);
+    const dryRun = parseOptionalBoolean(body.dryRun, "dryRun");
+    // Any key the body carries beyond these is a typo for a flag we would silently ignore (a verdict
+    // that goes live when the operator meant a preview), so unknown keys are refused too.
+    for (const key of Object.keys(body)) {
+      if (key !== "lease" && key !== "deduction" && key !== "dryRun") throw new RejectedTransaction(`unknown field ${key}`, "malformed-body");
+    }
+    const allowed = env.appraisers.consoleLeases.split(",").map((l) => l.trim()).filter(Boolean);
+    if (allowed.length > 0 && !allowed.includes(body.lease)) {
+      throw new RejectedTransaction("this lease is not on VERDICT_CONSOLE_LEASES", "lease-not-allowed");
+    }
+    // Who asked, for which lease and amount. Never a token or key.
+    console.log(`verdict console: ${dryRun ? "dry run" : "SUBMIT"} lease=${body.lease} deduction=${deduction} ip=${clientIp(c)}`);
+    const chain = await services.appraiserChain();
+    const input = { lease: body.lease as Address, deduction };
+    const view = (plan: Awaited<ReturnType<typeof chain.plan>>) => ({
+      lease: plan.lease,
+      appraiser: plan.appraiser,
+      deduction: plan.deduction.toString(),
+      deposit: plan.deposit.toString(),
+      toTenant: plan.split.toTenant.toString(),
+      toLandlord: plan.split.toLandlord.toString(),
+      feePaid: plan.split.feePaid.toString(),
+      appraiserAta: plan.appraiserAta,
+      appraiserAtaExists: plan.appraiserAtaExists,
+    });
+    if (dryRun) return c.json({ dryRun: true, ...view(await chain.plan(input)) });
+    const result = await chain.submit(input);
+    return c.json({ dryRun: false, signatures: result.signatures, ...view(result.plan) });
+  });
 
   app.notFound((c) => c.json({ error: "not found", code: "not-found" }, 404));
   return app;
