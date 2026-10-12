@@ -61,7 +61,7 @@ export function createConsoleEmailSender({ log = console.log, mode = env.mode }:
     delivers: true,
     send(email) {
       const body = mode === "mock" ? email.text : (email.secrets ?? []).reduce((text, secret) => (secret === "" ? text : text.split(secret).join("<redacted>")), email.text);
-      log(`e-mail to ${email.to}: ${email.subject}\n${body}`);
+      log(`e-mail to ${maskEmail(email.to)}: ${email.subject}\n${body}`);
       return Promise.resolve();
     },
   };
