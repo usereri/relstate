@@ -44,12 +44,29 @@ describe("programErrorMessage", () => {
   });
 
   it("falls back to the IDL's own message for a program error with no friendly override", async () => {
-    const { programErrorMessage } = await load();
-    // Pick any error that is not in the hand-written friendly map.
-    const friendly = new Set(["KycRequired", "WrongStatus", "TooEarly", "TermCompleted", "SelfLease", "MintNotAllowed", "MissingConfidentialTransfer"]);
+    const { programErrorMessage, FRIENDLY_PROGRAM_ERRORS } = await load();
+    // Read the friendly set off the exported map itself, not a re-listed copy: the two cannot drift.
+    const friendly = new Set(Object.keys(FRIENDLY_PROGRAM_ERRORS));
     const other = errors.find((e) => !friendly.has(e.name) && e.msg);
     expect(other).toBeDefined();
     expect(programErrorMessage(other!.name)).toBe(other!.msg);
+  });
+
+  it("every one of the sixteen mediation errors (6038-6053) maps to a non-empty friendly message", async () => {
+    const { programErrorMessage } = await load();
+    const mediationErrors = errors.filter((e) => e.code >= 6038 && e.code <= 6053);
+    expect(mediationErrors).toHaveLength(16);
+    for (const e of mediationErrors) {
+      expect(programErrorMessage(e.name), e.name).toBeTruthy();
+    }
+  });
+
+  it("every key of FRIENDLY_PROGRAM_ERRORS names a real IDL error (a typo'd key would be dead code)", async () => {
+    const { FRIENDLY_PROGRAM_ERRORS } = await load();
+    const names = new Set(errors.map((e) => e.name));
+    for (const key of Object.keys(FRIENDLY_PROGRAM_ERRORS)) {
+      expect(names.has(key), key).toBe(true);
+    }
   });
 
   it("is null for unrelated text", async () => {
