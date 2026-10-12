@@ -391,6 +391,24 @@ Appended, 6038 onwards:
 Renamed in place: `DisputeAlreadyRejected` (6034) → `DisputeRoundsExhausted`, "no dispute rounds are
 left on this lease, so the deposit returns in full".
 
+### Two of these are defence in depth the state machine cannot reach
+
+Kept deliberately, and recorded here so they are not mistaken for checks that were never wired up.
+Neither is reachable through the public interface, and both are cheap:
+
+- **`NotMediationParty` in `submit_verdict`.** To get that far, `dispute.appraiser` must equal the
+  signer, and the only two instructions that can set it — `pick_appraiser` and
+  `bind_default_appraiser` — already refuse a party. So a party can never be bound in the first
+  place. The check stays because the money path should not depend on those three instructions
+  having been the only route in.
+- **`UnexpectedDisputeAccount` in `settle_dispute`.** The `Dispute` account is seeded by the lease,
+  so the only one that can satisfy a given lease's seeds is the one its own
+  `escalate_to_mediation` created — and that same instruction moves the lease to `Mediation`. A
+  lease therefore can never be `Disputed` while its own `Dispute` account exists, and passing
+  *another* lease's account fails Anchor's seed derivation (`ConstraintSeeds`) before the handler
+  runs. The check stays as the explicit statement of the correspondence; its sibling
+  `DisputeAccountRequired` is reachable and tested.
+
 ## 10. Trust, and what to say about it
 
 **The appraiser is an oracle.** The program cannot make a real appraisal company look at a flat,
