@@ -1,46 +1,44 @@
 import { describe, expect, it } from "vitest";
-import { committedName, nameOf } from "../Mediation";
-import type { AppraiserOption } from "@/lib/appraisers";
-import { short } from "@/lib/utils";
+import { draftProblem, draftsToQuotes, emptyDrafts, sideName } from "../Mediation";
 
-// Pure wrappers over lib/appraisers' trustedLabel / appraiserLabel, reachable with no DOM: the
-// commit-site labels (pick, change, bind, submit) must fall back to the key for an unverified
-// name, where the browse-site label (nameOf) still shows it.
-const option = (overrides: Partial<AppraiserOption> = {}): AppraiserOption => ({
-  address: "ADDR",
-  wallet: "WALLETKEY123",
-  name: "Rzeczoznawca A",
-  nameVerified: true,
-  active: true,
-  isDefault: false,
-  fee: 1_000,
-  ...overrides,
+const CAP = 500_000_000; // a tenth of a 5000 USDC deposit
+
+describe("emptyDrafts", () => {
+  it("has one row per candidate slot", () => {
+    expect(emptyDrafts()).toHaveLength(3);
+  });
 });
 
-describe("committedName", () => {
-  it("shows the verified name on a commit-site label", () => {
-    expect(committedName([option({ wallet: "W1" })], "W1")).toBe("Rzeczoznawca A");
+describe("draftProblem", () => {
+  const d = (...rows: [string, string?][]) => rows.map(([name, fee]) => ({ name, fee: fee ?? "" }));
+  it("needs at least one company", () => {
+    expect(draftProblem(emptyDrafts(), CAP)).toMatch(/at least one/);
   });
-
-  it("falls back to the shortened key when the name is unverified, unlike nameOf", () => {
-    const wallet = "WALLETKEY123";
-    const options = [option({ wallet, nameVerified: false })];
-    expect(committedName(options, wallet)).toBe(short(wallet, 5));
-    expect(nameOf(options, wallet)).toBe("Rzeczoznawca A"); // browse-site label still shows it
+  it("accepts one to three valid companies, fee optional", () => {
+    expect(draftProblem(d(["Acme"], ["Beta", "12.5"], ["Gamma", "0"]), CAP)).toBeNull();
   });
-
-  it("uses the shortened wallet when it is not in the options at all", () => {
-    const wallet = "UNKNOWNWALLET123";
-    expect(committedName([option({ wallet: "W1" })], wallet)).toBe(short(wallet, 5));
+  it("refuses the same company twice, ignoring case and spacing", () => {
+    expect(draftProblem(d(["Acme  Wycena"], ["acme wycena"]), CAP)).toMatch(/twice/);
   });
-
-  it("uses the shortened wallet while options are still loading", () => {
-    const wallet = "WALLETKEY123";
-    expect(committedName(undefined, wallet)).toBe(short(wallet, 5));
+  it("refuses invisible characters and a fee above the cap or malformed", () => {
+    expect(draftProblem(d(["Ac​me"]), CAP)).toMatch(/invisible/);
+    expect(draftProblem(d(["Acme", "501"]), CAP)).toMatch(/above/);
+    expect(draftProblem(d(["Acme", "1e3"]), CAP)).toMatch(/quote for "Acme"/);
   });
+});
 
-  it("uses the shortened wallet for an empty options list", () => {
-    const wallet = "WALLETKEY123";
-    expect(committedName([], wallet)).toBe(short(wallet, 5));
+describe("draftsToQuotes", () => {
+  it("skips blank rows and turns a blank fee into 0", () => {
+    expect(draftsToQuotes([{ name: " Acme ", fee: "1.5" }, { name: "", fee: "9" }, { name: "Beta", fee: "" }])).toEqual([
+      { name: "Acme", fee: 1_500_000 },
+      { name: "Beta", fee: 0 },
+    ]);
+  });
+});
+
+describe("sideName", () => {
+  it("names a side, never a wallet", () => {
+    expect(sideName("landlord")).toBe("the landlord");
+    expect(sideName("tenant")).toBe("the tenant");
   });
 });

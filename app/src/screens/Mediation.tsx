@@ -122,9 +122,7 @@ export function AppraiserFee({ deposit, fee, cap, exact }: { deposit: number; fe
         ]}
       />
       <p className="text-xs text-muted-foreground">
-        There is no second deposit to put down: the fee comes out of this one when the verdict pays out, so neither of you has to pay anything up
-        front. If you both quote the same company, the lower quote is the one that counts. And if the appraiser decides nothing should be kept at all —
-        a complete win for the tenant — the landlord's share is nothing, so the fee comes out of the tenant's refund.
+        Nothing to pay up front: the fee comes out of the deposit. If you both quote the same company, the lower quote counts.
       </p>
     </div>
   );
@@ -592,16 +590,15 @@ export function NoCooperationNote({ role }: { role: Role }) {
   return (
     <div className="flex flex-col gap-2 rounded-2xl border border-warning/40 bg-warning-soft p-4 text-warning">
       <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider">
-        <AlertTriangle className="size-3.5" /> If the two of you do not get this done in time
+        <AlertTriangle className="size-3.5" /> If time runs out
       </p>
       <p className="text-xs">
-        An appraiser can only be brought in if <b>both</b> of you agree on one before the deadline. If either of you lets the time run out, the whole
-        deposit goes back to the tenant and the landlord keeps nothing — there is no stand-in appraiser and Relstate cannot appoint one.
+        An appraiser is only brought in if <b>both</b> of you agree before the deadline. Otherwise the whole deposit goes back to the tenant.
       </p>
       <p className="text-xs">
         {role === "tenant"
-          ? "So this is genuinely your choice. Waiting out the clock returns the whole deposit to you and costs you no fee at all; agreeing to an appraiser is you choosing a fair answer over the better one. Your record shows which you did."
-          : "So you need the tenant to take part, and they are giving something up by doing it: waiting out the clock would pay them the whole deposit with no fee. What you have is the record of what happened, and the option of agreeing a figure between you."}
+          ? "Letting the time run out costs you nothing; agreeing is your choice of a fair answer."
+          : "So you need the tenant to take part. You can still agree a figure between you at any time."}
       </p>
     </div>
   );
