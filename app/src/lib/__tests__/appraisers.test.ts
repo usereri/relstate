@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { directoryEntries, mergeDirectory, nameHash, trustedLabel } from "../appraisers";
+import { directoryEntries, mergeDirectory, nameHash, trustedLabel, trustedLabelFor } from "../appraisers";
 import type { RegistryEntry } from "../appraisers";
 
 // appraisers.ts reads VITE_API through sponsor.ts at module load (DIRECTORY_AVAILABLE, loadAppraiserDirectory),
@@ -131,6 +131,38 @@ describe("trustedLabel", () => {
 
   it("falls back to the shortened empty key when the option itself is undefined", () => {
     expect(trustedLabel(undefined, shorten)).toBe("short()");
+  });
+});
+
+describe("trustedLabelFor", () => {
+  const opt = (overrides: Partial<{ name: string; nameVerified: boolean; wallet: string }> = {}) => ({
+    name: "Rzeczoznawca A",
+    nameVerified: true,
+    wallet: "WALLETKEY",
+    ...overrides,
+  });
+  const shorten = (s: string) => `short(${s})`;
+
+  it("shows a matching verified name", () => {
+    expect(trustedLabelFor(opt(), "CALLERKEY", shorten)).toBe("Rzeczoznawca A");
+  });
+
+  it("uses the entry's shortened key when the entry is unverified", () => {
+    expect(trustedLabelFor(opt({ nameVerified: false }), "CALLERKEY", shorten)).toBe("short(WALLETKEY)");
+  });
+
+  it("uses the caller's shortened wallet when the entry is missing, never an empty label", () => {
+    expect(trustedLabelFor(undefined, "WALLETKEY123", shorten)).toBe("short(WALLETKEY123)");
+  });
+
+  it("uses the entry's shortened key when a verified name is empty", () => {
+    expect(trustedLabelFor(opt({ name: "" }), "CALLERKEY", shorten)).toBe("short(WALLETKEY)");
+  });
+
+  it("agrees with trustedLabel whenever an entry is present", () => {
+    for (const entry of [opt(), opt({ nameVerified: false }), opt({ name: "" })]) {
+      expect(trustedLabelFor(entry, "CALLERKEY", shorten)).toBe(trustedLabel(entry, shorten));
+    }
   });
 });
 
