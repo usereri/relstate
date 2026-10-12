@@ -306,6 +306,36 @@ then have chosen the only confirmable wallet. Review G4.) Nothing here extends a
 it is inside `selection_deadline`. A party who refuses to confirm does not stall anything — they
 simply decline to bind, and the mediation expires (§10 on who that favours).
 
+### How the wallet reaches the parties: the invitation, which proves nothing
+
+The program sees a name and, separately, a wallet. Something off chain has to get the second one
+from the appraiser to the two parties, and the backend's **invitation** is that carrier and *only*
+that (`backend/src/invites.ts`, `docs/env-checklist.md`):
+
+1. The name is agreed on chain. Either party then calls `POST /api/invites {lease, companyName,
+   email}`. The backend refuses unless the caller is the landlord or the tenant of that lease, the
+   lease is in `Mediation`, nothing is bound yet, and `sha256(ascii_lowercase(display_name(
+   companyName)))` **equals `dispute.agreed_name_hash`** — so an invitation can only ever name the
+   company the parties actually agreed on.
+2. The appraiser opens the e-mailed link, signs in (the ordinary wallet session; an embedded wallet
+   is created on first login) and calls `POST /api/invites/:token/claim`, which records *their
+   session's* wallet. The token is single-use, bound to lease + name hash, and expires no later than
+   `selection_deadline`. A lease party is refused as the claimant, since the program would refuse
+   them anyway.
+3. Both parties read that wallet (`GET /api/invites?lease=…`) and each calls
+   `propose_appraiser_key` / `confirm_appraiser_key` **themselves**.
+
+**None of this is an authorisation.** The backend cannot bind an appraiser, submit a verdict, choose
+the name or end a mediation; step 3 is two human confirmations and the program's guarantee remains
+exactly "both parties confirmed this wallet". If the e-mail is intercepted, or the backend lies
+about the claimed wallet, the parties will confirm a key that is not the company's and the program
+cannot tell — which is §10 item 3, stated here as the mechanism rather than as a caveat. Neither
+party's e-mail address is readable through the API.
+
+Because the whole flow is an off-chain convenience, nothing depends on it: the parties can obtain
+the wallet any way they like and call phase 2 directly, and a backend that is down costs liveness
+only — the mediation then expires under the usual rule.
+
 ### Phase 3: the verdict, and the appraiser's token account
 
 `submit_verdict(deduction)` is signed by `dispute.appraiser` and goes through `close_with_fee`
@@ -327,6 +357,21 @@ would add a dependency on state the appraiser can undo (close it) afterwards. Th
 forgetting the instruction is loud — `AccountNotInitialized` at validation, nothing moves, no fee is
 lost — and a pinned test proves it; funds are never stranded because `expire_mediation` and
 `settle_dispute` are open regardless.
+
+**What the sponsor had to be taught to allow.** The backend's central sponsor invariant is that the
+fee payer may appear *only* as the message fee payer and never inside an instruction — that slot is
+writable and signed, so a reference to it is enough to drain the key. A create-ATA names its payer
+in exactly that way, so this shape was refused outright until
+`backend/src/txinspect.ts:sponsorFundedAtaInstructions` carved out one narrow exception for it. The
+carve-out is structural, not a trust decision: the instruction must be `CreateIdempotent` with no
+trailing data and six accounts; the fee payer may occupy only the payer slot; the account created,
+its owner and its mint must be **the same accounts the verdict instruction uses** as `appraiser_ata`,
+`appraiser` and `mint`; the owner must sign; it must precede the verdict; and there may be at most
+one. Since the associated-token program derives the address from (owner, mint, token program) and
+the transaction is atomic, the consequence is that **no rent leaves the sponsor unless a valid
+verdict lands in the same transaction** — the exposure is one token-account rent per lease that
+actually reaches a verdict. The rent is not counted by the sponsor's fee caps, which is recorded in
+`docs/env-checklist.md`.
 
 ## 5. The claim clock
 
@@ -517,7 +562,10 @@ speak and *when*. The disclosure list, in the order a judge would ask:
    name is personal data, and the chain cannot forget it.
 8. **There is no backend-held appraiser key.** The appraiser signs with their own wallet. (The demo
    may use a throwaway wallet operated by whoever runs the demo; that is not something the program can
-   see or depends on.)
+   see or depends on.) This is now true of the backend as well as of the program: the registry, the
+   `APPRAISERS` directory and the verdict console that held appraiser keys behind
+   `VERDICT_CONSOLE_TOKEN` are all removed, so no key the platform holds can decide a deposit. What
+   the backend carries instead is the invitation described in §4, which authorises nothing.
 
 **Expiry strictly dominates any verdict for a rational tenant.** Stalling costs the tenant nothing
 and returns the whole deposit with no fee (`expire_mediation` then `claim_deposit`); any verdict

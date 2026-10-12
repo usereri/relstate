@@ -21,16 +21,64 @@ const b64url = (b: Buffer): string => b.toString("base64url");
  * mode free of required secrets without weakening verification.
  */
 let ephemeralSecret: Buffer | undefined;
-export function sessionSecret(): Buffer {
+
+/**
+ * A secret for one purpose, derived from `SESSION_SECRET` (or the per-process random one) by
+ * domain. Two purposes never share a key, so a token minted for one is not a token for the other
+ * even though both are HMAC-SHA256 over the same shape.
+ */
+export function hmacSecret(domain: string): Buffer {
   const base = env.sessionSecret !== "" ? Buffer.from(env.sessionSecret, "utf8") : (ephemeralSecret ??= randomBytes(32));
-  // Domain-separate by auth mode: a token minted by a mock-mode instance is not valid in wallet
-  // mode even if an operator reuses SESSION_SECRET across the two (mock mode hands out sessions
-  // for any wallet, so it must never be able to speak to a live deployment).
-  return createHmac("sha256", base).update(`relstate/session/v1/${env.authMode}`).digest();
+  return createHmac("sha256", base).update(domain).digest();
 }
+
+/**
+ * Domain-separated by auth mode: a token minted by a mock-mode instance is not valid in wallet mode
+ * even if an operator reuses SESSION_SECRET across the two (mock mode hands out sessions for any
+ * wallet, so it must never be able to speak to a live deployment).
+ */
+export const sessionSecret = (): Buffer => hmacSecret(`relstate/session/v1/${env.authMode}`);
 
 function sign(payload: string, secret: Buffer): Buffer {
   return createHmac("sha256", secret).update(payload).digest();
+}
+
+/**
+ * `<base64url(JSON claims)>.<base64url(HMAC)>`, with `exp` in unix seconds. One implementation for
+ * every bearer token this backend mints — the session and the appraiser invitation — so the
+ * signature check, the constant-time compare and the expiry check cannot drift apart between them.
+ */
+export function createHmacToken<T extends object>(claims: T, { secret, ttlSeconds, now = Date.now() }: { secret: Buffer; ttlSeconds: number; now?: number }): { token: string; expiresAt: number } {
+  const expiresAt = Math.floor(now / 1000) + ttlSeconds;
+  const payload = b64url(Buffer.from(JSON.stringify({ ...claims, exp: expiresAt }), "utf8"));
+  return { token: `${payload}.${b64url(sign(payload, secret))}`, expiresAt };
+}
+
+/**
+ * Verifies the signature and the expiry and returns the raw claims. The caller validates their
+ * shape: an unforgeable token still carries whatever was put in it, and `what` names the token in
+ * the error so a 401 says which one was wrong.
+ */
+export function verifyHmacToken(token: string, { secret, now = Date.now(), what = "session" }: { secret: Buffer; now?: number; what?: string }): Record<string, unknown> {
+  const [payload, signature] = token.split(".");
+  if (payload === undefined || signature === undefined || payload === "" || signature === "") {
+    throw new AuthError(`malformed ${what} token`);
+  }
+  const expected = sign(payload, secret);
+  const actual = Buffer.from(signature, "base64url");
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new AuthError(`bad ${what} signature`);
+
+  let claims: unknown;
+  try {
+    claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    throw new AuthError(`malformed ${what} payload`);
+  }
+  if (claims === null || typeof claims !== "object" || Array.isArray(claims)) throw new AuthError(`malformed ${what} payload`);
+  const exp = (claims as { exp?: unknown }).exp;
+  if (typeof exp !== "number") throw new AuthError(`malformed ${what} payload`);
+  if (exp * 1000 <= now) throw new AuthError(`${what} expired`);
+  return claims as Record<string, unknown>;
 }
 
 export function createSessionToken(
@@ -38,31 +86,13 @@ export function createSessionToken(
   { secret = sessionSecret(), ttlSeconds = env.sessionTtlSeconds, now = Date.now() } = {},
 ): { token: string; expiresAt: number } {
   if (wallet.trim() === "") throw new AuthError("wallet is required");
-  const expiresAt = Math.floor(now / 1000) + ttlSeconds;
-  const payload = b64url(Buffer.from(JSON.stringify({ w: wallet, exp: expiresAt }), "utf8"));
-  return { token: `${payload}.${b64url(sign(payload, secret))}`, expiresAt };
+  return createHmacToken({ w: wallet }, { secret, ttlSeconds, now });
 }
 
 export function verifySessionToken(token: string, { secret = sessionSecret(), now = Date.now() } = {}): Session {
-  const [payload, signature] = token.split(".");
-  if (payload === undefined || signature === undefined || payload === "" || signature === "") {
-    throw new AuthError("malformed session token");
-  }
-  const expected = sign(payload, secret);
-  const actual = Buffer.from(signature, "base64url");
-  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new AuthError("bad session signature");
-
-  let claims: { w?: unknown; exp?: unknown };
-  try {
-    claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as typeof claims;
-  } catch {
-    throw new AuthError("malformed session payload");
-  }
-  if (typeof claims.w !== "string" || claims.w === "" || typeof claims.exp !== "number") {
-    throw new AuthError("malformed session payload");
-  }
-  if (claims.exp * 1000 <= now) throw new AuthError("session expired");
-  return { wallet: claims.w, expiresAt: claims.exp };
+  const claims = verifyHmacToken(token, { secret, now, what: "session" });
+  if (typeof claims.w !== "string" || claims.w === "") throw new AuthError("malformed session payload");
+  return { wallet: claims.w, expiresAt: claims.exp as number };
 }
 
 /** Pulls the bearer token out of an `Authorization` header. */
@@ -81,18 +111,4 @@ export function assertAdmin(header: string | undefined | null): void {
   const provided = Buffer.from(match?.[1] ?? "", "utf8");
   const expected = Buffer.from(env.adminToken, "utf8");
   if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) throw new AuthError("bad admin token");
-}
-
-/**
- * Guards the demo verdict console. A token of its own (VERDICT_CONSOLE_TOKEN) and no fallback to
- * ADMIN_TOKEN: the console signs with keys that decide deposits, so a stolen treasury-operator token
- * must not reach it. Constant-time; disabled while the variable is blank.
- */
-export function assertVerdictConsole(header: string | undefined | null): void {
-  const token = env.appraisers.consoleToken;
-  if (token === "") throw new AuthError("VERDICT_CONSOLE_TOKEN is not configured; the verdict console is disabled");
-  const match = /^Bearer\s+(.+)$/i.exec((header ?? "").trim());
-  const provided = Buffer.from(match?.[1] ?? "", "utf8");
-  const expected = Buffer.from(token, "utf8");
-  if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) throw new AuthError("bad console token");
 }

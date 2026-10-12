@@ -523,6 +523,11 @@ describe("wallet-auth routes via createApp", () => {
       { method: "GET", path: "/api/offramp/history" },
       { method: "POST", path: "/api/kyc/start" },
       { method: "GET", path: "/api/kyc/status" },
+      // The invite routes a lease party drives. `GET /api/invites/:token` is deliberately absent:
+      // it is public, because the appraiser has no account yet when they open the link.
+      { method: "POST", path: "/api/invites" },
+      { method: "GET", path: "/api/invites" },
+      { method: "POST", path: "/api/invites/sometoken/claim" },
     ];
     const adminRoutes: Array<{ method: "POST"; path: string }> = [
       { method: "POST", path: "/api/treasury/credit-reserve" },

@@ -65,12 +65,19 @@ export const SPONSOR_ALLOWLIST = [
  * signs for themselves.
  *
  * The program allowlist above is per PROGRAM, which for relstate is too coarse — it admits
- * `init_config`, `set_admin` and `register_appraiser` as readily as `pay_rent`. Those are signed by
- * the Config admin or the attestation issuer, which are backend keys used by
- * `scripts/*` and `providers/kyc-chain.ts` and never by a browser, so a *sponsored* admin
- * instruction is either a mistake or an attempt. It would fail on chain either way (the program
- * checks the admin), but refusing it here keeps the fee payer's blast radius to what the app
- * actually does, and names the reason instead of returning a simulation failure.
+ * `init_config` and `set_admin` as readily as `pay_rent`. Those are signed by the Config admin or
+ * the attestation issuer, which are backend keys used by `scripts/*` and `providers/kyc-chain.ts`
+ * and never by a browser, so a *sponsored* admin instruction is either a mistake or an attempt. It
+ * would fail on chain either way (the program checks the admin), but refusing it here keeps the fee
+ * payer's blast radius to what the app actually does, and names the reason instead of returning a
+ * simulation failure.
+ *
+ * **All six mediation instructions are here, and they have to be** (review G2). Mediation has no
+ * admin instruction at all now: the two parties drive selection and the appraiser submits the
+ * verdict, and none of the three holds SOL. `submit_verdict` in particular is signed by a wallet
+ * created at login moments earlier — see {@link ASSOCIATED_TOKEN_PROGRAM} and
+ * `txinspect.assertSponsorNotUsedByInstructions` for the one carve-out that makes its token account
+ * payable.
  *
  * Snake case, as the program declares them: the wire form is
  * `sha256("global:<name>")[0..8]`, which `txinspect.ts` computes.
@@ -82,10 +89,10 @@ export const SPONSORABLE_RELSTATE_INSTRUCTIONS = [
   "abandon_dispute",
   "accept_deduction",
   "apply",
-  "bind_default_appraiser",
   "claim_deposit",
   "close_application",
   "close_listing",
+  "confirm_appraiser_key",
   "create_listing",
   "escalate_to_mediation",
   "expire_mediation",
@@ -94,6 +101,7 @@ export const SPONSORABLE_RELSTATE_INSTRUCTIONS = [
   "mark_default",
   "pay_rent",
   "pick_appraiser",
+  "propose_appraiser_key",
   "propose_appraisers",
   "propose_lease",
   "release_deposit",
@@ -104,15 +112,16 @@ export const SPONSORABLE_RELSTATE_INSTRUCTIONS = [
 /**
  * Relstate instructions only the Config admin or the attestation issuer signs. Never sponsored; the
  * list exists so that an unclassified instruction cannot slip into the sponsorable set by default.
+ *
+ * `register_appraiser`, `set_appraiser_active` and `set_default_appraiser` are gone with the
+ * registry: revision 2 of mediation has no admin instruction anywhere in it
+ * (docs/contracts/dispute-mediation.md §10 item 1).
  */
 export const ADMIN_ONLY_RELSTATE_INSTRUCTIONS = [
   "attest",
   "init_config",
-  "register_appraiser",
   "revoke",
   "set_admin",
-  "set_appraiser_active",
-  "set_default_appraiser",
   "set_issuer",
   "set_mint_allowed",
   "set_require_kyc",

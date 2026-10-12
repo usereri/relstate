@@ -16,6 +16,9 @@ const { createSessionToken } = await import("../src/auth.ts");
 const APPLICATION = 1_500_000n;
 const PROFILE = 1_300_000n;
 const LISTING = 2_000_000n;
+const DISPUTE = 7_000_000n;
+/** 891 bytes, from the IDL via layout.ts. The tenant pays this one: `escalate_to_mediation` has `payer = tenant`. */
+const DISPUTE_SIZE = BigInt(accountLayout("Dispute").size);
 // 8 (discriminator) + 59 fixed bytes + the four strings, each with a 4-byte length prefix, at the
 // program's own MAX_* caps. Parsed straight out of the Rust source so a change there (which would
 // silently under-fund a listing's rent) fails this test instead of only showing up on chain.
@@ -27,8 +30,8 @@ const maxConst = (name: string): number => {
 };
 const LISTING_MAX_SIZE = 8 + 59 + (4 + maxConst("MAX_TITLE")) + (4 + maxConst("MAX_CITY")) + (4 + maxConst("MAX_BLURB")) + (4 + maxConst("MAX_PHOTO"));
 assert.equal(LISTING_MAX_SIZE, 423, "LISTING_MAX_SIZE drifted from constants.rs (expected the four MAX_* caps to still sum to 423)");
-// Two Applications, one Profile, one Listing: see treasury.ts rentDustAmount().
-const AMOUNT = 2n * APPLICATION + PROFILE + LISTING;
+// Two Applications, one Profile, one Listing, one Dispute: see treasury.ts rentDustAmount().
+const AMOUNT = 2n * APPLICATION + PROFILE + LISTING + DISPUTE;
 const code = (c: string) => (e: unknown) => e instanceof RejectedTransaction && e.code === c;
 const limiter = (perWallet = 100, global = 100) =>
   createRateLimiter({ maxPerWalletPerHour: perWallet, maxGlobalPerHour: global, maxLamportsPerWalletPerDay: 10n ** 12n, maxLamportsGlobalPerDay: 10n ** 12n });
@@ -44,7 +47,7 @@ async function fixture(options: { limiter?: RateLimiter; balances?: Record<strin
     getMinimumBalanceForRentExemption: (size: bigint) => ({
       send: async () => {
         state.rentQueries.push(size);
-        return size === 104n ? APPLICATION : size === 94n ? PROFILE : size === BigInt(LISTING_MAX_SIZE) ? LISTING : size === 120n ? PROFILE + 400_000n : 999n;
+        return size === 104n ? APPLICATION : size === 94n ? PROFILE : size === BigInt(LISTING_MAX_SIZE) ? LISTING : size === DISPUTE_SIZE ? DISPUTE : size === 120n ? PROFILE + 400_000n : size === 999n ? DISPUTE + 500_000n : 999n;
       },
     }),
     // A real RPC yields to the event loop here, which is what makes two requests interleave.
@@ -84,13 +87,33 @@ async function fixture(options: { limiter?: RateLimiter; balances?: Record<strin
 }
 
 describe("rentDustAmount", () => {
-  it("is twice an Application (104 bytes) plus a Profile (94 bytes) plus a Listing at its max text lengths (423 bytes)", async () => {
+  it("is twice an Application (104 bytes) plus a Profile (94 bytes) plus a Listing at its max text lengths (423 bytes) plus a Dispute (891 bytes)", async () => {
     const f = await fixture();
     assert.equal(await f.treasury.rentDustAmount(), AMOUNT);
-    assert.deepEqual([...f.state.rentQueries].sort((a, b) => (a < b ? -1 : 1)), [94n, 104n, BigInt(LISTING_MAX_SIZE)].sort((a, b) => (a < b ? -1 : 1)));
+    assert.deepEqual([...f.state.rentQueries].sort((a, b) => (a < b ? -1 : 1)), [94n, 104n, BigInt(LISTING_MAX_SIZE), DISPUTE_SIZE].sort((a, b) => (a < b ? -1 : 1)));
     // Only one rent query per account type: the "two Applications" in the amount is arithmetic
     // (2n * application), not two separate RPC round trips.
-    assert.equal(f.state.rentQueries.length, 3);
+    assert.equal(f.state.rentQueries.length, 4);
+  });
+
+  // Review G3: the grant has to cover the mediation account, because `escalate_to_mediation` makes
+  // the TENANT the payer of it. Before this, a dusted tenant who had spent their Application and
+  // Profile rent was ~1.64M lamports short and the escalation failed with an opaque
+  // insufficient-lamports error — on the one step the mediation demo is built around.
+  it("leaves a tenant who has already paid for an Application and a Profile able to afford the Dispute", async () => {
+    const f = await fixture();
+    const granted = await f.treasury.rentDustAmount();
+    const spentBeforeMediation = APPLICATION + PROFILE; // apply, then fund_deposit
+    assert.ok(
+      granted - spentBeforeMediation >= DISPUTE,
+      `rent dust leaves ${granted - spentBeforeMediation} lamports after apply + fund_deposit, but the Dispute account costs ${DISPUTE}`,
+    );
+  });
+
+  it("asks the chain for the Dispute's rent at whatever size the IDL says, never a constant", async () => {
+    const f = await fixture({ layout: (account) => (account === "Dispute" ? { ...accountLayout("Dispute"), size: 999 } : accountLayout(account)) });
+    assert.equal(await f.treasury.rentDustAmount(), 2n * APPLICATION + PROFILE + LISTING + (DISPUTE + 500_000n));
+    assert.ok(f.state.rentQueries.includes(999n), "the Dispute size must come from the layout, not from a literal in treasury.ts");
   });
 });
 
@@ -99,8 +122,8 @@ describe("rentDustAmount follows the program's account layout", () => {
   // come from the layout, so that change reaches the rent amount without anyone editing this module.
   it("asks for the rent of whatever size the layout says, not a constant", async () => {
     const f = await fixture({ layout: (account) => (account === "Profile" ? { ...accountLayout("Profile"), size: 120 } : accountLayout(account)) });
-    assert.equal(await f.treasury.rentDustAmount(), 2n * APPLICATION + (PROFILE + 400_000n) + LISTING);
-    assert.deepEqual([...f.state.rentQueries].sort((a, b) => (a < b ? -1 : 1)), [104n, 120n, BigInt(LISTING_MAX_SIZE)].sort((a, b) => (a < b ? -1 : 1)));
+    assert.equal(await f.treasury.rentDustAmount(), 2n * APPLICATION + (PROFILE + 400_000n) + LISTING + DISPUTE);
+    assert.deepEqual([...f.state.rentQueries].sort((a, b) => (a < b ? -1 : 1)), [104n, 120n, BigInt(LISTING_MAX_SIZE), DISPUTE_SIZE].sort((a, b) => (a < b ? -1 : 1)));
   });
 });
 

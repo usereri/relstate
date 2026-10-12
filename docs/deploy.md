@@ -210,10 +210,17 @@ one.
 ### Rent dust (what a new wallet costs the treasury)
 
 `POST /api/treasury/rent-dust` gives each wallet, once, enough SOL for the account rent the program
-charges it: two Applications, one Profile and one Listing at its maximum text length (about
-0.0086 SOL at devnet rent rates; sized from the IDL plus `LISTING_MAX_SIZE` in `treasury.ts`).
-`RENT_DUST_MAX_LAMPORTS_GLOBAL_PER_DAY` caps the total (default 500,000,000 lamports = 0.5 SOL,
-about 58 new wallets a day) and `RENT_DUST_MAX_GLOBAL_PER_HOUR` the count.
+charges it: two Applications, one Profile, one Listing at its maximum text length, and one Dispute
+(about 0.0157 SOL at devnet rent rates; sized from the IDL plus `LISTING_MAX_SIZE` in
+`treasury.ts`). `RENT_DUST_MAX_LAMPORTS_GLOBAL_PER_DAY` caps the total (default 500,000,000 lamports
+= 0.5 SOL, about 31 new wallets a day) and `RENT_DUST_MAX_GLOBAL_PER_HOUR` the count.
+
+The `Dispute` account is in that list because `escalate_to_mediation` makes the **tenant** the payer
+of it (891 bytes, ~0.0071 SOL), so a tenant who has already spent their Application and Profile rent
+cannot escalate without it — the grant was short by 1,642,560 lamports before, and the symptom was
+an opaque insufficient-lamports failure on exactly the step the mediation demo turns on. It roughly
+doubles the per-wallet cost, so **raise `RENT_DUST_MAX_LAMPORTS_GLOBAL_PER_DAY` if you were sizing
+the old figure against an expected number of demo users.**
 
 ### Proxy limits and CORS
 

@@ -16,7 +16,13 @@ import { resolve } from "node:path";
 type IdlType = string | { array: [IdlType, number] } | { defined: { name: string } } | { option: IdlType } | { vec: IdlType };
 type IdlField = { name: string; type: IdlType };
 type IdlTypeDef = { name: string; type: { kind: "struct"; fields?: IdlField[] } | { kind: "enum"; variants: { name: string; fields?: (IdlField | IdlType)[] }[] } };
-export type Idl = { address?: string; accounts?: { name: string; discriminator: number[] }[]; types?: IdlTypeDef[] };
+export type IdlConstant = { name: string; type: string; value: string };
+export type Idl = {
+  address?: string;
+  accounts?: { name: string; discriminator: number[] }[];
+  constants?: IdlConstant[];
+  types?: IdlTypeDef[];
+};
 
 export type Layout = {
   /** Total account size, including Anchor's 8-byte discriminator: what `getMinimumBalanceForRentExemption` and `space =` take. */
@@ -84,17 +90,51 @@ export const FALLBACK_LAYOUTS: Readonly<Record<string, Layout>> = {
     },
   },
   Application: { size: 104, offsets: { listing: 8, landlord: 40, tenant: 72 } },
-  // The two D2 accounts (docs/contracts/dispute-mediation.md §3). Read by appraiser-chain.ts: the
-  // verdict console needs the bound appraiser off `Dispute` and the fee off `Appraiser`.
+  // Mediation's one account (docs/contracts/dispute-mediation.md §3). Read by dispute.ts, which
+  // needs the agreed name hash and the bound wallet, and sized by treasury.ts, which has to fund the
+  // tenant's rent for it before `escalate_to_mediation` (review G3). There is no `Appraiser`
+  // account: revision 2 removed the registry.
+  //
+  // 891 bytes = 8 + the two 3x105 `Candidate` arrays + the rest. The `Candidate` stride is derived
+  // from the gap between the two array offsets rather than written down, so `MAX_NAME_LEN` and
+  // `MAX_CANDIDATES` stay facts about the program alone.
   Dispute: {
-    size: 347,
+    size: 891,
     offsets: {
-      lease: 8, landlord_candidates: 40, tenant_candidates: 136, landlord_count: 232, tenant_count: 233,
-      landlord_pick: 234, tenant_pick: 266, appraiser: 298, selection_deadline: 330, verdict_deadline: 338, bump: 346,
+      lease: 8, landlord_candidates: 40, tenant_candidates: 355, landlord_count: 670, tenant_count: 671,
+      landlord_pick: 672, tenant_pick: 704, agreed_name_hash: 736, agreed_fee: 768, proposed_key: 776,
+      key_proposer: 808, landlord_key_proposals: 840, tenant_key_proposals: 841, appraiser: 842,
+      selection_deadline: 874, verdict_deadline: 882, bump: 890,
     },
   },
-  Appraiser: { size: 83, offsets: { wallet: 8, active: 40, is_default: 41, fee: 42, name_hash: 50, bump: 82 } },
 };
+
+/**
+ * The `#[constant]`s this backend needs a value for, snapshotted for the same reason
+ * {@link FALLBACK_LAYOUTS} is: the IDL is optional. The deployed image points `RELSTATE_IDL` at the
+ * tracked copy, but a fresh clone or a plain `node src/index.ts` has neither that nor `target/`,
+ * and a window that read as `undefined` there would silently become an invite that never expires.
+ * `test/layout.test.ts` pins every entry against the IDL, so a program that retunes a window fails
+ * exactly one test.
+ *
+ * Values as the IDL writes them (strings), parsed by {@link idlConstant}.
+ */
+export const FALLBACK_CONSTANTS: Readonly<Record<string, string>> = {
+  // The window that covers BOTH phases of selection, and therefore the longest an appraiser
+  // invitation can usefully live (docs/contracts/dispute-mediation.md §2).
+  SELECTION_WINDOW_SECS: "30",
+  // How long the bound appraiser has to submit a verdict; shown on the invitation page.
+  VERDICT_WINDOW_SECS: "60",
+};
+
+/** A program constant as a number: from the IDL when present, else the pinned snapshot. */
+export function idlConstant(name: string, idl: Idl | null = loadIdl()): number {
+  const raw = idl?.constants?.find((c) => c.name === name)?.value ?? FALLBACK_CONSTANTS[name];
+  if (raw === undefined) throw new Error(`no IDL on disk and no fallback value for the program constant ${name}`);
+  const value = Number(raw);
+  if (!Number.isFinite(value)) throw new Error(`the program constant ${name} is ${raw}, which is not a number`);
+  return value;
+}
 
 export const IDL_PATH = (): string => process.env.RELSTATE_IDL?.trim() || resolve(import.meta.dirname, "../../target/idl/relstate.json");
 
