@@ -1485,6 +1485,9 @@ describe("relstate", () => {
     // proposal and no shorter than the paused seconds allow
     const lease = await program.account.lease.fetch(env.lease);
     expect(lease.claimPauseSecs.toNumber()).to.be.at.least(spent);
+    // and no longer: the single stretch counted twice would be at least 2 * spent, and the
+    // timeTravel below adapts to whatever pause it finds, so only this bound catches it
+    expect(lease.claimPauseSecs.toNumber()).to.be.below(2 * spent);
     await timeTravel(lease.claimPauseSecs.toNumber() + CLAIM_WINDOW);
     await env.claim();
     await expectConserved(env, DEPOSIT, 0);
