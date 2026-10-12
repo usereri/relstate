@@ -10,10 +10,11 @@ import { EmbeddedWalletProvider, useEmbeddedWallet } from "@/auth/embedded";
 import { WalletProvider, useWallet } from "@solana/wallet-adapter-react";
 import * as chain from "@/lib/chain";
 import { Role } from "@/lib/chain";
-import { APPRAISER_CONSOLE, IS_LOCAL, RPC } from "@/lib/config";
+import { IS_LOCAL, RPC } from "@/lib/config";
 import { Doc } from "@/lib/hash";
 import { ReadErrors, Tick, useChain } from "@/lib/useChain";
 import { invalidateReads } from "@/lib/reads";
+import { createInvite } from "@/lib/invites";
 import { depositShortfall, isShortPublicBalance, type TopUpNeed } from "@/lib/holdback";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -27,16 +28,14 @@ import { isKycRequired, needsVerification, returnAfterKyc, setReturnAfterKyc } f
 import { Listings, MyProfile } from "@/views";
 
 /**
- * The operator console, behind its build-time flag.
+ * The appraiser's page, loaded on demand.
  *
- * The `import()` sits INSIDE the flag check on purpose. `VITE_APPRAISER_CONSOLE` is inlined at
- * build time, so with it unset this is `false ? … : null`, the import is unreachable, and the
- * screen is never emitted — not merely never fetched. Verified by building both ways and grepping
- * dist for the screen's own strings; with the `lazy()` outside the check, the chunk shipped.
+ * Lazy because it is a third party's screen: nobody renting or letting a flat will ever open it, so
+ * its chunk should not be in the bundle they download. It is NOT behind a build flag — the
+ * appraiser is a user of this product, signing with an account of their own, and the invitation
+ * link in their e-mail has to resolve on the public build.
  */
-const VerdictConsole = APPRAISER_CONSOLE
-  ? lazy(() => import("@/screens/Verdict").then((m) => ({ default: m.VerdictConsole })))
-  : null;
+const AppraiserPage = lazy(() => import("@/screens/Appraise").then((m) => ({ default: m.AppraiserPage })));
 
 const ROLE_KEY = "relstate.role";
 const storedRole = (): Role | null => {
@@ -86,11 +85,11 @@ export default function App() {
       document.documentElement.dataset.role = "tenant";
       document.title = "Relstate · Rent with a record";
     }
-    // Otherwise the operator console inherits whatever title the last route left in the tab,
+    // Otherwise the appraiser's page inherits whatever title the last route left in the tab,
     // which on a fresh load is "Sign in".
-    if (route === "appraiser") {
-      document.documentElement.dataset.role = "landlord";
-      document.title = "Appraiser console · Relstate";
+    if (route === "invite") {
+      document.documentElement.dataset.role = "tenant";
+      document.title = "Appraise a deposit · Relstate";
     }
   }, [route]);
 
@@ -99,18 +98,14 @@ export default function App() {
     if (route === "app" && !role) go("signin");
   }, [route, role]);
 
-  // The operator verdict console: no role, no wallet, no session — it holds no key and signs
-  // nothing itself. Before the role gate, because an appraiser is neither party (screens/Verdict).
-  //
-  // Behind a build-time flag, so a public build does not serve an operator tool at all: with
-  // VITE_APPRAISER_CONSOLE unset this branch is dead code and the bundler drops the screen with it.
-  if (route === "appraiser")
-    return VerdictConsole ? (
+  // The appraiser's page, before the role gate: an appraiser is neither party, has no role to pick
+  // and arrives from an e-mail link with no session at all (screens/Appraise.tsx). It brings its
+  // own wallet providers, because the three below are keyed on a role this visitor does not have.
+  if (route === "invite")
+    return (
       <Suspense fallback={null}>
-        <VerdictConsole />
+        <AppraiserPage />
       </Suspense>
-    ) : (
-      <Landing />
     );
 
   if (route === "signup" || route === "signin")
@@ -355,9 +350,27 @@ function Shell({
     acceptDeduction: (l) => run("Accepting deduction…", (m) => chain.acceptDeduction(m, l)),
     abandonDispute: (l) => run("Rejecting deduction…", (m) => chain.abandonDispute(m, l)),
     escalateToMediation: (l) => run("Going to mediation…", (m) => chain.escalateToMediation(m, l)),
-    proposeAppraisers: (l, wallets) => run("Naming appraisers…", (m) => chain.proposeAppraisers(m, l, wallets)),
-    pickAppraiser: (l, wallet) => run("Picking an appraiser…", (m) => chain.pickAppraiser(m, l, wallet)),
-    bindDefaultAppraiser: (l, wallet) => run("Bringing in the fallback…", (m) => chain.bindDefaultAppraiser(m, l, wallet)),
+    proposeAppraisers: (l, companies) => run("Sending your list…", (m) => chain.proposeAppraisers(m, l, companies)),
+    pickAppraiser: (l, name) => run("Agreeing on a company…", (m) => chain.pickAppraiser(m, l, name)),
+    proposeAppraiserKey: (l, wallet) => run("Putting the account forward…", (m) => chain.proposeAppraiserKey(m, l, wallet)),
+    confirmAppraiserKey: (l, wallet) => run("Confirming the account…", (m) => chain.confirmAppraiserKey(m, l, wallet)),
+    // Off chain, so it is not a transaction and does not go through `run`: there is no signature to
+    // log, and a failure here must leave the rest of the mediation working (the program only ever
+    // sees a pubkey, which can always be pasted by hand).
+    inviteAppraiser: async (l, companyName, email) => {
+      setBusy("Sending the invitation…");
+      setError(null);
+      try {
+        const issued = await createInvite({ lease: l.address, companyName, email });
+        bump();
+        return issued;
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        return null;
+      } finally {
+        setBusy(null);
+      }
+    },
     expireMediation: (l) => run("Ending the mediation…", (m) => chain.expireMediation(m, l)),
     finalizeDeduction: (l) => run("Finalizing deduction…", (m) => chain.finalizeDeduction(m, l)),
     jump: (secs) => run("Moving the clock…", () => chain.fastForward(secs)),

@@ -38,6 +38,19 @@ export function setSessionTokenSource(source: SessionTokenSource | null): void {
   sessionToken = source;
 }
 
+/**
+ * The connected wallet's bearer token, for the backend routes that are not transaction
+ * co-signing — `GET`/`POST /api/invites`, which the backend attributes to one party exactly as it
+ * attributes a sponsored send (`lib/invites.ts`).
+ *
+ * It goes through the same injected source, so this module still knows nothing about the auth
+ * layer and a session that expired mid-session is renewed rather than failing.
+ */
+export async function sessionAuth(): Promise<string> {
+  if (!sessionToken) throw new Error("No session layer is registered, so this request cannot be authenticated to the backend.");
+  return sessionToken();
+}
+
 let discovering: Promise<string> | null = null;
 let health: Promise<BackendInfo> | null = null;
 

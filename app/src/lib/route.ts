@@ -11,15 +11,37 @@
 // hash can be passed in, so both halves can be tested without a document.
 
 /**
- * The routes. `appraiser` is the operator verdict console. It is reachable only by typing the URL
- * and is deliberately linked from nowhere in either role's app (`screens/Verdict.tsx`); the screen
- * itself only exists in a build with `VITE_APPRAISER_CONSOLE` set (`App.tsx`).
+ * The routes. `invite` is the appraiser's own page (`screens/Appraise.tsx`): it is what the
+ * invitation link the two parties send points at, `#/invite/<token>`, and it works for a visitor
+ * who has never used Relstate and is not signed in to anything.
+ *
+ * It is NOT behind a build flag and is not an operator tool. The appraiser signs with their own
+ * account, the same kind every other user gets, so there is nothing privileged to keep out of a
+ * public build — which is the whole of what the old `VITE_APPRAISER_CONSOLE` was protecting.
  */
-export type Route = "home" | "signup" | "signin" | "app" | "appraiser";
+export type Route = "home" | "signup" | "signin" | "app" | "invite";
 
 export const parseRoute = (hash: string): Route => {
-  const h = hash.replace(/^#\/?/, "").split(/[?#]/)[0];
-  return h === "signup" || h === "signin" || h === "app" || h === "appraiser" ? h : "home";
+  const h = hash.replace(/^#\/?/, "").split(/[?#]/)[0].split("/")[0];
+  return h === "signup" || h === "signin" || h === "app" || h === "invite" ? h : "home";
+};
+
+/**
+ * The invitation token out of `#/invite/<token>`, or `""` when the hash carries none.
+ *
+ * A path segment rather than a query parameter, because that is the shape the backend builds its
+ * e-mail link in (`${APP_URL}/#/invite/<token>`) and the one it must keep: a link in an e-mail is
+ * the only copy of the token that exists.
+ */
+export const inviteToken = (hash: string): string => {
+  const path = hash.replace(/^#\/?/, "").split(/[?#]/)[0].split("/");
+  if (path[0] !== "invite") return "";
+  try {
+    return decodeURIComponent(path.slice(1).join("/"));
+  } catch {
+    // A half-escaped token is not a token; the page says the link is invalid rather than throwing.
+    return "";
+  }
 };
 
 /** Goes to a route, dropping whatever query the old one carried. */

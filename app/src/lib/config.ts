@@ -74,17 +74,6 @@ export const RUSDC_MINT: string = import.meta.env.VITE_RUSDC_MINT ?? "";
 export const MAX_TEXT = { title: 60, city: 40, blurb: 120, photo: 120 };
 
 /**
- * Whether this build serves the operator verdict console at `#/appraiser`.
- *
- * Off unless explicitly set to 1. The console itself holds no key — the appraiser's key is the
- * backend's, behind its own token — so this is not what protects the deposit. What it does is keep
- * an operator tool out of a public build entirely: the route stops resolving, and because the flag
- * is inlined at build time the branch is dead code that the bundler drops with the screen behind
- * it. See docs/env-checklist.md.
- */
-export const APPRAISER_CONSOLE: boolean = import.meta.env.VITE_APPRAISER_CONSOLE === "1";
-
-/**
  * Base units of a plain top-up (no lease in view) that stay public, so the tenant can always fund a
  * deposit afterwards. Default 100 rUSDC covers the demo's deposits; a top-up smaller than it keeps
  * the whole amount public. Override with VITE_DEFAULT_PUBLIC_HOLDBACK. (docs/contracts/treasury.md)

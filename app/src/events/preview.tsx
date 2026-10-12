@@ -21,7 +21,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { FlaskConical } from "lucide-react";
 import type { ListingView } from "@/lib/chain";
-import type { Handlers } from "@/screens";
+import { previewHandlers } from "@/screens/preview-handlers";
 import { Listings } from "@/views";
 import "@/index.css";
 
@@ -93,30 +93,6 @@ const LISTINGS: ListingView[] = [
   },
 ];
 
-const no = async () => false;
-const h: Handlers = {
-  busy: null,
-  createListing: no,
-  closeListing: no,
-  apply: no,
-  closeApplication: no,
-  propose: no,
-  fund: no,
-  pay: no,
-  release: no,
-  markDefault: no,
-  claim: no,
-  acceptDeduction: no,
-  abandonDispute: no,
-  escalateToMediation: no,
-  proposeAppraisers: no,
-  pickAppraiser: no,
-  bindDefaultAppraiser: no,
-  expireMediation: no,
-  finalizeDeduction: no,
-  jump: no,
-};
-
 function Preview() {
   return (
     <div className="min-h-dvh" data-role="tenant">
@@ -128,7 +104,7 @@ function Preview() {
             <code className="break-all font-mono">?near=50.0647,19.9229&amp;label=AGH</code> to arrive pre-filtered.
           </span>
         </p>
-        <Listings mode="browse" me={null} listings={LISTINGS} h={h} />
+        <Listings mode="browse" me={null} listings={LISTINGS} h={previewHandlers()} />
       </div>
     </div>
   );
