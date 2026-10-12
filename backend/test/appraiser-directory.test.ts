@@ -66,6 +66,21 @@ describe("GET /api/appraisers reads the registry in live mode", () => {
     assert.deepEqual([row.feeSource, row.fee], ["directory", "2000000"]);
     assert.ok(took >= 2900 && took < 5000, `took ${took} ms`);
   });
+  it("memoises for a few seconds: two requests, one registry read", async () => {
+    mutableEnv.mode = "live";
+    let reads = 0;
+    const app = createApp(servicesWith(() => { reads++; return { send: async () => info(appraiserBytes(A, { active: true, isDefault: true, fee: 1n })) }; }));
+    for (let i = 0; i < 3; i++) assert.equal((await app.request("/api/appraisers")).status, 200);
+    assert.equal(reads, 1);
+  });
+  it("is rate-limited per IP like the other unauthenticated routes", async () => {
+    mutableEnv.mode = "mock";
+    const app = createApp(servicesWith(() => { throw new Error("unused"); }));
+    const statuses: number[] = [];
+    for (let i = 0; i < env.authRatePerMinute + 2; i++) statuses.push((await app.request("/api/appraisers")).status);
+    assert.equal(statuses.at(-1), 429);
+    assert.equal(statuses[0], 200);
+  });
   it("never touches the RPC outside live mode", async () => {
     mutableEnv.mode = "mock";
     const row = await fetchDirectory(servicesWith(() => { throw new Error("must not be called"); }));

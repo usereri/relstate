@@ -39,6 +39,13 @@ describe("POST /api/admin/appraiser/verdict", () => {
     }
     assert.equal((await post({ lease: A }, auth)).status, 400, "a missing deduction is not 0");
   });
+  it("400s, not 500, on a body that is not a JSON object", async () => {
+    const auth = "Bearer s3cret-console-token";
+    for (const raw of ["null", "5", '"x"', "[]", "true"]) {
+      const res = await app.request("/api/admin/appraiser/verdict", { method: "POST", headers: { "content-type": "application/json", authorization: auth }, body: raw });
+      assert.equal(res.status, 400, `body ${raw}`);
+    }
+  });
   it("400s on a dryRun that is not a boolean, instead of going live", async () => {
     const auth = "Bearer s3cret-console-token";
     for (const dryRun of ["true", "false", 1, 0, "yes", null, []]) {

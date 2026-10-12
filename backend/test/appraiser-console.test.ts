@@ -130,6 +130,12 @@ describe("verdict console: plan / submit against a stubbed chain", () => {
     await refuses(w.chain.submit({ lease: w.lease, deduction: 1n }), "no-appraiser-key");
     assert.equal(w.runs(), 0);
   });
+  it("plan (the dry run) applies the same platform-key and admin refusals as submit", async () => {
+    const a = await world({ platform: true });
+    await refuses(a.chain.plan({ lease: a.lease, deduction: 1n }), "appraiser-is-platform-key");
+    const b = await world({ adminIsAppraiser: true });
+    await refuses(b.chain.plan({ lease: b.lease, deduction: 1n }), "appraiser-is-admin");
+  });
   it("refuses a bound appraiser that is a platform key or the Config admin", async () => {
     const a = await world({ platform: true });
     await refuses(a.chain.submit({ lease: a.lease, deduction: 1n }), "appraiser-is-platform-key");

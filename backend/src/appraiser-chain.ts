@@ -459,6 +459,16 @@ export function createAppraiserChain(deps: {
     if (record === null) throw new VerdictRefused(`the bound appraiser ${dispute.appraiser} has no registry entry`, "appraiser-unregistered");
     if (!record.active) throw new VerdictRefused(`the bound appraiser ${dispute.appraiser} is suspended; the mediation can still be settled or expired`, "appraiser-inactive");
 
+    // Same refusals for a preview as for a send: a dry run that says "fine" about an appraiser the
+    // real call would reject teaches the operator the wrong thing.
+    const role = deps.forbidden?.get(dispute.appraiser);
+    if (role !== undefined) {
+      throw new VerdictRefused(`the bound appraiser ${dispute.appraiser} is this backend's ${role} key; a platform key must not decide a deposit`, "appraiser-is-platform-key");
+    }
+    if ((await fetchConfigAdmin(deps.rpc)) === dispute.appraiser) {
+      throw new VerdictRefused(`the bound appraiser ${dispute.appraiser} is the Config admin; the admin must not decide a deposit`, "appraiser-is-admin");
+    }
+
     const tokenProgram = await fetchMintTokenProgram(deps.rpc, decoded.mint);
     const appraiserAta = await associatedToken(dispute.appraiser, decoded.mint, tokenProgram);
     return {
@@ -486,13 +496,6 @@ export function createAppraiserChain(deps: {
           `this backend holds no key for the bound appraiser ${prepared.appraiser}; add it to APPRAISER_KEYPAIRS, or have them submit the verdict themselves`,
           "no-appraiser-key",
         );
-      }
-      const role = deps.forbidden?.get(prepared.appraiser);
-      if (role !== undefined) {
-        throw new VerdictRefused(`the bound appraiser ${prepared.appraiser} is this backend's ${role} key; a platform key must not decide a deposit`, "appraiser-is-platform-key");
-      }
-      if ((await fetchConfigAdmin(deps.rpc)) === prepared.appraiser) {
-        throw new VerdictRefused(`the bound appraiser ${prepared.appraiser} is the Config admin; the admin must not decide a deposit`, "appraiser-is-admin");
       }
       const decoded = await fetchLease(deps.rpc, input.lease, PROGRAM);
 

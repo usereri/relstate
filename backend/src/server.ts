@@ -68,11 +68,18 @@ function problem(error: unknown): { status: 400 | 401 | 403 | 404 | 409 | 429 | 
 }
 
 async function readJson<T>(c: { req: { json(): Promise<unknown> } }): Promise<T> {
+  let parsed: unknown;
   try {
-    return (await c.req.json()) as T;
+    parsed = await c.req.json();
   } catch {
     throw new RejectedTransaction("body must be JSON", "malformed-body");
   }
+  // `null`, a number or an array parses fine and then throws a TypeError on the first property read,
+  // which would surface as a 500. Every caller expects an object.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new RejectedTransaction("body must be a JSON object", "malformed-body");
+  }
+  return parsed as T;
 }
 
 /**
@@ -636,7 +643,13 @@ export function createApp(
    * wallets are public keys. `nameHash` is what `Appraiser.name_hash` must equal, so anyone can check
    * the directory against the registry. Empty until APPRAISERS is configured.
    */
+  // One registry read per entry is cheap but not free, so the answer is memoised for a few seconds
+  // per process and the route shares the per-IP limiter the unauthenticated login routes use.
+  const DIRECTORY_TTL_MS = 5000;
+  let directoryMemo: { at: number; body: unknown } | undefined;
   app.get("/api/appraisers", async (c) => {
+    limit(`d:${clientIp(c)}`);
+    if (directoryMemo !== undefined && Date.now() - directoryMemo.at < DIRECTORY_TTL_MS) return c.json(directoryMemo.body);
     // In live mode the registry is the truth for fee/active/default: the program applies ITS fee, so
     // a directory that disagrees would show a verdict preview the chain will not honour. Best effort
     // with a short timeout (a slow RPC must not take the directory down); drift is flagged, not hidden.
@@ -669,7 +682,8 @@ export function createApp(
         };
       }),
     );
-    return c.json({ appraisers });
+    directoryMemo = { at: Date.now(), body: { appraisers } };
+    return c.json(directoryMemo.body);
   });
 
   /**
