@@ -27,9 +27,32 @@ export type WalletAuthOptions = {
 // DER prefix of an ed25519 SubjectPublicKeyInfo; the 32 raw key bytes follow.
 const SPKI_ED25519_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
+// The small-order points (and their non-canonical encodings). A key like these lets a crafted
+// signature verify for any message on some OpenSSL builds, so they are refused outright rather
+// than left to the library.
+const SMALL_ORDER_KEYS = new Set(
+  [
+    "0".repeat(64),
+    "00".repeat(31) + "80",
+    "01" + "00".repeat(31),
+    "01" + "00".repeat(30) + "80",
+    "ec" + "ff".repeat(30) + "7f",
+    "ec" + "ff".repeat(30) + "ff",
+    "ed" + "ff".repeat(30) + "7f",
+    "ed" + "ff".repeat(30) + "ff",
+    "ee" + "ff".repeat(30) + "7f",
+    "ee" + "ff".repeat(30) + "ff",
+    "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+    "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+    "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+    "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+  ],
+);
+
 export function verifyEd25519(wallet: string, message: Uint8Array, signature: Uint8Array): boolean {
   if (signature.length !== 64 || !isAddress(wallet)) return false;
   const raw = Buffer.from(getAddressEncoder().encode(wallet as Address));
+  if (SMALL_ORDER_KEYS.has(raw.toString("hex"))) return false;
   try {
     const key = createPublicKey({ key: Buffer.concat([SPKI_ED25519_PREFIX, raw]), format: "der", type: "spki" });
     return verify(null, message, key, signature);

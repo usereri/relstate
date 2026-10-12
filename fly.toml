@@ -9,7 +9,7 @@
 # backend; a second instance needs shared state."). A second machine would double every cap
 # silently and could let a request replay by landing on the other instance.
 app = "relstate-backend"          # pick your own app name; must be globally unique on Fly. `fly launch` will ask.
-primary_region = "waw"            # Warsaw. "fra" (Frankfurt) is the other low-latency pick from Poland.
+primary_region = "fra"            # Warsaw. "fra" (Frankfurt) is the other low-latency pick from Poland.
 
 [build]
   dockerfile = "backend/Dockerfile"
@@ -20,13 +20,18 @@ primary_region = "waw"            # Warsaw. "fra" (Frankfurt) is the other low-l
 [env]
   PORT = "8787"
   SOLANA_CLUSTER = "devnet"
-  BACKEND_MODE = "mock"            # flip to "live" only once every secret in docs/env-checklist.md is set
-  AUTH_MODE = "mock"               # live mode refuses AUTH_MODE=mock; see docs/env-checklist.md's known blocker
-  ONRAMP_PROVIDER = "mock"         # set to "stripe" once STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET are set
+  BACKEND_MODE = "live"            # flip to "live" only once every secret in docs/env-checklist.md is set
+  BACKEND_URL = "https://relstate-backend.fly.dev"
+  AUTH_MODE = "wallet"               # live mode refuses AUTH_MODE=mock; see docs/env-checklist.md's known blocker
+  ONRAMP_PROVIDER = "stripe"         # set to "stripe" once STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET are set
   KYC_PROVIDER = "mock"
-  CORS_ORIGIN = "https://CHANGE-ME.example"
-  APP_URL = "https://CHANGE-ME.example/app/"
-
+  CORS_ORIGIN = "https://relstate.casa"
+  APP_URL = "https://relstate.casa/app/"
+  RUSDC_MINT  = "EBMibFLTvr5GDpgxNqt5Gqp9B1xLMr32aNwGDJV2oGJ6"
+  ALLOW_MOCK_KYC = "devnet"
+  USDC_RESERVE_MINT = "Hob9KuPR5kx73bjkBV2JKRvJkaQMtziW2QNSWH27Tdgr"
+  USDC_RESERVE_TOKEN_ACCOUNT = "LsT3YVVTjRb4kHwyuiTU73ud1J7Tgnu8BZ7wMQEaoU6"
+ 
 [http_service]
   internal_port = 8787
   force_https = true
@@ -47,3 +52,4 @@ primary_region = "waw"            # Warsaw. "fra" (Frankfurt) is the other low-l
   # the machine OOM-killed, resize with `fly scale memory 1024` (no code change needed).
   size = "shared-cpu-1x"
   memory = "512mb"
+  min_machines_running = "0"

@@ -148,6 +148,8 @@ export const env = {
   appUrl: str("APP_URL", "http://localhost:5173"),
   /** True when APP_URL was set explicitly; wallet login binds challenges to its origin. */
   appUrlExplicit: str("APP_URL") !== "",
+  /** Public origin of this backend, used in the mock KYC/on-ramp links the app opens. Blank = http://localhost:PORT. */
+  backendUrl: str("BACKEND_URL", "").replace(/\/$/, ""),
 
   /**
    * Fiat in (workstream E, docs/contracts/stripe.md). `mock` is the no-secrets

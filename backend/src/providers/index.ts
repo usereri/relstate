@@ -36,7 +36,7 @@ export function sumsubConfigFromEnv(): SumsubConfig {
   };
 }
 
-export function kycConfigFromEnv(backendUrl = `http://localhost:${env.port}`): KycConfig {
+export function kycConfigFromEnv(backendUrl = env.backendUrl || `http://localhost:${env.port}`): KycConfig {
   return {
     provider: env.kyc.provider,
     level: env.kyc.level,
@@ -65,7 +65,7 @@ export function stripeConfigFromEnv(): StripeConfig {
   };
 }
 
-export function onrampConfigFromEnv(backendUrl = `http://localhost:${env.port}`): OnrampConfig {
+export function onrampConfigFromEnv(backendUrl = env.backendUrl || `http://localhost:${env.port}`): OnrampConfig {
   return {
     provider: env.onramp.provider,
     rateScaled: parseRate(env.onramp.plnPerUsdc),
