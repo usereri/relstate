@@ -244,7 +244,7 @@ describe("relstate", () => {
   // fresh wallets and, where a verdict needs to be paid, a fresh ATA for them.
 
   const MAX_CANDIDATES = 3;
-  const MAX_KEY_PROPOSALS = 4;
+  const MAX_KEY_PROPOSALS_PER_PARTY = 2; // read from the IDL constant below, kept here for the loops
   const MAX_NAME_LEN = 64;
 
   // A wallet that can sign for an appraiser. `airdropLamports = false` builds one with zero SOL,
@@ -1914,6 +1914,18 @@ describe("relstate", () => {
     await expectFail(env.proposeAppraisers(env.landlord, [{ name: "Acme\u0001Wycena", fee: 1 }]), "InvalidAppraiserName");
   });
 
+  it("invisible format and bidi characters are refused (G6), NBSP is just a space", async () => {
+    const env = await mediating();
+    for (const bad of ["Acme\u200B Wycena", "Acme\u200D Wycena", "Acme\uFEFF Wycena", "\u202EAcme Wycena", "Acme\u2066 Wycena", "Acme\u00AD Wycena"]) {
+      await expectFail(env.proposeAppraisers(env.landlord, [{ name: bad, fee: 1 }]), "InvalidAppraiserName");
+    }
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme\u00A0Wycena", fee: 1 }]);
+    await env.proposeAppraisers(env.tenant, [{ name: "acme wycena", fee: 1 }]);
+    await env.pickAppraiser(env.landlord, "ACME WYCENA");
+    await env.pickAppraiser(env.tenant, "Acme Wycena");
+    expect((await program.account.dispute.fetch(env.dispute)).agreedNameHash.some((b: number) => b !== 0)).to.equal(true);
+  });
+
   it("the 64-byte name limit is counted in bytes, not characters: multibyte names near the edge", async () => {
     const env = await mediating();
     // "é" is 2 bytes in UTF-8: 32 of them is exactly 64 bytes (MAX_NAME_LEN) and must pass; 33 is
@@ -2057,20 +2069,56 @@ describe("relstate", () => {
 
   // ---- key phase limits (docs §4 phase 2's "grief bounds", §11 item 5) ----
 
-  it("at most MAX_KEY_PROPOSALS proposals: the fifth is refused", async () => {
+  async function nameAgreed() {
     const env = await mediating();
     await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 10 }]);
     await env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 10 }]);
     await env.pickAppraiser(env.landlord, "Acme Wycena");
     await env.pickAppraiser(env.tenant, "Acme Wycena");
+    return env;
+  }
 
-    for (let i = 0; i < MAX_KEY_PROPOSALS; i++) {
-      const wallet = await freshAppraiserWallet(false);
-      const proposer = i % 2 === 0 ? env.landlord : env.tenant;
-      await env.proposeAppraiserKey(proposer, wallet.publicKey);
+  it("the per-party key budget is the IDL constant", async () => {
+    const c = program.idl.constants.find((k: any) => k.name === "MAX_KEY_PROPOSALS_PER_PARTY");
+    expect(Number(c?.value)).to.equal(MAX_KEY_PROPOSALS_PER_PARTY);
+  });
+
+  it("one party cannot exhaust the key budget: its third proposal is refused and the other side's budget is untouched (G4)", async () => {
+    const env = await nameAgreed();
+    for (let i = 0; i < MAX_KEY_PROPOSALS_PER_PARTY; i++) {
+      await env.proposeAppraiserKey(env.landlord, (await freshAppraiserWallet(false)).publicKey);
     }
-    const oneTooMany = await freshAppraiserWallet(false);
-    await expectFail(env.proposeAppraiserKey(env.landlord, oneTooMany.publicKey), "KeyProposalsExhausted");
+    await expectFail(env.proposeAppraiserKey(env.landlord, (await freshAppraiserWallet(false)).publicKey), "KeyProposalsExhausted");
+    const d = await program.account.dispute.fetch(env.dispute);
+    expect(d.landlordKeyProposals).to.equal(MAX_KEY_PROPOSALS_PER_PARTY);
+    expect(d.tenantKeyProposals).to.equal(0);
+  });
+
+  it("the other side can always counter-propose after one side spent its budget, and confirm the last proposal (G4)", async () => {
+    const env = await nameAgreed();
+    for (let i = 0; i < MAX_KEY_PROPOSALS_PER_PARTY; i++) {
+      await env.proposeAppraiserKey(env.landlord, (await freshAppraiserWallet(false)).publicKey);
+    }
+    const counter = await freshAppraiserWallet(false);
+    await env.proposeAppraiserKey(env.tenant, counter.publicKey);
+    // the landlord is out of proposals but is the one who may confirm the tenant's counter
+    await expectFail(env.confirmAppraiserKey(env.tenant, counter.publicKey), "CannotConfirmOwnProposal");
+    await env.confirmAppraiserKey(env.landlord, counter.publicKey);
+    expect((await program.account.dispute.fetch(env.dispute)).appraiser.toBase58()).to.equal(counter.publicKey.toBase58());
+  });
+
+  it("both budgets spent: no further proposal from either party, and the last one stays confirmable (G4)", async () => {
+    const env = await nameAgreed();
+    let last = await freshAppraiserWallet(false);
+    for (let i = 0; i < 2 * MAX_KEY_PROPOSALS_PER_PARTY; i++) {
+      last = await freshAppraiserWallet(false);
+      await env.proposeAppraiserKey(i % 2 === 0 ? env.landlord : env.tenant, last.publicKey);
+    }
+    await expectFail(env.proposeAppraiserKey(env.landlord, (await freshAppraiserWallet(false)).publicKey), "KeyProposalsExhausted");
+    await expectFail(env.proposeAppraiserKey(env.tenant, (await freshAppraiserWallet(false)).publicKey), "KeyProposalsExhausted");
+    // the last proposer was the tenant (index 3), so the landlord confirms it
+    await env.confirmAppraiserKey(env.landlord, last.publicKey);
+    expect((await program.account.dispute.fetch(env.dispute)).appraiser.toBase58()).to.equal(last.publicKey.toBase58());
   });
 
   it("re-proposing replaces the earlier key, and confirming the stale one fails with KeyMismatch", async () => {
