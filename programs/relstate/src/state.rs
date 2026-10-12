@@ -241,7 +241,8 @@ pub fn display_name(raw: &str) -> Result<String> {
     Ok(out)
 }
 
-/// Unicode format (Cf) and bidi-control code points, by explicit range: they render as nothing (or
+/// Unicode format (Cf), bidi-control and variation-selector (Mn, U+FE00-FE0F and U+E0100-E01EF)
+/// code points, by explicit range: they render as nothing (or
 /// reorder what is around them), so two names differing only by one would look identical to a
 /// person and hash differently. Whitespace-class separators (NBSP, U+2028/2029, U+3000...) are not
 /// listed: `split_whitespace` has already collapsed them.
@@ -258,6 +259,8 @@ fn is_invisible(c: char) -> bool {
         | '\u{2060}'..='\u{2064}'
         | '\u{2066}'..='\u{206F}'
         | '\u{FEFF}'
+        | '\u{FE00}'..='\u{FE0F}'
+        | '\u{E0100}'..='\u{E01EF}'
         | '\u{FFF9}'..='\u{FFFB}'
         | '\u{E0001}'
         | '\u{E0020}'..='\u{E007F}')
@@ -1076,7 +1079,7 @@ mod tests {
         assert!(Candidate::new(&"ł".repeat(33), 0).is_err());
         assert!(Candidate::new(&"ł".repeat(32), 0).is_ok());
         // invisible / format / bidi code points are refused, NBSP is just a space
-        for bad in ["a\u{200B}b", "a\u{200D}b", "a\u{FEFF}b", "\u{202E}ab", "a\u{2066}b", "a\u{2060}b", "a\u{00AD}b", "a\u{180E}b", "a\u{200F}b"] {
+        for bad in ["a\u{200B}b", "a\u{200D}b", "a\u{FEFF}b", "\u{202E}ab", "a\u{2066}b", "a\u{2060}b", "a\u{00AD}b", "a\u{180E}b", "a\u{200F}b", "Acme\u{FE0F} Wycena", "a\u{FE00}b", "a\u{E0100}b", "a\u{E01EF}b"] {
             assert!(Candidate::new(bad, 0).is_err(), "{bad:?} should be refused");
         }
         assert_eq!(cand("Acme\u{00A0}Wycena", 0).name_hash, cand("acme wycena", 0).name_hash);

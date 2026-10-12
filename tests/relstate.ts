@@ -1916,7 +1916,7 @@ describe("relstate", () => {
 
   it("invisible format and bidi characters are refused (G6), NBSP is just a space", async () => {
     const env = await mediating();
-    for (const bad of ["Acme\u200B Wycena", "Acme\u200D Wycena", "Acme\uFEFF Wycena", "\u202EAcme Wycena", "Acme\u2066 Wycena", "Acme\u00AD Wycena"]) {
+    for (const bad of ["Acme\u200B Wycena", "Acme\u200D Wycena", "Acme\uFEFF Wycena", "\u202EAcme Wycena", "Acme\u2066 Wycena", "Acme\u00AD Wycena", "Acme\uFE0F Wycena", "Acme\u{E0100} Wycena"]) {
       await expectFail(env.proposeAppraisers(env.landlord, [{ name: bad, fee: 1 }]), "InvalidAppraiserName");
     }
     await env.proposeAppraisers(env.landlord, [{ name: "Acme\u00A0Wycena", fee: 1 }]);
@@ -2079,8 +2079,8 @@ describe("relstate", () => {
   }
 
   it("the per-party key budget is the IDL constant", async () => {
-    const c = program.idl.constants.find((k: any) => k.name === "MAX_KEY_PROPOSALS_PER_PARTY");
-    expect(Number(c?.value)).to.equal(MAX_KEY_PROPOSALS_PER_PARTY);
+    // idlConst throws if the constant is missing, and handles the client's camel-casing
+    expect(idlConst("MAX_KEY_PROPOSALS_PER_PARTY")).to.equal(MAX_KEY_PROPOSALS_PER_PARTY);
   });
 
   it("one party cannot exhaust the key budget: its third proposal is refused and the other side's budget is untouched (G4)", async () => {

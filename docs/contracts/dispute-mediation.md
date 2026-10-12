@@ -240,8 +240,9 @@ Per candidate:
 * **Name validation, on chain.** The name is trimmed, internal whitespace runs (including NBSP) are
   collapsed to one space, and the result must be **1 to 64 bytes of valid UTF-8 with no control
   characters** (which excludes NUL) **and no invisible code points**: zero-width, format and bidi
-  characters (U+200B–200F, U+202A–202E, U+2060–2064, U+2066–206F, U+FEFF, U+180E, U+00AD, and the
-  other Cf blocks by explicit range) are refused, so two rows a person cannot tell apart cannot
+  characters (U+200B–200F, U+202A–202E, U+2060–2064, U+2066–206F, U+FEFF, U+180E, U+00AD, the
+  reachable Cf blocks by explicit range, and the variation selectors U+FE00–FE0F and
+  U+E0100–E01EF) are refused, so two rows a person cannot tell apart cannot
   carry different hashes. Violations are `InvalidAppraiserName`. The stored `name` is that normalised display
   form.
 * **Canonical form for comparison.** `canonical = ascii_lowercase(display)`; `name_hash =
@@ -252,6 +253,9 @@ Per candidate:
   the two converge). **What remains, and is disclosed (§10 item 3):** visually confusable *visible*
   letters (Latin vs Cyrillic `a`) are still distinct hashes, so a name is an assertion the parties
   check off chain, never something the program verifies.
+  **U+200C and U+200D (zero-width non-joiner / joiner) are blocked as a deliberate trade-off:** they
+  have legitimate uses in some scripts but none in the Polish names this is built for, and allowing
+  them would reopen invisible duplicates.
 * **Fee cap.** `fee <= deposit / APPRAISER_FEE_CAP_DIVISOR` at proposal (`FeeAboveCap`). The verdict
   still clamps (`verdict_split` is unchanged), so this is a UX gate, not the safety property.
 * Candidates are distinct **within** a side by `name_hash` (`DuplicateCandidate`); across sides they
@@ -305,6 +309,11 @@ expire. (An earlier draft shared one counter of four; the party landing the four
 then have chosen the only confirmable wallet. Review G4.) Nothing here extends any deadline: all of
 it is inside `selection_deadline`. A party who refuses to confirm does not stall anything — they
 simply decline to bind, and the mediation expires (§10 on who that favours).
+
+The budgets are symmetric, but **whoever proposes last owns the only confirmable key at
+exhaustion**: the other party can confirm it or let the mediation expire, never substitute their
+own. That is the anti-sockpuppet property (a key only binds with the other party's explicit
+consent), not a defect.
 
 ### Phase 3: the verdict, and the appraiser's token account
 
