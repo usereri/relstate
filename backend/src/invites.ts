@@ -147,8 +147,12 @@ export type InviteDeps = {
   program?: Address;
 };
 
-/** `relstate/invite/v1` — its own HMAC key, so a session token is not an invite token and vice versa. */
-export const inviteSecret = (): Buffer => hmacSecret("relstate/invite/v1");
+/**
+ * `relstate/invite/v1/${authMode}` — its own HMAC key, so a session token is not an invite token
+ * and vice versa, and mode-separated the same way `sessionSecret` is: a mock-minted invite token
+ * must not verify on a live deployment sharing `SESSION_SECRET`.
+ */
+export const inviteSecret = (): Buffer => hmacSecret(`relstate/invite/v1/${env.authMode}`);
 
 /** The invite link an e-mail carries, and the route oa-app has to serve. */
 export const inviteUrl = (token: string, appUrl = env.appUrl): string => `${appUrl.replace(/\/$/, "")}/#/invite/${token}`;
