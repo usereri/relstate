@@ -67,7 +67,7 @@ export function Listings({
         const forListing = applications.filter((a) => a.listing === l.address);
         const applied = forListing[0];
         // a lease proposed to me, or already accepted, by this listing's landlord: nothing left to withdraw
-        const lease = myLeases.find((x) => x.landlord === l.landlord && (x.status === "proposed" || x.status === "active" || x.status === "disputed"));
+        const lease = myLeases.find((x) => x.landlord === l.landlord && chain.inProgress(x.status));
         return (
           <Listing key={l.address} l={l}>
             <div className="flex flex-col gap-3 border-t px-4 py-3">
@@ -91,7 +91,7 @@ export function Listings({
                     <p className="text-xs text-muted-foreground">This is your own listing.</p>
                   ) : lease ? (
                     <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                      <Badge variant={lease.status === "active" ? "success" : "warning"}>{lease.status === "active" ? "Lease active" : lease.status === "disputed" ? "Deduction proposed" : "Lease proposed"}</Badge>
+                      <Badge variant={lease.status === "active" ? "success" : "warning"}>{lease.status === "active" ? "Lease active" : lease.status === "disputed" ? "Deduction proposed" : lease.status === "mediation" ? "With an appraiser" : "Lease proposed"}</Badge>
                       {lease.status === "proposed" ? "accept it in My lease" : "with this landlord"}
                     </p>
                   ) : applied ? (
@@ -258,7 +258,7 @@ export function MyProfile({ role, me }: { role: Role; me: string }) {
   const other: Role = role === "landlord" ? "tenant" : "landlord";
   const records = useRecords(unique((leases ?? []).map((l) => l[other])));
 
-  const current = (leases ?? []).filter((l) => l.status === "proposed" || l.status === "active" || l.status === "disputed");
+  const current = (leases ?? []).filter((l) => chain.inProgress(l.status));
   const recent = (leases ?? []).filter((l) => l.status === "closed" || l.status === "defaulted");
   const countries = unique(recent.filter((l) => l.status === "closed").map((l) => l.region)).sort();
 

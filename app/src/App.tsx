@@ -1,4 +1,4 @@
-import { useContext, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useContext, useEffect, useRef, useState } from "react";
 import { UserRound, ArrowLeftRight, Building2, ChevronDown, Copy, Home, KeyRound, LogOut } from "lucide-react";
 import { AuthPage } from "@/Auth";
 import { Landing } from "@/Landing";
@@ -9,7 +9,7 @@ import { EmbeddedWalletProvider, useEmbeddedWallet } from "@/auth/embedded";
 import { WalletProvider, useWallet } from "@solana/wallet-adapter-react";
 import * as chain from "@/lib/chain";
 import { Role } from "@/lib/chain";
-import { IS_LOCAL, RPC } from "@/lib/config";
+import { APPRAISER_CONSOLE, IS_LOCAL, RPC } from "@/lib/config";
 import { Doc } from "@/lib/hash";
 import { ReadErrors, Tick, useChain } from "@/lib/useChain";
 import { invalidateReads } from "@/lib/reads";
@@ -24,6 +24,18 @@ import { Kyc, VerifyFirst } from "@/screens/Kyc";
 import { Payout, TopUp } from "@/screens/TopUp";
 import { isKycRequired, needsVerification, returnAfterKyc, setReturnAfterKyc } from "@/lib/kyc";
 import { Listings, MyProfile } from "@/views";
+
+/**
+ * The operator console, behind its build-time flag.
+ *
+ * The `import()` sits INSIDE the flag check on purpose. `VITE_APPRAISER_CONSOLE` is inlined at
+ * build time, so with it unset this is `false ? … : null`, the import is unreachable, and the
+ * screen is never emitted — not merely never fetched. Verified by building both ways and grepping
+ * dist for the screen's own strings; with the `lazy()` outside the check, the chunk shipped.
+ */
+const VerdictConsole = APPRAISER_CONSOLE
+  ? lazy(() => import("@/screens/Verdict").then((m) => ({ default: m.VerdictConsole })))
+  : null;
 
 const ROLE_KEY = "relstate.role";
 const storedRole = (): Role | null => {
@@ -73,12 +85,32 @@ export default function App() {
       document.documentElement.dataset.role = "tenant";
       document.title = "Relstate · Rent with a record";
     }
+    // Otherwise the operator console inherits whatever title the last route left in the tab,
+    // which on a fresh load is "Sign in".
+    if (route === "appraiser") {
+      document.documentElement.dataset.role = "landlord";
+      document.title = "Appraiser console · Relstate";
+    }
   }, [route]);
 
   // the app needs a role; without one, sign in first
   useEffect(() => {
     if (route === "app" && !role) go("signin");
   }, [route, role]);
+
+  // The operator verdict console: no role, no wallet, no session — it holds no key and signs
+  // nothing itself. Before the role gate, because an appraiser is neither party (screens/Verdict).
+  //
+  // Behind a build-time flag, so a public build does not serve an operator tool at all: with
+  // VITE_APPRAISER_CONSOLE unset this branch is dead code and the bundler drops the screen with it.
+  if (route === "appraiser")
+    return VerdictConsole ? (
+      <Suspense fallback={null}>
+        <VerdictConsole />
+      </Suspense>
+    ) : (
+      <Landing />
+    );
 
   if (route === "signup" || route === "signin")
     return (
@@ -308,6 +340,11 @@ function Shell({
     claim: (l) => run("Claiming deposit…", (m) => chain.claimDeposit(m, l)),
     acceptDeduction: (l) => run("Accepting deduction…", (m) => chain.acceptDeduction(m, l)),
     abandonDispute: (l) => run("Rejecting deduction…", (m) => chain.abandonDispute(m, l)),
+    escalateToMediation: (l) => run("Going to mediation…", (m) => chain.escalateToMediation(m, l)),
+    proposeAppraisers: (l, wallets) => run("Naming appraisers…", (m) => chain.proposeAppraisers(m, l, wallets)),
+    pickAppraiser: (l, wallet) => run("Picking an appraiser…", (m) => chain.pickAppraiser(m, l, wallet)),
+    bindDefaultAppraiser: (l, wallet) => run("Bringing in the fallback…", (m) => chain.bindDefaultAppraiser(m, l, wallet)),
+    expireMediation: (l) => run("Ending the mediation…", (m) => chain.expireMediation(m, l)),
     finalizeDeduction: (l) => run("Finalizing deduction…", (m) => chain.finalizeDeduction(m, l)),
     jump: (secs) => run("Moving the clock…", () => chain.fastForward(secs)),
   };

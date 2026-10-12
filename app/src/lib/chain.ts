@@ -7,6 +7,7 @@ import { GRACE_SECS, IS_LOCAL, MINT, PERIOD_SECS, RPC, TERM_PERIODS } from "./co
 import { retryingFetch } from "./rpc";
 import { invalidateReads, sharedRead } from "./reads";
 import { isShortPublicBalance } from "./holdback";
+import { MAX_CANDIDATES, setKey } from "./mediation";
 import { jsonSafe } from "./utils";
 import { API, SPONSORED, postSponsored, sponsorFeePayer } from "./sponsor";
 import { asWalletProvider, localKeypair, localWallet, readOnlyWallet } from "./wallet";
@@ -56,10 +57,54 @@ export interface LeaseView {
   status: Status;
   /** the deduction a landlord asked for while the lease is disputed, else 0 */
   proposedDeduction: number;
-  /** unix seconds the dispute opened; 0 when not disputed */
+  /** unix seconds the current dispute OR mediation opened; 0 when the lease is neither */
   disputedAt: number;
   /** seconds the lease spent disputed; pushes back when claim_deposit opens */
   claimPauseSecs: number;
+  /**
+   * How many proposed deductions the tenant has rejected, up to {@link MAX_DISPUTE_ROUNDS}.
+   *
+   * This byte was `dispute_rejected: bool` before D2 and reads back as 0 or 1 on a lease the old
+   * program wrote (docs/contracts/dispute-mediation.md §8). The last rejection escalates to
+   * `Mediation` instead of returning the lease to `Active`.
+   */
+  disputeRounds: number;
+}
+
+/**
+ * The `Dispute` PDA, which exists exactly while a lease is in `Mediation`
+ * (docs/contracts/dispute-mediation.md §3).
+ *
+ * Unset pubkeys arrive as `""` rather than the program's all-zero marker, and each candidate list
+ * is already cut to the count the account records, so `[..count]` padding never reaches a screen.
+ */
+export interface DisputeView {
+  address: string;
+  lease: string;
+  landlordCandidates: string[];
+  tenantCandidates: string[];
+  /** "" until that side picks; a side may change its pick while nothing is bound */
+  landlordPick: string;
+  tenantPick: string;
+  /** "" until both picks match, or the default is bound */
+  appraiser: string;
+  /** unix seconds; past it anyone may bind the registry's default appraiser */
+  selectionDeadline: number;
+  /** unix seconds; past it no verdict can land and either party may end the mediation */
+  verdictDeadline: number;
+}
+
+/** One entry of the on-chain appraiser registry, maintained by the Config admin. */
+export interface AppraiserView {
+  /** the `Appraiser` PDA, which is what the instructions take */
+  address: string;
+  wallet: string;
+  active: boolean;
+  isDefault: boolean;
+  /** base units of the lease mint, capped per lease at `deposit / APPRAISER_FEE_CAP_DIVISOR` */
+  fee: number;
+  /** sha256 of the company's name: the commitment the off-chain directory is checked against */
+  nameHashHex: string;
 }
 
 export interface ProfileView {
@@ -96,6 +141,14 @@ export const DISCOUNT_PCT = constant("GOOD_STANDING_DISCOUNT_PCT");
 export const RENT_HEADROOM_PCT = constant("RENT_HEADROOM_PCT");
 /** How long a tenant has to answer a proposed deduction. Build-dependent (demo 15 s, release 14 days), so it comes from the IDL. */
 export const DISPUTE_WINDOW_SECS = constant("DISPUTE_WINDOW_SECS");
+/** Rejections the tenant gets before the decision stops being the parties' (docs/contracts/dispute-mediation.md §1). */
+export const MAX_DISPUTE_ROUNDS = constant("MAX_DISPUTE_ROUNDS");
+/** How long the two sides have to agree on an appraiser. Demo 30 s, release 7 days. */
+export const SELECTION_WINDOW_SECS = constant("SELECTION_WINDOW_SECS");
+/** How long the bound appraiser has to submit a verdict. Demo 60 s, release 14 days. */
+export const VERDICT_WINDOW_SECS = constant("VERDICT_WINDOW_SECS");
+/** The appraiser's fee is capped at `deposit / this` per lease. */
+export const APPRAISER_FEE_CAP_DIVISOR = constant("APPRAISER_FEE_CAP_DIVISOR");
 
 // Previews of Profile::good_standing / typical_rent / deserves_discount in the program;
 // the program applies the real rule at propose_lease.
@@ -113,6 +166,14 @@ export const maxDiscountRent = (p: ProfileView | null) => Math.floor((typicalRen
 
 export const qualifiesForDiscount = (p: ProfileView | null, rent: number) =>
   goodStanding(p) && rent <= maxDiscountRent(p);
+
+/**
+ * A lease that is still running: anything that is not `closed` or `defaulted`.
+ *
+ * One place, because the list grew a member (`mediation`) and every screen that filtered for
+ * "current" leases by naming the other four silently dropped the new one.
+ */
+export const inProgress = (s: Status) => s === "proposed" || s === "active" || s === "disputed" || s === "mediation";
 
 export const isWallet = (s: string) => {
   try {
@@ -214,12 +275,20 @@ const listingPda = (landlord: PubKey, id: string) => pda(Buffer.from("listing"),
 const vaultPda = (lease: PubKey) => pda(Buffer.from("vault"), lease.toBuffer());
 const profilePda = (wallet: PubKey) => pda(Buffer.from("profile"), wallet.toBuffer());
 const applicationPda = (listing: PubKey, tenant: PubKey) => pda(Buffer.from("application"), listing.toBuffer(), tenant.toBuffer());
+const disputePda = (lease: PubKey) => pda(Buffer.from("dispute"), lease.toBuffer());
+/**
+ * The registry entry for a wallet. Seeded on the appraiser's own key, so — unlike every other
+ * account here — Anchor cannot derive it: the seed is a field of the account being resolved. Every
+ * mediation instruction that names an appraiser therefore gets this passed in
+ * (docs/contracts/dispute-mediation.md §4).
+ */
+const appraiserPda = (wallet: PubKey) => pda(Buffer.from("appraiser"), wallet.toBuffer());
 
 export const leaseAddress = (landlord: string, id: string) => leasePda(new PublicKey(landlord), id).toBase58();
 export const newId = () => String(Date.now());
 
 
-type Acc<K extends "lease" | "profile" | "listing" | "application"> = NonNullable<Awaited<ReturnType<(typeof reader.account)[K]["fetchNullable"]>>>;
+type Acc<K extends "lease" | "profile" | "listing" | "application" | "dispute" | "appraiser"> = NonNullable<Awaited<ReturnType<(typeof reader.account)[K]["fetchNullable"]>>>;
 
 const hex = (bytes: number[]) => bytes.map((b) => b.toString(16).padStart(2, "0")).join("");
 const code = (region: number[]) => String.fromCharCode(...region);
@@ -257,6 +326,28 @@ const leaseView = (address: PubKey, l: Acc<"lease">): LeaseView => ({
   proposedDeduction: l.proposedDeduction.toNumber(),
   disputedAt: l.disputedAt.toNumber(),
   claimPauseSecs: l.claimPauseSecs.toNumber(),
+  disputeRounds: l.disputeRounds,
+});
+
+const disputeView = (address: PubKey, d: Acc<"dispute">): DisputeView => ({
+  address: address.toBase58(),
+  lease: d.lease.toBase58(),
+  landlordCandidates: d.landlordCandidates.slice(0, d.landlordCount).map((k) => k.toBase58()),
+  tenantCandidates: d.tenantCandidates.slice(0, d.tenantCount).map((k) => k.toBase58()),
+  landlordPick: setKey(d.landlordPick.toBase58()),
+  tenantPick: setKey(d.tenantPick.toBase58()),
+  appraiser: setKey(d.appraiser.toBase58()),
+  selectionDeadline: d.selectionDeadline.toNumber(),
+  verdictDeadline: d.verdictDeadline.toNumber(),
+});
+
+const appraiserView = (address: PubKey, a: Acc<"appraiser">): AppraiserView => ({
+  address: address.toBase58(),
+  wallet: a.wallet.toBase58(),
+  active: a.active,
+  isDefault: a.isDefault,
+  fee: a.fee.toNumber(),
+  nameHashHex: hex(a.nameHash),
 });
 
 const profileView = (p: Acc<"profile"> | null): ProfileView | null =>
@@ -302,6 +393,38 @@ export function loadLeases(wallet: string, role: Role): Promise<LeaseView[]> {
     const rows = await reader.account.lease.all([{ memcmp: { offset: role === "landlord" ? 8 : 40, bytes } }]);
     return newestFirst(rows.map((r) => leaseView(r.publicKey, r.account)));
   });
+}
+
+/**
+ * One lease by address, for the operator console: it is handed a lease nobody's wallet is a party
+ * to, so it cannot find it through {@link loadLeases}, which scans by landlord or tenant.
+ */
+export function loadLease(address: string): Promise<LeaseView | null> {
+  return sharedRead(`lease:${address}`, async () => {
+    const key = new PublicKey(address);
+    const l = await reader.account.lease.fetchNullable(key);
+    return l && leaseView(key, l);
+  });
+}
+
+/** The mediation of one lease, or null when it is not in `Mediation` (the PDA only exists then). */
+export function loadDispute(leaseAddress: string): Promise<DisputeView | null> {
+  return sharedRead(`dispute:${leaseAddress}`, async () => {
+    const address = disputePda(new PublicKey(leaseAddress));
+    const d = await reader.account.dispute.fetchNullable(address);
+    return d && disputeView(address, d);
+  });
+}
+
+/**
+ * The whole appraiser registry.
+ *
+ * There is no on-chain index of it — that is the reason the program cannot enforce a single
+ * default (§4) — so this is a discriminator scan, read only while a Mediation screen is open and
+ * shared for a tick like every other scan.
+ */
+export function loadAppraisers(): Promise<AppraiserView[]> {
+  return sharedRead("appraisers", async () => (await reader.account.appraiser.all()).map((r) => appraiserView(r.publicKey, r.account)));
 }
 
 export function loadProfile(address: string): Promise<ProfileView | null> {
@@ -588,9 +711,94 @@ export async function acceptDeduction(me: Me, l: LeaseView) {
     }));
 }
 
-/** The tenant rejects the proposed deduction: the deposit then returns in full through claim_deposit. */
+/**
+ * The tenant rejects the proposed deduction while rounds are left: the proposal is void, the lease
+ * returns to `Active` with the claim clock resumed, and the landlord may propose once more.
+ *
+ * Refused with `WrongDisputeRound` on the last round — that rejection is
+ * {@link escalateToMediation}, which is a different instruction because it does a different thing.
+ */
 export function abandonDispute(me: Me, l: LeaseView) {
   return send(me, me.program.methods.abandonDispute().accountsPartial({ tenant: me.key, lease: new PublicKey(l.address) }));
+}
+
+/**
+ * The last rejection: the lease enters `Mediation`, the deposit stays locked and an appraiser
+ * decides. Creates the `Dispute` PDA, which the tenant pays the rent for and gets back on every
+ * exit (docs/contracts/dispute-mediation.md §3).
+ */
+export function escalateToMediation(me: Me, l: LeaseView) {
+  const lease = new PublicKey(l.address);
+  return send(me, me.program.methods
+    .escalateToMediation()
+    .accountsPartial({ tenant: me.key, lease, dispute: disputePda(lease) }));
+}
+
+/**
+ * One side names up to three registered, active appraisers, once.
+ *
+ * The candidates are the `Appraiser` accounts themselves, not pubkey arguments: Anchor's seed and
+ * discriminator checks then *are* the registry lookup, so there is no path on which an
+ * unregistered or suspended key reaches a candidate list (§4). The unused slots are optional
+ * accounts and must be passed as explicit nulls, or Anchor would derive and send them.
+ */
+export function proposeAppraisers(me: Me, l: LeaseView, wallets: string[]) {
+  // Said here rather than left to the destructure below, which would have sent `appraiser_one:
+  // undefined` for an empty list (Anchor then tries to derive a PDA whose seed is a field of the
+  // account it is deriving, and fails with something unrelated) and silently dropped a fourth.
+  // Dropping one is the worse of the two: the side would have proposed something other than what
+  // it chose, and a side only proposes once.
+  if (wallets.length === 0) throw new Error("Choose at least one appraiser to put forward.");
+  if (wallets.length > MAX_CANDIDATES)
+    throw new Error(`A side may put forward at most ${MAX_CANDIDATES} appraisers, and ${wallets.length} were chosen.`);
+  if (new Set(wallets).size !== wallets.length) throw new Error("Each appraiser can only be put forward once.");
+  const lease = new PublicKey(l.address);
+  const [one, two, three] = wallets.map((w) => appraiserPda(new PublicKey(w)));
+  return send(me, me.program.methods
+    .proposeAppraisers()
+    .accountsPartial({
+      party: me.key,
+      lease,
+      dispute: disputePda(lease),
+      appraiserOne: one,
+      appraiserTwo: two ?? null,
+      appraiserThree: three ?? null,
+    }));
+}
+
+/**
+ * This side picks one appraiser from either list. The same pick from both sides binds it and
+ * re-bases the verdict deadline on the binding; a side may change its pick until then.
+ */
+export function pickAppraiser(me: Me, l: LeaseView, wallet: string) {
+  const lease = new PublicKey(l.address);
+  return send(me, me.program.methods
+    .pickAppraiser()
+    .accountsPartial({ party: me.key, lease, dispute: disputePda(lease), appraiser: appraiserPda(new PublicKey(wallet)) }));
+}
+
+/**
+ * The deadlock exit: after the selection deadline with nothing bound, **anyone** may bind the
+ * registry's default appraiser. This is why a mediation the two sides never agree on cannot lock
+ * the deposit.
+ */
+export function bindDefaultAppraiser(me: Me, l: LeaseView, wallet: string) {
+  const lease = new PublicKey(l.address);
+  return send(me, me.program.methods
+    .bindDefaultAppraiser()
+    .accountsPartial({ caller: me.key, lease, dispute: disputePda(lease), appraiser: appraiserPda(new PublicKey(wallet)) }));
+}
+
+/**
+ * The appraiser stayed silent past their window: either party returns the lease to `Active` with
+ * the claim clock resumed, and the tenant then takes the whole deposit through `claim_deposit`.
+ * The `Dispute` account closes and its rent goes back to the tenant, which is why they are named.
+ */
+export function expireMediation(me: Me, l: LeaseView) {
+  const lease = new PublicKey(l.address);
+  return send(me, me.program.methods
+    .expireMediation()
+    .accountsPartial({ party: me.key, lease, dispute: disputePda(lease), tenant: new PublicKey(l.tenant) }));
 }
 
 /**
@@ -598,6 +806,11 @@ export function abandonDispute(me: Me, l: LeaseView) {
  * The app's single-session model cannot collect two, so there is deliberately no button for this:
  * it is a script / multisig flow for now. This builds the unsigned transaction (fee payer = `me`),
  * which the first party signs, passes to the second, and sends.
+ *
+ * Since D2 it accepts `Mediation` as well as `Disputed`, and the `Dispute` account is an optional
+ * account that must match the state exactly: the PDA in `Mediation` (`DisputeAccountRequired`),
+ * and an explicit null in `Disputed` (`UnexpectedDisputeAccount`). Leaving it out is not the same
+ * as null — Anchor would derive the PDA from the seeds and send it either way.
  */
 export async function settleDisputeTx(me: Me, l: LeaseView, deduction: number) {
   const lease = new PublicKey(l.address);
@@ -609,6 +822,7 @@ export async function settleDisputeTx(me: Me, l: LeaseView, deduction: number) {
       tenant,
       landlord,
       lease,
+      dispute: l.status === "mediation" ? disputePda(lease) : null,
       mint,
       vault: vaultPda(lease),
       tenantAta,
@@ -661,8 +875,14 @@ export const explorerTx = (sig: string) =>
   `https://explorer.solana.com/tx/${sig}?cluster=` +
   (/devnet/.test(RPC) ? "devnet" : `custom&customUrl=${encodeURIComponent(RPC)}`);
 
-/** What a person should read for the program errors they can actually run into. Others fall back to the IDL's own message. */
-const FRIENDLY_PROGRAM_ERRORS: Record<string, string> = {
+/**
+ * What a person should read for the program errors they can actually run into. Others fall back to
+ * the IDL's own message, which is written for a developer.
+ *
+ * Exported so a test can tell "has a friendly override" from "falls back" without re-listing the
+ * keys next to this map, where the two copies would drift.
+ */
+export const FRIENDLY_PROGRAM_ERRORS: Record<string, string> = {
   KycRequired: "Verify your identity first: open the Verify tab, then come back.",
   WrongStatus: "That lease is not in a state where this can be done.",
   TooEarly: "This rent period is not due yet.",
@@ -670,6 +890,23 @@ const FRIENDLY_PROGRAM_ERRORS: Record<string, string> = {
   SelfLease: "You cannot rent your own listing: landlord and tenant must be different wallets.",
   MintNotAllowed: "This listing uses a token that is not allowed for leases.",
   MissingConfidentialTransfer: "The private payment was assembled in the wrong order and was refused. Nothing was paid.",
+  // Mediation (docs/contracts/dispute-mediation.md §9). Each of these is reachable by a person
+  // pressing a button on a lease someone else changed a moment earlier, so each says what to do.
+  DisputeRoundsExhausted: "You have already proposed a deduction twice and the tenant rejected both. You can still release the deposit in full.",
+  WrongDisputeRound: "This lease has moved to another round since the screen was loaded. Reload it and look again.",
+  NotMediationParty: "Only this lease's landlord or tenant can do that.",
+  AppraiserInactive: "That appraiser is no longer taking cases. Choose another one from the list.",
+  AppraiserNotDefault: "That appraiser is not the registry's fallback, so it cannot be bound on its own.",
+  AppraiserAlreadyBound: "An appraiser has already been agreed for this lease, so the lists are closed.",
+  AppraiserNotBound: "No appraiser has been agreed for this lease yet.",
+  NotBoundAppraiser: "Only the appraiser both sides agreed on can decide this lease.",
+  CandidatesAlreadyProposed: "You have already named your appraisers, and a side only names them once.",
+  DuplicateCandidate: "Each appraiser can only be named once.",
+  CandidateNotProposed: "That appraiser is on neither side's list. Choose one of the names shown.",
+  SelectionWindowOpen: "There is still time to agree on an appraiser together. The fallback can only be used after that.",
+  VerdictWindowOpen: "The appraiser still has time to decide. You can end the mediation once their window passes.",
+  VerdictWindowClosed: "The appraiser's window has passed, so no verdict can land. Either side can now end the mediation.",
+  BindingWindowClosed: "Too late to agree on an appraiser: the window has passed. Either side can now end the mediation and unlock the deposit.",
 };
 
 /** Finds the program error named, or coded, anywhere in a failure's text (message, logs, simulation error). */

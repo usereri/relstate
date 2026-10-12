@@ -108,6 +108,11 @@ const h: Handlers = {
   claim: no,
   acceptDeduction: no,
   abandonDispute: no,
+  escalateToMediation: no,
+  proposeAppraisers: no,
+  pickAppraiser: no,
+  bindDefaultAppraiser: no,
+  expireMediation: no,
   finalizeDeduction: no,
   jump: no,
 };
