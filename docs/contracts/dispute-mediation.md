@@ -150,13 +150,13 @@ M + SELECTION_WINDOW_SECS + VERDICT_WINDOW_SECS
 |---|---|---|
 | `CLAIM_WINDOW_SECS` | 3 s | 14 days |
 | `DISPUTE_WINDOW_SECS` | 45 s | 14 days |
-| `SELECTION_WINDOW_SECS` | **30 s** | **7 days** |
-| `VERDICT_WINDOW_SECS` | **60 s** | **14 days** |
+| `SELECTION_WINDOW_SECS` | **180 s** | **7 days** |
+| `VERDICT_WINDOW_SECS` | **120 s** | **14 days** |
 
 All four are `#[constant]`, so they land in the IDL and the app reads the value of the build it runs
 against. `scripts/sync-idl.sh` refuses an IDL whose four values are not the demo set. The selection
 window now has to fit two hand-offs including an out-of-band invitation to a person who may not have
-an account yet; 7 days in a release build is meant for that, and 30 s in the demo is meant for a
+an account yet; 7 days in a release build is meant for that, and 3 min in the demo is meant for a
 stage.
 
 ## 3. Accounts

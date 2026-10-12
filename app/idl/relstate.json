@@ -4531,7 +4531,7 @@
     {
       "name": "SELECTION_WINDOW_SECS",
       "type": "i64",
-      "value": "30"
+      "value": "180"
     },
     {
       "name": "VAULT_SEED",
@@ -4541,7 +4541,7 @@
     {
       "name": "VERDICT_WINDOW_SECS",
       "type": "i64",
-      "value": "60"
+      "value": "120"
     }
   ]
 }

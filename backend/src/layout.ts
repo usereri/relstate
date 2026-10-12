@@ -122,9 +122,9 @@ export const FALLBACK_LAYOUTS: Readonly<Record<string, Layout>> = {
 export const FALLBACK_CONSTANTS: Readonly<Record<string, string>> = {
   // The window that covers BOTH phases of selection, and therefore the longest an appraiser
   // invitation can usefully live (docs/contracts/dispute-mediation.md §2).
-  SELECTION_WINDOW_SECS: "30",
+  SELECTION_WINDOW_SECS: "180",
   // How long the bound appraiser has to submit a verdict; shown on the invitation page.
-  VERDICT_WINDOW_SECS: "60",
+  VERDICT_WINDOW_SECS: "120",
 };
 
 /** A program constant as a number: from the IDL when present, else the pinned snapshot. */

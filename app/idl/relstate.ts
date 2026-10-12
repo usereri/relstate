@@ -4537,7 +4537,7 @@ export type Relstate = {
     {
       "name": "selectionWindowSecs",
       "type": "i64",
-      "value": "30"
+      "value": "180"
     },
     {
       "name": "vaultSeed",
@@ -4547,7 +4547,7 @@ export type Relstate = {
     {
       "name": "verdictWindowSecs",
       "type": "i64",
-      "value": "60"
+      "value": "120"
     }
   ]
 };

@@ -126,18 +126,18 @@ pub const MAX_KEY_PROPOSALS_PER_PARTY: u8 = 2;
 // windows: the app reads the value of the build it runs against, and scripts/sync-idl.sh refuses
 // an IDL that is not the demo set.
 //
-// 7 and 14 days in a real deployment; 30 s and 60 s in the demo so the whole arbitration fits on
+// 7 and 14 days in a real deployment; 3 min and 2 min in the demo so the whole arbitration fits on
 // stage.
 #[cfg(feature = "demo")]
 #[constant]
-pub const SELECTION_WINDOW_SECS: i64 = 30;
+pub const SELECTION_WINDOW_SECS: i64 = 180;
 #[cfg(not(feature = "demo"))]
 #[constant]
 pub const SELECTION_WINDOW_SECS: i64 = 604_800;
 
 #[cfg(feature = "demo")]
 #[constant]
-pub const VERDICT_WINDOW_SECS: i64 = 60;
+pub const VERDICT_WINDOW_SECS: i64 = 120;
 #[cfg(not(feature = "demo"))]
 #[constant]
 pub const VERDICT_WINDOW_SECS: i64 = 1_209_600;
