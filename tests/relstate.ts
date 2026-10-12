@@ -6,6 +6,8 @@ import {
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
   createAssociatedTokenAccount,
+  createAssociatedTokenAccountIdempotent,
+  createAssociatedTokenAccountIdempotentInstruction,
   createInitializeDefaultAccountStateInstruction,
   createInitializeMint2Instruction,
   createInitializeNonTransferableMintInstruction,
@@ -35,10 +37,13 @@ const LEASE_HASH = Array(32).fill(7);
 const REGION = [80, 76]; // "PL"
 
 // Leases are only allowed on a mint the admin has put in the on-chain Config, so the suite
-// creates its own mints in before() and allows them: a classic SPL one for the existing flows
-// and a Token-2022 one carrying ConfidentialTransferMint for the confidential rent path.
+// creates its own mints in before() and allows them: a classic SPL one for the existing flows,
+// a Token-2022 one carrying ConfidentialTransferMint for the confidential rent path, and a plain
+// (extension-free) Token-2022 mint so the mediation flow -- which pays rent the ordinary way and
+// cannot go through the confidential-transfer path -- still has a Token-2022 case to run against.
 let USDC: anchor.web3.PublicKey;
 let USDC_2022: anchor.web3.PublicKey;
+let USDC_2022_PLAIN: anchor.web3.PublicKey;
 
 // Token-2022 instruction bytes. @solana/spl-token 0.4 knows the ConfidentialTransferMint
 // extension type but ships no builder for its instructions, so the two the suite needs are
@@ -216,6 +221,9 @@ describe("relstate", () => {
     const payer = (provider.wallet as anchor.Wallet).payer;
     USDC = await createMint(connection, payer, payer.publicKey, null, 6);
     USDC_2022 = await createConfidentialMint(freshConnection(), payer);
+    USDC_2022_PLAIN = await createMint(
+      connection, payer, payer.publicKey, null, 6, undefined, undefined, TOKEN_2022_PROGRAM_ID
+    );
 
     if (!(await program.account.config.fetchNullable(configPda))) {
       await program.methods
@@ -225,60 +233,41 @@ describe("relstate", () => {
     }
     await setMintAllowed(USDC, true);
     await setMintAllowed(USDC_2022, true);
+    await setMintAllowed(USDC_2022_PLAIN, true);
   });
 
-  // ---- D2: the appraiser registry (admin-managed, global -- not per lease) ----
+  // ---- D2: party-chosen appraisers, no registry (docs/contracts/dispute-mediation.md) ----
+  //
+  // There is no Appraiser account any more: a candidate is a {name, fee} the program validates,
+  // canonicalises and hashes, and the wallet that eventually signs is whatever the two parties
+  // agree on through propose_appraiser_key / confirm_appraiser_key. Fixtures below just generate
+  // fresh wallets and, where a verdict needs to be paid, a fresh ATA for them.
 
-  const appraiserPda = (wallet: anchor.web3.PublicKey) =>
-    pda(Buffer.from("appraiser"), wallet.toBuffer());
+  const MAX_CANDIDATES = 3;
+  const MAX_KEY_PROPOSALS = 4;
+  const MAX_NAME_LEN = 64;
 
-  type Appraiser = { wallet: anchor.web3.Keypair; pda: anchor.web3.PublicKey; ata: anchor.web3.PublicKey };
-
-  // Registers `wallet` (which may be an existing lease's own landlord or tenant, for the "an
-  // appraiser cannot be a party" tests) without creating a token account for it: these callers
-  // never reach submit_verdict, which is the only instruction that needs one.
-  async function registerAsAppraiser(wallet: anchor.web3.Keypair, fee: number): Promise<Appraiser> {
-    const p = appraiserPda(wallet.publicKey);
-    await program.methods
-      .registerAppraiser(wallet.publicKey, new BN(fee), Array(32).fill(1))
-      .accountsPartial({ admin: provider.wallet.publicKey, config: configPda, appraiser: p })
-      .rpc();
-    return { wallet, pda: p, ata: null as unknown as anchor.web3.PublicKey };
-  }
-
-  // A fresh registered, active appraiser with a funded ATA on USDC, for the tests that submit a
-  // verdict and collect the fee.
-  async function registerAppraiser(fee: number): Promise<Appraiser> {
+  // A wallet that can sign for an appraiser. `airdropLamports = false` builds one with zero SOL,
+  // for the payability tests that prove the sponsor -- not the appraiser -- pays the ATA's rent.
+  async function freshAppraiserWallet(airdropLamports = true) {
     const wallet = Keypair.generate();
-    await airdrop(wallet);
-    const base = await registerAsAppraiser(wallet, fee);
-    const ata = await createAssociatedTokenAccount(
-      freshConnection(), (provider.wallet as anchor.Wallet).payer, USDC, wallet.publicKey
-    );
-    return { ...base, ata };
+    if (airdropLamports) await airdrop(wallet);
+    return wallet;
   }
 
-  // fee 50 is well under DEPOSIT/10 = 200 (the per-lease cap); fee 500 is well over it, so the
-  // two exercise the cap in both directions (docs/contracts/dispute-mediation.md §6).
-  let apprLow: Appraiser;
-  let apprHigh: Appraiser;
-  let apprDefault: Appraiser;
-  let apprSuspended: Appraiser;
+  function appraiserAtaAddress(wallet: anchor.web3.PublicKey, mint = USDC, tokenProgram = TOKEN_PROGRAM_ID) {
+    return getAssociatedTokenAddressSync(mint, wallet, false, tokenProgram);
+  }
 
-  before(async () => {
-    apprLow = await registerAppraiser(50);
-    apprHigh = await registerAppraiser(500);
-    apprDefault = await registerAppraiser(50);
-    await program.methods
-      .setDefaultAppraiser(true)
-      .accountsPartial({ admin: provider.wallet.publicKey, config: configPda, appraiser: apprDefault.pda })
-      .rpc();
-    apprSuspended = await registerAppraiser(10);
-    await program.methods
-      .setAppraiserActive(false)
-      .accountsPartial({ admin: provider.wallet.publicKey, config: configPda, appraiser: apprSuspended.pda })
-      .rpc();
-  });
+  // Creates the appraiser's ATA in its own transaction, paid by the provider wallet, so most
+  // tests can bind a verdict without caring about the create-ATA convention; the dedicated
+  // payability tests build the combined transaction by hand instead.
+  async function createAppraiserAta(wallet: anchor.web3.PublicKey, mint = USDC, tokenProgram = TOKEN_PROGRAM_ID) {
+    const payer = (provider.wallet as anchor.Wallet).payer;
+    return createAssociatedTokenAccountIdempotent(
+      freshConnection(), payer, mint, wallet, undefined, tokenProgram
+    );
+  }
 
   // `returning` = an earlier Env whose tenant (wallet, token account, record) takes another lease
   async function setup(periodSecs = PERIOD, mint = USDC, returning?: { tenant: anchor.web3.Keypair; tenantAta: anchor.web3.PublicKey }, tokenProgram = TOKEN_PROGRAM_ID) {
@@ -415,43 +404,59 @@ describe("relstate", () => {
           .signers([signer])
           .rpc(),
 
-      // D2 mediation. `candidates` is 1 to 3 Appraiser handles for the signer's side; the
-      // candidates are accounts, not arguments (docs/contracts/dispute-mediation.md §4).
-      proposeAppraisers: (party: anchor.web3.Keypair, candidates: Appraiser[]) =>
+      // D2 mediation, phase 1: `candidates` is 1 to 3 {name, fee} pairs for the signer's side.
+      // The program normalises, hashes and caps the fee; nothing is validated client-side
+      // (docs/contracts/dispute-mediation.md §4).
+      proposeAppraisers: (party: anchor.web3.Keypair, candidates: { name: string; fee: number }[]) =>
         program.methods
-          .proposeAppraisers()
-          .accountsPartial({
-            party: party.publicKey, lease, dispute,
-            appraiserOne: candidates[0].pda,
-            appraiserTwo: candidates[1]?.pda ?? null,
-            appraiserThree: candidates[2]?.pda ?? null,
-          })
+          .proposeAppraisers(candidates.map((c) => ({ name: c.name, fee: new BN(c.fee) })))
+          .accountsPartial({ party: party.publicKey, lease, dispute })
           .signers([party])
           .rpc(),
 
-      pickAppraiser: (party: anchor.web3.Keypair, appr: Appraiser) =>
+      pickAppraiser: (party: anchor.web3.Keypair, name: string) =>
         program.methods
-          .pickAppraiser()
-          .accountsPartial({ party: party.publicKey, lease, dispute, appraiser: appr.pda })
+          .pickAppraiser(name)
+          .accountsPartial({ party: party.publicKey, lease, dispute })
           .signers([party])
           .rpc(),
 
-      bindDefaultAppraiser: (caller: anchor.web3.Keypair, appr: Appraiser = apprDefault) =>
+      // Phase 2: one party proposes the wallet, the other confirms the same one to bind it.
+      proposeAppraiserKey: (party: anchor.web3.Keypair, wallet: anchor.web3.PublicKey) =>
         program.methods
-          .bindDefaultAppraiser()
-          .accountsPartial({ caller: caller.publicKey, lease, dispute, appraiser: appr.pda })
-          .signers([caller])
+          .proposeAppraiserKey(wallet)
+          .accountsPartial({ party: party.publicKey, lease, dispute })
+          .signers([party])
           .rpc(),
 
-      submitVerdict: (deduction: number, appr: Appraiser = apprLow, signer = appr.wallet) =>
+      confirmAppraiserKey: (party: anchor.web3.Keypair, wallet: anchor.web3.PublicKey) =>
+        program.methods
+          .confirmAppraiserKey(wallet)
+          .accountsPartial({ party: party.publicKey, lease, dispute })
+          .signers([party])
+          .rpc(),
+
+      // The bare instruction, for tests that build their own transaction (the ATA/payability
+      // tests, which must put a create-idempotent instruction for the appraiser's ATA first).
+      submitVerdictIx: (deduction: number, appraiserWallet: anchor.web3.PublicKey, appraiserAta: anchor.web3.PublicKey) =>
         program.methods
           .submitVerdict(new BN(deduction))
           .accountsPartial({
-            appraiser: signer.publicKey, appraiserRecord: appr.pda, lease, dispute, mint, vault,
-            tenant: tenant.publicKey, tenantAta, landlordAta, appraiserAta: appr.ata,
+            appraiser: appraiserWallet, lease, dispute, mint, vault,
+            tenant: tenant.publicKey, tenantAta, landlordAta, appraiserAta,
             tenantProfile, landlordProfile, tokenProgram,
           })
-          .signers([signer])
+          .instruction(),
+
+      submitVerdict: (deduction: number, appraiserWallet: anchor.web3.Keypair, appraiserAta: anchor.web3.PublicKey) =>
+        program.methods
+          .submitVerdict(new BN(deduction))
+          .accountsPartial({
+            appraiser: appraiserWallet.publicKey, lease, dispute, mint, vault,
+            tenant: tenant.publicKey, tenantAta, landlordAta, appraiserAta,
+            tenantProfile, landlordProfile, tokenProgram,
+          })
+          .signers([appraiserWallet])
           .rpc(),
 
       expireMediation: (signer = tenant) =>
@@ -1578,22 +1583,55 @@ describe("relstate", () => {
     return env;
   }
 
-  // Runs a verdict and checks the three-way split drains the vault exactly. The appraiser
-  // registry entries are shared across the whole suite, so their ATA balance is checked as a
-  // delta against what it held just before this verdict, not an absolute number.
+  // The same ladder, but on a given mint/token program instead of the default USDC -- used for
+  // the one Token-2022 mediation test, which needs a plain (extension-free) mint because the
+  // ladder pays rent the ordinary way and cannot go through the confidential-transfer path.
+  async function mediatingOnMint(mint: anchor.web3.PublicKey, tokenProgram: anchor.web3.PublicKey, d1 = 500, d2 = 100) {
+    const env = await setup(PERIOD, mint, undefined, tokenProgram);
+    await env.propose();
+    await env.fund();
+    for (let i = 0; i < TERM; i++) {
+      if (i > 0) await timeTravel(PERIOD);
+      await env.pay();
+    }
+    await timeTravel(PERIOD);
+    await env.release(d1);
+    await env.abandon();
+    await env.release(d2);
+    await env.escalate();
+    return env;
+  }
+
+  // Runs a verdict and checks the three-way split drains the vault exactly, against a fresh
+  // appraiser wallet/ATA (no shared fixture, so an absolute balance check is correct here).
   async function expectVerdict(
-    env: Env, appr: Appraiser, deduction: number, toTenant: number, toLandlord: number, fee: number,
+    env: Env, appraiserWallet: anchor.web3.Keypair, appraiserAta: anchor.web3.PublicKey,
+    deduction: number, toTenant: number, toLandlord: number, fee: number,
   ) {
     expect(toTenant + toLandlord + fee).to.equal(DEPOSIT, "the three shares must add up to the deposit");
-    const apprBefore = await balance(appr.ata);
-    await env.submitVerdict(deduction, appr);
+    await env.submitVerdict(deduction, appraiserWallet, appraiserAta);
     expect(await balance(env.vault)).to.equal(0);
     expect(await balance(env.tenantAta)).to.equal(START_BALANCE - 3 * RENT - DEPOSIT + toTenant);
     expect(await balance(env.landlordAta)).to.equal(3 * RENT + toLandlord);
-    expect(await balance(appr.ata)).to.equal(apprBefore + fee);
+    expect(await balance(appraiserAta)).to.equal(fee);
   }
 
   const SYSTEM_PROGRAM = anchor.web3.SystemProgram.programId; // Pubkey::default(): both are 32 zero bytes
+
+  // Phase 1 + phase 2, both sides proposing the same {name, fee}, binding `wallet`. The default
+  // proposer/confirmer split (landlord proposes, tenant confirms) is varied by the tests that
+  // care about who does which half.
+  async function bind(
+    env: Env, wallet: anchor.web3.PublicKey, name = "Acme Wycena", fee = 50,
+    proposer: anchor.web3.Keypair = env.landlord, confirmer: anchor.web3.Keypair = env.tenant,
+  ) {
+    await env.proposeAppraisers(env.landlord, [{ name, fee }]);
+    await env.proposeAppraisers(env.tenant, [{ name, fee }]);
+    await env.pickAppraiser(env.landlord, name);
+    await env.pickAppraiser(env.tenant, name); // agrees the name and the fee
+    await env.proposeAppraiserKey(proposer, wallet);
+    await env.confirmAppraiserKey(confirmer, wallet);
+  }
 
   it("escalate_to_mediation opens the Dispute with both deadlines set up front", async () => {
     const env = await disputed(800);
@@ -1608,31 +1646,129 @@ describe("relstate", () => {
 
     const dispute = await program.account.dispute.fetch(env.dispute);
     expect(dispute.selectionDeadline.toNumber()).to.be.closeTo(before + SELECTION_WINDOW, 3);
-    expect(dispute.verdictDeadline.toNumber()).to.equal(
-      dispute.selectionDeadline.toNumber() + VERDICT_WINDOW
-    );
+    expect(dispute.verdictDeadline.toNumber()).to.equal(0); // unset until a binding
     expect(dispute.appraiser.toBase58()).to.equal(SYSTEM_PROGRAM.toBase58());
+    expect(dispute.landlordCount).to.equal(0);
+    expect(dispute.tenantCount).to.equal(0);
   });
 
-  // ---- D2 invariant 2: no stuck state in Mediation (docs §2's table) ----
+  // ---- D2 invariant 2: no stuck state in Mediation (docs §2's table, §11 item 6) ----
+  //
+  // There is no fallback appraiser any more: the only unbound exit is expire_mediation at
+  // selection_deadline, which is the STALL OUTCOME this revision accepts and discloses (docs
+  // §10). Each sub-state below gets its own exit test, and settle_dispute is proven in every one.
 
-  it("no stuck state: a stranger can bind the registry's default appraiser after the selection window", async () => {
+  it("the stall outcome: nothing proposed, expiry returns the lease to Active and claim_deposit pays the tenant the whole deposit", async () => {
     const env = await mediating();
     await timeTravel(SELECTION_WINDOW + 5);
-    const stranger = Keypair.generate();
-    await airdrop(stranger);
-    await env.bindDefaultAppraiser(stranger);
-    const dispute = await program.account.dispute.fetch(env.dispute);
-    expect(dispute.appraiser.toBase58()).to.equal(apprDefault.wallet.publicKey.toBase58());
+    await env.expireMediation(env.tenant);
+
+    const lease = await program.account.lease.fetch(env.lease);
+    expect(lease.status).to.have.property("active");
+    expect(lease.proposedDeduction.toNumber()).to.equal(0);
+    expect(await program.account.dispute.fetchNullable(env.dispute)).to.be.null;
+
+    // the claim deadline is pushed out by exactly the dispute + mediation stretches, so this is
+    // the earliest instant claim_deposit is actually open -- not a window picked to be generous
+    await timeTravel(lease.claimPauseSecs.toNumber() + CLAIM_WINDOW);
+    await env.claim();
+    await expectConserved(env, DEPOSIT, 0);
   });
 
-  it("no stuck state: expire_mediation works even if no appraiser was ever bound", async () => {
+  it("the stall outcome holds even if the landlord proposed and picked: a tenant who never picks still lets it expire", async () => {
     const env = await mediating();
-    await timeTravel(SELECTION_WINDOW + VERDICT_WINDOW + 5);
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 50 }]);
+    await env.pickAppraiser(env.landlord, "Acme Wycena");
+    // the tenant never proposes or picks anything
+    await timeTravel(SELECTION_WINDOW + 5);
+    await env.expireMediation(env.landlord);
+    const lease = await program.account.lease.fetch(env.lease);
+    expect(lease.status).to.have.property("active");
+    expect(await program.account.dispute.fetchNullable(env.dispute)).to.be.null;
+  });
+
+  it("the stall outcome holds even if the tenant proposed and picked: a landlord who never picks still lets it expire", async () => {
+    const env = await mediating();
+    await env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 50 }]);
+    await env.pickAppraiser(env.tenant, "Acme Wycena");
+    // the landlord never proposes or picks anything
+    await timeTravel(SELECTION_WINDOW + 5);
     await env.expireMediation(env.tenant);
     const lease = await program.account.lease.fetch(env.lease);
     expect(lease.status).to.have.property("active");
     expect(await program.account.dispute.fetchNullable(env.dispute)).to.be.null;
+  });
+
+  it("no stuck state, name agreed but no key proposed: expire_mediation and settle_dispute both still work", async () => {
+    const agreed = await mediating();
+    await agreed.proposeAppraisers(agreed.landlord, [{ name: "Acme Wycena", fee: 50 }]);
+    await agreed.proposeAppraisers(agreed.tenant, [{ name: "Acme Wycena", fee: 50 }]);
+    await agreed.pickAppraiser(agreed.landlord, "Acme Wycena");
+    await agreed.pickAppraiser(agreed.tenant, "Acme Wycena"); // name agreed, nothing proposed in phase 2
+    const dispute = await program.account.dispute.fetch(agreed.dispute);
+    expect(dispute.agreedNameHash).to.not.deep.equal(Array(32).fill(0));
+
+    await timeTravel(SELECTION_WINDOW + 5);
+    await agreed.expireMediation(agreed.tenant);
+    expect((await program.account.lease.fetch(agreed.lease)).status).to.have.property("active");
+
+    const settled = await mediating();
+    await settled.proposeAppraisers(settled.landlord, [{ name: "Acme Wycena", fee: 50 }]);
+    await settled.proposeAppraisers(settled.tenant, [{ name: "Acme Wycena", fee: 50 }]);
+    await settled.pickAppraiser(settled.landlord, "Acme Wycena");
+    await settled.pickAppraiser(settled.tenant, "Acme Wycena");
+    await settled.settle(300, [settled.tenant, settled.landlord], settled.dispute);
+    await expectConserved(settled, DEPOSIT - 300, 300);
+    expect(await program.account.dispute.fetchNullable(settled.dispute)).to.be.null;
+  });
+
+  it("no stuck state, a key is proposed but never confirmed: expire_mediation and settle_dispute both still work", async () => {
+    const env = await mediating();
+    const wallet = await freshAppraiserWallet();
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 50 }]);
+    await env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 50 }]);
+    await env.pickAppraiser(env.landlord, "Acme Wycena");
+    await env.pickAppraiser(env.tenant, "Acme Wycena");
+    await env.proposeAppraiserKey(env.landlord, wallet.publicKey); // never confirmed
+
+    const dispute = await program.account.dispute.fetch(env.dispute);
+    expect(dispute.proposedKey.toBase58()).to.equal(wallet.publicKey.toBase58());
+    expect(dispute.appraiser.toBase58()).to.equal(SYSTEM_PROGRAM.toBase58());
+
+    await timeTravel(SELECTION_WINDOW + 5);
+    await env.expireMediation(env.tenant);
+    expect((await program.account.lease.fetch(env.lease)).status).to.have.property("active");
+
+    const settled = await mediating();
+    await settled.proposeAppraisers(settled.landlord, [{ name: "Acme Wycena", fee: 50 }]);
+    await settled.proposeAppraisers(settled.tenant, [{ name: "Acme Wycena", fee: 50 }]);
+    await settled.pickAppraiser(settled.landlord, "Acme Wycena");
+    await settled.pickAppraiser(settled.tenant, "Acme Wycena");
+    await settled.proposeAppraiserKey(settled.landlord, wallet.publicKey);
+    await settled.settle(300, [settled.tenant, settled.landlord], settled.dispute);
+    await expectConserved(settled, DEPOSIT - 300, 300);
+    expect(await program.account.dispute.fetchNullable(settled.dispute)).to.be.null;
+  });
+
+  it("no stuck state, bound with a silent appraiser: expire_mediation waits for verdict_deadline, and settle_dispute still works", async () => {
+    const env = await mediating();
+    const wallet = await freshAppraiserWallet();
+    await bind(env, wallet.publicKey);
+    const dispute = await program.account.dispute.fetch(env.dispute);
+    expect(dispute.appraiser.toBase58()).to.equal(wallet.publicKey.toBase58());
+
+    await expectFail(env.expireMediation(), "VerdictWindowOpen");
+    await timeTravel(VERDICT_WINDOW + 5);
+    await env.expireMediation();
+    expect((await program.account.lease.fetch(env.lease)).status).to.have.property("active");
+    expect(await program.account.dispute.fetchNullable(env.dispute)).to.be.null;
+
+    const settled = await mediating();
+    const settledWallet = await freshAppraiserWallet();
+    await bind(settled, settledWallet.publicKey);
+    await settled.settle(300, [settled.tenant, settled.landlord], settled.dispute);
+    await expectConserved(settled, DEPOSIT - 300, 300);
+    expect(await program.account.dispute.fetchNullable(settled.dispute)).to.be.null;
   });
 
   it("no stuck state: settle_dispute closes a Mediation at any point", async () => {
@@ -1701,7 +1837,7 @@ describe("relstate", () => {
 
   it("after expire_mediation the round cap still blocks a deduction, but a full release still works", async () => {
     const env = await mediating();
-    await timeTravel(SELECTION_WINDOW + VERDICT_WINDOW + 5);
+    await timeTravel(SELECTION_WINDOW + 5);
     await env.expireMediation();
     await expectFail(env.release(100), "DisputeRoundsExhausted");
     await env.release(0);
@@ -1717,177 +1853,310 @@ describe("relstate", () => {
     expect((await program.account.lease.fetch(env.lease)).disputeRounds).to.equal(1);
     await env.escalate();
     expect((await program.account.lease.fetch(env.lease)).disputeRounds).to.equal(2);
-    await timeTravel(SELECTION_WINDOW + VERDICT_WINDOW + 5);
+    await timeTravel(SELECTION_WINDOW + 5);
     await env.expireMediation();
     expect((await program.account.lease.fetch(env.lease)).disputeRounds).to.equal(2);
   });
 
-  // ---- candidates and picking ----
+  // ---- D2 invariant 4: candidate limits (docs §4, §11 item 4) ----
 
-  it("one side nominates one to three registered, active candidates", async () => {
+  it("one side nominates one to three candidates by name and fee", async () => {
     const env = await mediating();
-    await env.proposeAppraisers(env.landlord, [apprLow, apprHigh]);
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 10 }, { name: "Beta Rzeczoznawcy", fee: 20 }]);
     const dispute = await program.account.dispute.fetch(env.dispute);
     expect(dispute.landlordCount).to.equal(2);
-    expect(dispute.landlordCandidates.slice(0, 2).map((k: anchor.web3.PublicKey) => k.toBase58()))
-      .to.deep.equal([apprLow.wallet.publicKey.toBase58(), apprHigh.wallet.publicKey.toBase58()]);
   });
 
-  it("a side cannot propose twice", async () => {
+  it("zero candidates and four candidates both fail with NoCandidates", async () => {
     const env = await mediating();
-    await env.proposeAppraisers(env.landlord, [apprLow]);
-    await expectFail(env.proposeAppraisers(env.landlord, [apprHigh]), "CandidatesAlreadyProposed");
+    await expectFail(env.proposeAppraisers(env.landlord, []), "NoCandidates");
+    await expectFail(
+      env.proposeAppraisers(env.landlord, [
+        { name: "A", fee: 1 }, { name: "B", fee: 1 }, { name: "C", fee: 1 }, { name: "D", fee: 1 },
+      ]),
+      "NoCandidates"
+    );
   });
 
-  it("the same appraiser twice in one side's list is refused", async () => {
+  it("three candidates in one proposal is the limit, and it succeeds", async () => {
     const env = await mediating();
-    await expectFail(env.proposeAppraisers(env.landlord, [apprLow, apprLow]), "DuplicateCandidate");
+    await env.proposeAppraisers(env.landlord, [{ name: "A", fee: 1 }, { name: "B", fee: 1 }, { name: "C", fee: 1 }]);
+    expect((await program.account.dispute.fetch(env.dispute)).landlordCount).to.equal(3);
   });
 
-  it("an unregistered key cannot be a candidate", async () => {
+  it("duplicate candidates within a side are refused, including differences in case and whitespace", async () => {
     const env = await mediating();
-    const ghostWallet = Keypair.generate();
-    const ghost: Appraiser = { wallet: ghostWallet, pda: appraiserPda(ghostWallet.publicKey), ata: apprLow.ata };
-    await expectFail(env.proposeAppraisers(env.landlord, [ghost]), "AccountNotInitialized");
+    await expectFail(
+      env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 10 }, { name: "acme   wycena", fee: 20 }]),
+      "DuplicateCandidate"
+    );
   });
 
-  it("a suspended appraiser is refused as a candidate, and re-checked at pick time", async () => {
+  it("a second proposal from the same side is refused", async () => {
     const env = await mediating();
-    await expectFail(env.proposeAppraisers(env.landlord, [apprSuspended]), "AppraiserInactive");
-
-    // nominated while still active, then suspended: the pick-time re-check (not just the one at
-    // nomination) is what catches an appraiser suspended after the nomination but before anyone
-    // picked them, so they do not slip through to the verdict instead.
-    const toSuspend = await registerAppraiser(10);
-    await env.proposeAppraisers(env.tenant, [toSuspend]);
-    await program.methods
-      .setAppraiserActive(false)
-      .accountsPartial({ admin: provider.wallet.publicKey, config: configPda, appraiser: toSuspend.pda })
-      .rpc();
-    await expectFail(env.pickAppraiser(env.landlord, toSuspend), "AppraiserInactive");
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 10 }]);
+    await expectFail(env.proposeAppraisers(env.landlord, [{ name: "Beta Rzeczoznawcy", fee: 10 }]), "CandidatesAlreadyProposed");
   });
 
-  it("a party to the lease cannot be nominated, picked or bound as the appraiser", async () => {
+  it("a candidate fee above the per-lease cap is refused at proposal", async () => {
     const env = await mediating();
-    const landlordAsAppraiser = await registerAsAppraiser(env.landlord, 10);
-    await program.methods
-      .setDefaultAppraiser(true)
-      .accountsPartial({ admin: provider.wallet.publicKey, config: configPda, appraiser: landlordAsAppraiser.pda })
-      .rpc();
-
-    await expectFail(env.proposeAppraisers(env.tenant, [landlordAsAppraiser]), "NotMediationParty");
-
-    await env.proposeAppraisers(env.tenant, [apprLow]);
-    await expectFail(env.pickAppraiser(env.landlord, landlordAsAppraiser), "NotMediationParty");
-
-    await timeTravel(SELECTION_WINDOW + 5);
-    await expectFail(env.bindDefaultAppraiser(env.tenant, landlordAsAppraiser), "NotMediationParty");
+    const cap = Math.floor(DEPOSIT / 10); // APPRAISER_FEE_CAP_DIVISOR
+    await expectFail(env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: cap + 1 }]), "FeeAboveCap");
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: cap }]); // exactly at the cap is fine
   });
 
-  it("picking the other side's candidate is how the two converge, and it binds", async () => {
+  it("invalid names are refused: empty, whitespace-only, 65 bytes, a NUL and a control character", async () => {
     const env = await mediating();
-    await env.proposeAppraisers(env.landlord, [apprLow]);
-    await env.proposeAppraisers(env.tenant, [apprHigh]);
-    await env.pickAppraiser(env.landlord, apprLow); // its own candidate first
-    await env.pickAppraiser(env.tenant, apprLow); // picks the landlord's: converges and binds
+    await expectFail(env.proposeAppraisers(env.landlord, [{ name: "", fee: 1 }]), "InvalidAppraiserName");
+    await expectFail(env.proposeAppraisers(env.landlord, [{ name: "   ", fee: 1 }]), "InvalidAppraiserName");
+    await expectFail(env.proposeAppraisers(env.landlord, [{ name: "x".repeat(65), fee: 1 }]), "InvalidAppraiserName");
+    await expectFail(env.proposeAppraisers(env.landlord, [{ name: "Acme\u0000Wycena", fee: 1 }]), "InvalidAppraiserName");
+    await expectFail(env.proposeAppraisers(env.landlord, [{ name: "Acme\u0001Wycena", fee: 1 }]), "InvalidAppraiserName");
+  });
+
+  it("the 64-byte name limit is counted in bytes, not characters: multibyte names near the edge", async () => {
+    const env = await mediating();
+    // "é" is 2 bytes in UTF-8: 32 of them is exactly 64 bytes (MAX_NAME_LEN) and must pass; 33 is
+    // 66 bytes and must fail. A naive character-count check would accept both.
+    await env.proposeAppraisers(env.landlord, [{ name: "é".repeat(32), fee: 1 }]);
+    const other = await mediating();
+    await expectFail(other.proposeAppraisers(other.landlord, [{ name: "é".repeat(33), fee: 1 }]), "InvalidAppraiserName");
+  });
+
+  // Invalid UTF-8 (InvalidAppraiserName's other listed cause) is not reachable through this
+  // client: `propose_appraisers`' argument is a JS `string`, and Borsh encodes a JS string as
+  // UTF-8 via TextEncoder, which cannot produce an invalid byte sequence -- there is no client
+  // call that hands the program anything but well-formed UTF-8. Pinning that branch needs a
+  // raw, hand-built instruction buffer, which is exactly the "not reachable through the client"
+  // case the task calls out; left untested here for that reason.
+
+  it("canonicalisation agrees names that differ only by case and whitespace", async () => {
+    const env = await mediating();
+    await env.proposeAppraisers(env.landlord, [{ name: " Acme   Wycena ", fee: 10 }]);
+    await env.proposeAppraisers(env.tenant, [{ name: "acme wycena", fee: 10 }]);
+    await env.pickAppraiser(env.landlord, "acme wycena");
+    await env.pickAppraiser(env.tenant, " Acme   Wycena "); // converges despite the differing spelling
+    const dispute = await program.account.dispute.fetch(env.dispute);
+    expect(dispute.agreedNameHash).to.not.deep.equal(Array(32).fill(0));
+    expect(dispute.agreedFee.toNumber()).to.equal(10);
+  });
+
+  it("picking from the other side's list is how the two converge, and the lower of the two fees wins", async () => {
+    const env = await mediating();
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 80 }]);
+    await env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 30 }]); // same company, cheaper
+    await env.pickAppraiser(env.landlord, "Acme Wycena"); // its own candidate first
+    await env.pickAppraiser(env.tenant, "Acme Wycena"); // converges
 
     const dispute = await program.account.dispute.fetch(env.dispute);
-    expect(dispute.appraiser.toBase58()).to.equal(apprLow.wallet.publicKey.toBase58());
-    expect(dispute.verdictDeadline.toNumber()).to.be.greaterThan(0);
+    expect(dispute.agreedFee.toNumber()).to.equal(30); // the lower fee, not the landlord's own
   });
 
-  it("a side may change its pick as long as nothing is bound", async () => {
+  it("a side may change its pick as long as the company is not agreed", async () => {
     const env = await mediating();
-    await env.proposeAppraisers(env.landlord, [apprLow, apprHigh]);
-    await env.pickAppraiser(env.landlord, apprLow);
-    await env.pickAppraiser(env.landlord, apprHigh); // changes its mind
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 10 }, { name: "Beta Rzeczoznawcy", fee: 10 }]);
+    await env.pickAppraiser(env.landlord, "Acme Wycena");
+    await env.pickAppraiser(env.landlord, "Beta Rzeczoznawcy"); // changes its mind
     const dispute = await program.account.dispute.fetch(env.dispute);
-    expect(dispute.landlordPick.toBase58()).to.equal(apprHigh.wallet.publicKey.toBase58());
-    expect(dispute.appraiser.toBase58()).to.equal(SYSTEM_PROGRAM.toBase58());
+    expect(dispute.agreedNameHash).to.deep.equal(Array(32).fill(0)); // still not agreed, nothing bound
   });
 
-  it("picking an appraiser neither side proposed is refused", async () => {
+  it("picking a company neither side proposed is refused", async () => {
     const env = await mediating();
-    await expectFail(env.pickAppraiser(env.landlord, apprLow), "CandidateNotProposed");
+    await expectFail(env.pickAppraiser(env.landlord, "Nobody Proposed This"), "CandidateNotProposed");
   });
 
-  it("bind_default_appraiser refuses before the selection window ends", async () => {
+  it("proposing or picking after the name is agreed is refused", async () => {
     const env = await mediating();
-    await expectFail(env.bindDefaultAppraiser(env.tenant), "SelectionWindowOpen");
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.pickAppraiser(env.landlord, "Acme Wycena");
+    await env.pickAppraiser(env.tenant, "Acme Wycena"); // agrees
+
+    await expectFail(env.pickAppraiser(env.landlord, "Acme Wycena"), "NameAlreadyAgreed");
+    await expectFail(env.proposeAppraisers(env.landlord, [{ name: "Gamma", fee: 1 }]), "NameAlreadyAgreed");
   });
 
-  it("bind_default_appraiser refuses an entry that is not flagged default", async () => {
+  // ---- Phase 2 and authority (docs §4 phase 2, §11 items 3 and 5) ----
+
+  it("propose_appraiser_key before the name is agreed is refused", async () => {
     const env = await mediating();
-    await timeTravel(SELECTION_WINDOW + 5);
-    await expectFail(env.bindDefaultAppraiser(env.tenant, apprLow), "AppraiserNotDefault");
+    const wallet = await freshAppraiserWallet();
+    await expectFail(env.proposeAppraiserKey(env.landlord, wallet.publicKey), "NameNotAgreed");
   });
 
-  it("proposing, picking or binding after an appraiser is bound is refused", async () => {
+  it("an all-zero wallet is refused at propose_appraiser_key", async () => {
     const env = await mediating();
-    await env.proposeAppraisers(env.landlord, [apprLow]);
-    await env.proposeAppraisers(env.tenant, [apprLow]);
-    await env.pickAppraiser(env.landlord, apprLow);
-    await env.pickAppraiser(env.tenant, apprLow); // binds
-
-    await expectFail(env.proposeAppraisers(env.landlord, [apprHigh]), "AppraiserAlreadyBound");
-    await expectFail(env.pickAppraiser(env.landlord, apprHigh), "AppraiserAlreadyBound");
-    await expectFail(env.bindDefaultAppraiser(env.tenant), "AppraiserAlreadyBound");
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.pickAppraiser(env.landlord, "Acme Wycena");
+    await env.pickAppraiser(env.tenant, "Acme Wycena");
+    await expectFail(env.proposeAppraiserKey(env.landlord, SYSTEM_PROGRAM), "InvalidAppraiserKey");
   });
 
-  it("binding re-bases the verdict deadline on the binding, shortening the absolute expiry", async () => {
+  it("a party's own wallet is refused as the appraiser at propose_appraiser_key", async () => {
     const env = await mediating();
-    const opened = await program.account.dispute.fetch(env.dispute);
-    const provisionalDeadline = opened.verdictDeadline.toNumber();
-
-    await timeTravel(5); // agree well inside the selection window
-    await env.proposeAppraisers(env.landlord, [apprLow]);
-    await env.proposeAppraisers(env.tenant, [apprLow]);
-    await env.pickAppraiser(env.landlord, apprLow);
-    await env.pickAppraiser(env.tenant, apprLow);
-
-    const bound = await program.account.dispute.fetch(env.dispute);
-    expect(bound.verdictDeadline.toNumber()).to.be.lessThan(provisionalDeadline);
-    expect(bound.verdictDeadline.toNumber()).to.be.closeTo((await chainNow()) + VERDICT_WINDOW, 3);
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.pickAppraiser(env.landlord, "Acme Wycena");
+    await env.pickAppraiser(env.tenant, "Acme Wycena");
+    await expectFail(env.proposeAppraiserKey(env.landlord, env.tenant.publicKey), "NotMediationParty");
+    await expectFail(env.proposeAppraiserKey(env.tenant, env.landlord.publicKey), "NotMediationParty");
+    // confirm_appraiser_key re-checks the same thing (docs §4), but nothing can ever get that far:
+    // propose_appraiser_key already refuses a party wallet, so no proposal naming one ever exists
+    // for confirm to see. Proven at propose, which is the only place it is reachable.
   });
 
-  // ---- S3 F2: binding has an upper bound too (docs §2, "Binding has an upper bound too") ----
-  //
-  // Before this fix, a late pick or a late bind_default_appraiser re-based verdict_deadline to
-  // now + VERDICT_WINDOW_SECS, which took away an exit (expire_mediation) the tenant was already
-  // entitled to. pick_appraiser and bind_default_appraiser now refuse at or after
-  // verdict_deadline (BindingWindowClosed), the exact complement of expire_mediation's own
-  // `now >= verdict_deadline` -- no gap, no overlap.
-
-  it("pick_appraiser refuses once the verdict deadline has passed; expire_mediation still works", async () => {
+  it("the proposer cannot confirm their own proposal", async () => {
     const env = await mediating();
-    await env.proposeAppraisers(env.landlord, [apprLow]);
-    await timeTravel(SELECTION_WINDOW + VERDICT_WINDOW + 5);
-    await expectFail(env.pickAppraiser(env.tenant, apprLow), "BindingWindowClosed");
+    const wallet = await freshAppraiserWallet();
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.pickAppraiser(env.landlord, "Acme Wycena");
+    await env.pickAppraiser(env.tenant, "Acme Wycena");
+    await env.proposeAppraiserKey(env.landlord, wallet.publicKey);
+    await expectFail(env.confirmAppraiserKey(env.landlord, wallet.publicKey), "CannotConfirmOwnProposal");
+  });
+
+  it("confirming a different wallet than the one proposed fails with KeyMismatch", async () => {
+    const env = await mediating();
+    const proposed = await freshAppraiserWallet();
+    const other = await freshAppraiserWallet();
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.pickAppraiser(env.landlord, "Acme Wycena");
+    await env.pickAppraiser(env.tenant, "Acme Wycena");
+    await env.proposeAppraiserKey(env.landlord, proposed.publicKey);
+    await expectFail(env.confirmAppraiserKey(env.tenant, other.publicKey), "KeyMismatch");
+  });
+
+  it("confirming with nothing proposed fails with NoKeyProposed", async () => {
+    const env = await mediating();
+    const wallet = await freshAppraiserWallet();
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.pickAppraiser(env.landlord, "Acme Wycena");
+    await env.pickAppraiser(env.tenant, "Acme Wycena");
+    await expectFail(env.confirmAppraiserKey(env.tenant, wallet.publicKey), "NoKeyProposed");
+  });
+
+  it("a third party cannot propose candidates, pick, propose a key or confirm one", async () => {
+    const env = await mediating();
+    const stranger = await freshAppraiserWallet();
+    await expectFail(env.proposeAppraisers(stranger, [{ name: "Acme Wycena", fee: 10 }]), "NotMediationParty");
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 10 }]);
+    await expectFail(env.pickAppraiser(stranger, "Acme Wycena"), "NotMediationParty");
+    await env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.pickAppraiser(env.landlord, "Acme Wycena");
+    await env.pickAppraiser(env.tenant, "Acme Wycena");
+    const wallet = await freshAppraiserWallet();
+    await expectFail(env.proposeAppraiserKey(stranger, wallet.publicKey), "NotMediationParty");
+    await env.proposeAppraiserKey(env.landlord, wallet.publicKey);
+    await expectFail(env.confirmAppraiserKey(stranger, wallet.publicKey), "NotMediationParty");
+  });
+
+  // ---- key phase limits (docs §4 phase 2's "grief bounds", §11 item 5) ----
+
+  it("at most MAX_KEY_PROPOSALS proposals: the fifth is refused", async () => {
+    const env = await mediating();
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.pickAppraiser(env.landlord, "Acme Wycena");
+    await env.pickAppraiser(env.tenant, "Acme Wycena");
+
+    for (let i = 0; i < MAX_KEY_PROPOSALS; i++) {
+      const wallet = await freshAppraiserWallet(false);
+      const proposer = i % 2 === 0 ? env.landlord : env.tenant;
+      await env.proposeAppraiserKey(proposer, wallet.publicKey);
+    }
+    const oneTooMany = await freshAppraiserWallet(false);
+    await expectFail(env.proposeAppraiserKey(env.landlord, oneTooMany.publicKey), "KeyProposalsExhausted");
+  });
+
+  it("re-proposing replaces the earlier key, and confirming the stale one fails with KeyMismatch", async () => {
+    const env = await mediating();
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.pickAppraiser(env.landlord, "Acme Wycena");
+    await env.pickAppraiser(env.tenant, "Acme Wycena");
+
+    const first = await freshAppraiserWallet(false);
+    const second = await freshAppraiserWallet(false);
+    await env.proposeAppraiserKey(env.landlord, first.publicKey);
+    await env.proposeAppraiserKey(env.landlord, second.publicKey); // re-proposes, replacing the key
+
+    await expectFail(env.confirmAppraiserKey(env.tenant, first.publicKey), "KeyMismatch");
+    await env.confirmAppraiserKey(env.tenant, second.publicKey); // the last proposal is confirmable
+    expect((await program.account.dispute.fetch(env.dispute)).appraiser.toBase58())
+      .to.equal(second.publicKey.toBase58());
+  });
+
+  it("proposing, picking or confirming after an appraiser is bound is refused", async () => {
+    const env = await mediating();
+    const wallet = await freshAppraiserWallet();
+    await bind(env, wallet.publicKey);
+
+    const another = await freshAppraiserWallet(false);
+    await expectFail(env.proposeAppraisers(env.landlord, [{ name: "Beta", fee: 1 }]), "AppraiserAlreadyBound");
+    await expectFail(env.pickAppraiser(env.landlord, "Acme Wycena"), "AppraiserAlreadyBound");
+    await expectFail(env.proposeAppraiserKey(env.landlord, another.publicKey), "AppraiserAlreadyBound");
+    await expectFail(env.confirmAppraiserKey(env.tenant, another.publicKey), "AppraiserAlreadyBound");
+  });
+
+  // ---- the late-bind complement (docs §2's table, §11 item 7) ----
+
+  it("at or after the selection deadline every selection call fails with SelectionWindowClosed, and expire_mediation succeeds", async () => {
+    const env = await mediating();
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 10 }]);
+    await timeTravel(SELECTION_WINDOW + 2);
+
+    const wallet = await freshAppraiserWallet(false);
+    await expectFail(env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 10 }]), "SelectionWindowClosed");
+    await expectFail(env.pickAppraiser(env.tenant, "Acme Wycena"), "SelectionWindowClosed");
+    await expectFail(env.proposeAppraiserKey(env.landlord, wallet.publicKey), "SelectionWindowClosed");
+    await expectFail(env.confirmAppraiserKey(env.tenant, wallet.publicKey), "SelectionWindowClosed");
+
     await env.expireMediation();
-    const lease = await program.account.lease.fetch(env.lease);
-    expect(lease.status).to.have.property("active");
+    expect((await program.account.lease.fetch(env.lease)).status).to.have.property("active");
   });
 
-  it("bind_default_appraiser refuses once the verdict deadline has passed, even for a stranger", async () => {
+  it("just before the selection deadline expire_mediation still fails with SelectionWindowOpen", async () => {
     const env = await mediating();
-    await timeTravel(SELECTION_WINDOW + VERDICT_WINDOW + 5);
-    const stranger = Keypair.generate();
-    await airdrop(stranger);
-    await expectFail(env.bindDefaultAppraiser(stranger), "BindingWindowClosed");
-    await env.expireMediation();
+    await expectFail(env.expireMediation(), "SelectionWindowOpen");
   });
 
-  it("a lapsed mediation cannot be re-armed by a late pick -- the regression the review caught", async () => {
+  it("bound just before the selection deadline: the verdict deadline is bound time + the verdict window", async () => {
+    const env = await mediating();
+    // bind near the edge of the selection window -- leaves enough margin for the several
+    // transactions `bind()` sends below, but still close enough that a bug re-basing the
+    // deadline on the *selection* window instead of the binding time would be visible.
+    await timeTravel(SELECTION_WINDOW - 15);
+    const wallet = await freshAppraiserWallet();
+    const before = await chainNow();
+    await bind(env, wallet.publicKey);
+
+    const dispute = await program.account.dispute.fetch(env.dispute);
+    expect(dispute.verdictDeadline.toNumber()).to.be.closeTo(before + VERDICT_WINDOW, 3);
+
+    await expectFail(env.expireMediation(), "VerdictWindowOpen"); // open until verdict_deadline
+    const ata = appraiserAtaAddress(wallet.publicKey);
+    await createAppraiserAta(wallet.publicKey);
+    await timeTravel(VERDICT_WINDOW + 5); // past verdict_deadline
+    await expectFail(env.submitVerdict(100, wallet, ata), "VerdictWindowClosed");
+    await env.expireMediation();
+    expect((await program.account.lease.fetch(env.lease)).status).to.have.property("active");
+  });
+
+  it("nothing can re-arm a lapsed mediation: a pick or a key proposal held past the selection deadline cannot bind", async () => {
     const env = await mediating();
     // the tenant proposes and picks well inside the window; the landlord never answers
-    await env.proposeAppraisers(env.tenant, [apprLow]);
-    await env.pickAppraiser(env.tenant, apprLow);
+    await env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.pickAppraiser(env.tenant, "Acme Wycena");
 
-    await timeTravel(SELECTION_WINDOW + VERDICT_WINDOW + 5);
-    // without the fix, this would match the tenant's pick, bind apprLow and re-base
-    // verdict_deadline to now + VERDICT_WINDOW_SECS -- holding a good-faith pick in reserve to
-    // re-arm a lapsed mediation at a moment of the landlord's choosing
-    await expectFail(env.pickAppraiser(env.landlord, apprLow), "BindingWindowClosed");
+    await timeTravel(SELECTION_WINDOW + 5);
+    // without the exact-complement guard, a late landlord pick could still converge and bind,
+    // holding a good-faith pick in reserve to re-arm a lapsed mediation at a moment of choosing
+    await expectFail(env.pickAppraiser(env.landlord, "Acme Wycena"), "SelectionWindowClosed");
 
     await env.expireMediation();
     const lease = await program.account.lease.fetch(env.lease);
@@ -1895,118 +2164,148 @@ describe("relstate", () => {
     expect(await program.account.dispute.fetchNullable(env.dispute)).to.be.null;
   });
 
-  // ---- the verdict ----
+  // ---- the verdict: authority (docs §11 item 3) ----
 
-  async function bind(env: Env, appr: Appraiser) {
-    await env.proposeAppraisers(env.landlord, [appr]);
-    await env.proposeAppraisers(env.tenant, [appr]);
-    await env.pickAppraiser(env.landlord, appr);
-    await env.pickAppraiser(env.tenant, appr);
-  }
-
-  it("only the bound appraiser can submit, even another registered and active one", async () => {
+  it("only the bound wallet can submit, even one both parties already proposed", async () => {
     const env = await mediating();
-    await bind(env, apprLow);
-    await expectFail(env.submitVerdict(100, apprHigh), "NotBoundAppraiser");
+    const bound = await freshAppraiserWallet();
+    const alsoProposed = await freshAppraiserWallet();
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.pickAppraiser(env.landlord, "Acme Wycena");
+    await env.pickAppraiser(env.tenant, "Acme Wycena");
+    await env.proposeAppraiserKey(env.landlord, alsoProposed.publicKey);
+    await env.proposeAppraiserKey(env.landlord, bound.publicKey); // replaces it
+    await env.confirmAppraiserKey(env.tenant, bound.publicKey);
+
+    const ata = appraiserAtaAddress(alsoProposed.publicKey);
+    await createAppraiserAta(alsoProposed.publicKey);
+    await expectFail(env.submitVerdict(100, alsoProposed, ata), "NotBoundAppraiser");
   });
 
-  it("submit_verdict refuses an unbound dispute", async () => {
+  it("submit_verdict refuses an unbound dispute with AppraiserNotBound", async () => {
     const env = await mediating();
-    await expectFail(env.submitVerdict(100, apprLow), "AppraiserNotBound");
+    const wallet = await freshAppraiserWallet();
+    const ata = appraiserAtaAddress(wallet.publicKey);
+    await createAppraiserAta(wallet.publicKey);
+    await expectFail(env.submitVerdict(100, wallet, ata), "AppraiserNotBound");
   });
 
-  // S3 F4: submit_verdict always takes appraiser_ata, even when the fee paid turns out to be
-  // zero, so a bound appraiser with no token account for the lease's mint cannot submit at all.
-  // The failure looks exactly like a silent appraiser (the same shape as expire_mediation's
-  // timeout), not a setup bug -- which is why the appraiser setup script has to create one ATA
-  // per appraiser per mint, and why this is worth its own test rather than an assumption.
-  it("a bound appraiser with no ATA for the lease's mint cannot submit a verdict", async () => {
+  it("a wallet that was only proposed, never confirmed, cannot submit a verdict", async () => {
     const env = await mediating();
-    const wallet = Keypair.generate();
-    await airdrop(wallet);
-    const noAta = await registerAsAppraiser(wallet, 10);
-    await bind(env, noAta); // bound through the normal pick-agreement path, same as any appraiser
-    // the ATA this appraiser *would* use, derived but never created
-    const missingAta = getAssociatedTokenAddressSync(USDC, wallet.publicKey);
-    await expectFail(env.submitVerdict(100, { ...noAta, ata: missingAta }), "AccountNotInitialized");
+    const wallet = await freshAppraiserWallet();
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 10 }]);
+    await env.pickAppraiser(env.landlord, "Acme Wycena");
+    await env.pickAppraiser(env.tenant, "Acme Wycena");
+    await env.proposeAppraiserKey(env.landlord, wallet.publicKey); // never confirmed
+
+    const ata = appraiserAtaAddress(wallet.publicKey);
+    await createAppraiserAta(wallet.publicKey);
+    await expectFail(env.submitVerdict(100, wallet, ata), "AppraiserNotBound");
   });
 
   it("submit_verdict refuses once the verdict window has closed", async () => {
     const env = await mediating();
-    await bind(env, apprLow);
+    const wallet = await freshAppraiserWallet();
+    await bind(env, wallet.publicKey);
+    const ata = appraiserAtaAddress(wallet.publicKey);
+    await createAppraiserAta(wallet.publicKey);
     await timeTravel(VERDICT_WINDOW + 5);
-    await expectFail(env.submitVerdict(100, apprLow), "VerdictWindowClosed");
+    await expectFail(env.submitVerdict(100, wallet, ata), "VerdictWindowClosed");
   });
 
   it("expire_mediation refuses before the verdict window has passed", async () => {
     const env = await mediating();
+    const wallet = await freshAppraiserWallet();
+    await bind(env, wallet.publicKey);
     await expectFail(env.expireMediation(), "VerdictWindowOpen");
   });
 
   it("exactly one verdict per dispute: the lease closes and the Dispute account is gone", async () => {
     const env = await mediating();
-    await bind(env, apprLow);
-    await env.submitVerdict(100, apprLow);
+    const wallet = await freshAppraiserWallet();
+    await bind(env, wallet.publicKey);
+    const ata = appraiserAtaAddress(wallet.publicKey);
+    await createAppraiserAta(wallet.publicKey);
+    await env.submitVerdict(100, wallet, ata);
     expect((await program.account.lease.fetch(env.lease)).status).to.have.property("closed");
     expect(await program.account.dispute.fetchNullable(env.dispute)).to.be.null;
-    await expectFail(env.submitVerdict(100, apprLow));
+    await expectFail(env.submitVerdict(100, wallet, ata));
   });
 
-  it("a verdict bound on one lease cannot be submitted against another", async () => {
+  it("a verdict bound on one lease cannot be replayed against another's dispute", async () => {
     // Bind A before creating B: B's own setup (disputed -> abandon -> release -> escalate) time
     // travels the shared clock, and binding after that would push A past its own
-    // verdict_deadline and fail BindingWindowClosed before this test ever reaches the replay it
-    // means to pin.
+    // selection_deadline and fail SelectionWindowClosed before this test ever reaches the replay
+    // it means to pin.
     const envA = await mediating();
-    await bind(envA, apprLow);
+    const wallet = await freshAppraiserWallet();
+    await bind(envA, wallet.publicKey);
     const envB = await mediating();
+    const ata = appraiserAtaAddress(wallet.publicKey);
+    await createAppraiserAta(wallet.publicKey);
 
     await expectFail(
       program.methods
         .submitVerdict(new BN(100))
         .accountsPartial({
-          appraiser: apprLow.wallet.publicKey, appraiserRecord: apprLow.pda,
-          lease: envB.lease, dispute: envA.dispute, mint: envB.mint, vault: envB.vault,
+          appraiser: wallet.publicKey, lease: envB.lease, dispute: envA.dispute, mint: envB.mint, vault: envB.vault,
           tenant: envB.tenant.publicKey, tenantAta: envB.tenantAta, landlordAta: envB.landlordAta,
-          appraiserAta: apprLow.ata, tenantProfile: envB.tenantProfile, landlordProfile: envB.landlordProfile,
+          appraiserAta: ata, tenantProfile: envB.tenantProfile, landlordProfile: envB.landlordProfile,
           tokenProgram: envB.tokenProgram,
         })
-        .signers([apprLow.wallet])
+        .signers([wallet])
         .rpc(),
       "ConstraintSeeds"
     );
   });
 
-  // ---- D2 invariant 1 + the fee rule (docs §6) ----
+  // ---- D2 invariant 1 + the fee rule (docs §6, §11 items 1 and 4) ----
 
   it("a verdict for the landlord takes the fee from the tenant's refund", async () => {
     const env = await mediating();
-    await bind(env, apprLow);
+    const wallet = await freshAppraiserWallet();
+    await bind(env, wallet.publicKey, "Acme Wycena", 50);
+    const ata = appraiserAtaAddress(wallet.publicKey);
+    await createAppraiserAta(wallet.publicKey);
     // 2*1200 > 2000: landlord won; fee 50 (below the 200 cap) comes out of the tenant's 800
-    await expectVerdict(env, apprLow, 1200, 750, 1200, 50);
+    await expectVerdict(env, wallet, ata, 1200, 750, 1200, 50);
   });
 
   it("a verdict for the tenant takes the fee from the landlord's share, exercising the cap", async () => {
     const env = await mediating();
-    await bind(env, apprHigh);
-    // 2*100 <= 2000: tenant won. The registry asks for 500, clamped to the 200 cap; the
-    // landlord's 100 covers only half of it, and the rest falls on the tenant's refund last.
-    await expectVerdict(env, apprHigh, 100, 1800, 0, 200);
+    const wallet = await freshAppraiserWallet();
+    // both sides propose the same company at 500, well above the deposit/10 = 200 cap, so the
+    // agreed fee is clamped at submit time -- the cap is enforced at proposal too (tested above).
+    await env.proposeAppraisers(env.landlord, [{ name: "Acme Wycena", fee: 200 }]);
+    await env.proposeAppraisers(env.tenant, [{ name: "Acme Wycena", fee: 200 }]);
+    await env.pickAppraiser(env.landlord, "Acme Wycena");
+    await env.pickAppraiser(env.tenant, "Acme Wycena");
+    await env.proposeAppraiserKey(env.landlord, wallet.publicKey);
+    await env.confirmAppraiserKey(env.tenant, wallet.publicKey);
+    const ata = appraiserAtaAddress(wallet.publicKey);
+    await createAppraiserAta(wallet.publicKey);
+    // 2*100 <= 2000: tenant won. fee 200 (at the cap); the landlord's 100 covers only half of it,
+    // and the rest falls on the tenant's refund last.
+    await expectVerdict(env, wallet, ata, 100, 1800, 0, 200);
   });
 
   it("a total win for the tenant (d=0) still costs them the whole fee -- the honest wart", async () => {
     const env = await mediating();
-    await bind(env, apprLow);
+    const wallet = await freshAppraiserWallet();
+    await bind(env, wallet.publicKey, "Acme Wycena", 50);
+    const ata = appraiserAtaAddress(wallet.publicKey);
+    await createAppraiserAta(wallet.publicKey);
     const tenantBefore = await program.account.profile.fetch(env.tenantProfile);
     const landlordBefore = await program.account.profile.fetch(env.landlordProfile);
 
     // tenantAta rises by exactly deposit - fee = 1950, asserted by expectVerdict
-    await expectVerdict(env, apprLow, 0, 1950, 0, 50);
+    await expectVerdict(env, wallet, ata, 0, 1950, 0, 50);
 
-    // S3 F3: to_tenant (1950) is not the deposit (2000), even though the verdict number itself
-    // (d=0) reads as a total tenant win. Crediting on `deduction == 0` instead of on
-    // `to_tenant == deposit` would have made a fee-bearing verdict look like a voluntary full
-    // return for both sides.
+    // to_tenant (1950) is not the deposit (2000), even though the verdict number itself (d=0)
+    // reads as a total tenant win. Crediting on `deduction == 0` instead of on
+    // `to_tenant == deposit` would make a fee-bearing verdict look like a voluntary full return.
     const tenantAfter = await program.account.profile.fetch(env.tenantProfile);
     const landlordAfter = await program.account.profile.fetch(env.landlordProfile);
     expect(tenantAfter.depositsReturnedFull).to.equal(tenantBefore.depositsReturnedFull);
@@ -2016,10 +2315,9 @@ describe("relstate", () => {
     expect(landlordAfter.leasesCompleted).to.equal(landlordBefore.leasesCompleted + 1);
   });
 
-  // S3 F3 positive control: settle_dispute(0) from Mediation pays no fee (fee_ata is None), so
-  // to_tenant == deposit holds exactly as it did before the fix. Pins that the other four exits
-  // sharing close_with_fee's profile loop (release(0), accept, finalize, settle) were not broken
-  // by moving the check from `deduction == 0` to `split.to_tenant == deposit`.
+  // positive control: settle_dispute(0) from Mediation pays no fee (fee_ata is None), so
+  // to_tenant == deposit holds exactly as it did before the fix. Pins that the other exits
+  // sharing close_with_fee's profile loop (release(0), accept, finalize, settle) are unaffected.
   it("settle_dispute(0) from Mediation is still a fee-free full return on both profiles", async () => {
     const env = await mediating();
     await env.settle(0, [env.tenant, env.landlord], env.dispute);
@@ -2027,6 +2325,65 @@ describe("relstate", () => {
     for (const profile of [env.tenantProfile, env.landlordProfile]) {
       expect((await program.account.profile.fetch(profile)).depositsReturnedFull).to.equal(1);
     }
+  });
+
+  // ---- ATA / payability (docs §4 phase 3, §11 item 8) ----
+
+  it("submit_verdict with an uncreated appraiser ATA fails loudly and moves nothing", async () => {
+    const env = await mediating();
+    const wallet = await freshAppraiserWallet();
+    await bind(env, wallet.publicKey);
+    const missingAta = appraiserAtaAddress(wallet.publicKey); // derived, never created
+    await expectFail(env.submitVerdict(100, wallet, missingAta), "AccountNotInitialized");
+
+    // nothing moved and the dispute is still open for a real attempt
+    expect(await balance(env.vault)).to.equal(DEPOSIT);
+    expect(await program.account.dispute.fetchNullable(env.dispute)).to.not.be.null;
+    expect((await program.account.lease.fetch(env.lease)).status).to.have.property("mediation");
+  });
+
+  it("a leading create-idempotent ATA instruction, paid by the sponsor, lets a zero-SOL appraiser submit and collect the fee", async () => {
+    const env = await mediating();
+    const wallet = await freshAppraiserWallet(false); // no airdrop: the appraiser holds no SOL at all
+    await bind(env, wallet.publicKey, "Acme Wycena", 50);
+
+    expect(await connection.getBalance(wallet.publicKey)).to.equal(0);
+
+    const sponsor = (provider.wallet as anchor.Wallet).payer;
+    const ata = appraiserAtaAddress(wallet.publicKey);
+    const createAta = createAssociatedTokenAccountIdempotentInstruction(
+      sponsor.publicKey, ata, wallet.publicKey, USDC
+    );
+    const submitIx = await env.submitVerdictIx(1200, wallet.publicKey, ata);
+    const tx = new anchor.web3.Transaction().add(createAta, submitIx);
+    await anchor.web3.sendAndConfirmTransaction(freshConnection(), tx, [sponsor, wallet]);
+
+    // 2*1200 > 2000: landlord won, fee 50 out of the tenant's share
+    expect(await balance(env.vault)).to.equal(0);
+    expect(await balance(env.tenantAta)).to.equal(START_BALANCE - 3 * RENT - DEPOSIT + 750);
+    expect(await balance(env.landlordAta)).to.equal(3 * RENT + 1200);
+    expect(await balance(ata)).to.equal(50);
+    // the appraiser never had to pay for anything -- the sponsor's instruction created the ATA
+    expect(await connection.getBalance(wallet.publicKey)).to.equal(0);
+  });
+
+  it("the same create-ATA-then-submit shape works on a Token-2022 mint", async () => {
+    const env = await mediatingOnMint(USDC_2022_PLAIN, TOKEN_2022_PROGRAM_ID);
+    const wallet = await freshAppraiserWallet(false);
+    await bind(env, wallet.publicKey, "Acme Wycena", 50);
+
+    const sponsor = (provider.wallet as anchor.Wallet).payer;
+    const ata = appraiserAtaAddress(wallet.publicKey, USDC_2022_PLAIN, TOKEN_2022_PROGRAM_ID);
+    const createAta = createAssociatedTokenAccountIdempotentInstruction(
+      sponsor.publicKey, ata, wallet.publicKey, USDC_2022_PLAIN, TOKEN_2022_PROGRAM_ID
+    );
+    const submitIx = await env.submitVerdictIx(1200, wallet.publicKey, ata);
+    const tx = new anchor.web3.Transaction().add(createAta, submitIx);
+    await anchor.web3.sendAndConfirmTransaction(freshConnection(), tx, [sponsor, wallet]);
+
+    expect(await balance(env.vault, TOKEN_2022_PROGRAM_ID)).to.equal(0);
+    expect(await balance(ata, TOKEN_2022_PROGRAM_ID)).to.equal(50);
+    expect(await connection.getBalance(wallet.publicKey)).to.equal(0);
   });
 
   // ---- D2 invariant 5: the claim clock ----
