@@ -388,9 +388,6 @@ function Shell({
             ))}
           </nav>
           <div className="ml-auto flex min-w-0 items-center gap-2">
-            <span className="hidden items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[11px] text-muted-foreground xl:flex">
-              <span className="size-1.5 rounded-full bg-success" /> {IS_LOCAL ? "localnet" : "devnet"}
-            </span>
             <RoleSwitch role={role} onPick={pickRole} />
             <WalletButton balances={balances} />
             <AccountMenu role={role} name={account?.name} switchRole={switchRole} signOut={signOut} />
