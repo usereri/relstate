@@ -211,7 +211,11 @@ describe("submitVerdict", () => {
     const [ata, verdict] = captured!.instructions;
     expect(ata.programId.toBase58()).toBe("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
     expect(ata.keys[0].pubkey.toBase58()).toBe(me.key.toBase58()); // payer
-    expect(ata.data[0]).toBe(1); // CreateIdempotent
+    expect(ata.data.length).toBe(1); // CreateIdempotent, no trailing data
+    expect(ata.data[0]).toBe(1);
+    expect(ata.keys).toHaveLength(6); // payer, ata, owner, mint, system, token program
+    expect(ata.keys[2].pubkey.toBase58()).toBe(me.key.toBase58()); // owner = the appraiser
+    expect(captured!.instructions.indexOf(ata)).toBeLessThan(captured!.instructions.indexOf(verdict));
     expect(verdict.programId.toBase58()).toBe(PROGRAM_ID.toBase58());
     const order = accountOrder("submit_verdict");
     // the appraiser's token account is the one the create-ATA instruction opens
