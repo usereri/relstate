@@ -4,9 +4,9 @@
 // Hand-rolled over @solana/kit rather than going through Anchor's TypeScript client, for the same
 // reason treasury.ts hand-rolls its Token-2022 calls: the backend is a kit codebase with no
 // web3.js and no Anchor dependency, and pulling one in for two instructions would double its
-// dependency tree. The two things that must match the program exactly are asserted in tests
-// against the generated IDL, so a program change that moves an account or renames an instruction
-// fails here rather than on stage:
+// dependency tree. The conventions live in `../anchor.ts`; the two things that must match the
+// program exactly are asserted in tests against the generated IDL, so a program change that moves
+// an account or renames an instruction fails here rather than on stage:
 //
 //   * the 8-byte instruction discriminator, `sha256("global:<name>")[0..8]`;
 //   * the account order, which is the order the fields are declared in the `#[derive(Accounts)]`
@@ -15,13 +15,10 @@
 // The one security-relevant detail: `attest` takes the fee payer and the issuer as *two separate
 // signers*. The payer funds the account's rent; only the issuer's signature makes the attestation
 // real (see the module comment in programs/relstate/src/instructions/attest.rs).
-import { createHash } from "node:crypto";
 import {
   AccountRole,
   fetchEncodedAccount,
   getAddressDecoder,
-  getAddressEncoder,
-  getProgramDerivedAddress,
   getU32Decoder,
   singleInstructionPlan,
   type AccountMeta,
@@ -34,46 +31,28 @@ import {
   type Signature,
   type TransactionSigner,
 } from "@solana/kit";
-import { RELSTATE_PROGRAM, SYSTEM_PROGRAM } from "../contracts.ts";
+import { PROGRAM, accountDiscriminator, addressSeed, configPda, instructionDiscriminator, programDerived, sameDiscriminator } from "../anchor.ts";
+import { SYSTEM_PROGRAM } from "../contracts.ts";
 import type { RunPlan } from "../confidential.ts";
 
-const PROGRAM = RELSTATE_PROGRAM as Address;
 const SYSTEM = SYSTEM_PROGRAM as Address;
 
-const addresses = getAddressEncoder();
 const addressDecoder = getAddressDecoder();
 const u32 = getU32Decoder();
 
-const prefix = (text: string): Uint8Array => new Uint8Array(createHash("sha256").update(text).digest().subarray(0, 8));
-
-/** Anchor's instruction prefix: the first 8 bytes of `sha256("global:<snake_case_name>")`. */
-export const instructionDiscriminator = (name: string): Uint8Array => prefix(`global:${name}`);
-
-/** Anchor's account prefix: the first 8 bytes of `sha256("account:<TypeName>")`. */
-export const accountDiscriminator = (name: string): Uint8Array => prefix(`account:${name}`);
+// Re-exported because `test/kyc-chain.test.ts` and the KYC service reach for them here; the one
+// implementation lives in ../anchor.ts, which the appraiser flow uses too.
+export { accountDiscriminator, configPda, instructionDiscriminator };
 
 const ATTEST = instructionDiscriminator("attest");
 const REVOKE = instructionDiscriminator("revoke");
 const ATTESTATION_ACCOUNT = accountDiscriminator("Attestation");
 const CONFIG_ACCOUNT = accountDiscriminator("Config");
 
-const seeds = (...parts: (string | Uint8Array)[]) => parts.map((p) => (typeof p === "string" ? new TextEncoder().encode(p) : p));
-
 /** An account list that may carry signers, which is what `signTransactionMessageWithSigners` reads. */
 type Accounts = readonly (AccountMeta | AccountSignerMeta)[];
 
-export const configPda = async (): Promise<Address> => {
-  const [pda] = await getProgramDerivedAddress({ programAddress: PROGRAM, seeds: seeds("config") });
-  return pda;
-};
-
-export const attestationPda = async (wallet: Address): Promise<Address> => {
-  const [pda] = await getProgramDerivedAddress({
-    programAddress: PROGRAM,
-    seeds: seeds("attestation", new Uint8Array(addresses.encode(wallet))),
-  });
-  return pda;
-};
+export const attestationPda = (wallet: Address): Promise<Address> => programDerived("attestation", addressSeed(wallet));
 
 export type AttestationAccount = {
   wallet: Address;
@@ -94,9 +73,6 @@ export type KycPolicy = {
 };
 
 export const NO_ISSUER = "11111111111111111111111111111111" as Address;
-
-const sameDiscriminator = (data: Uint8Array, expected: Uint8Array): boolean =>
-  data.length >= 8 && expected.every((b, i) => data[i] === b);
 
 /**
  * Decodes an `Attestation` account, or null when the bytes are not one.

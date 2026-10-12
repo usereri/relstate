@@ -1,6 +1,5 @@
 import "./noenv.ts";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { AccountRole, generateKeyPairSigner, getAddressEncoder, type Address } from "@solana/kit";
 
@@ -8,16 +7,10 @@ const chain = await import("../src/providers/kyc-chain.ts");
 const { RELSTATE_PROGRAM, SYSTEM_PROGRAM } = await import("../src/contracts.ts");
 const { NO_ISSUER, accountDiscriminator, attestationPda, configPda, decodeAttestation, decodeKycPolicy, getAttestInstruction, getRevokeInstruction, instructionDiscriminator, isValid } = chain;
 import type { AttestationAccount, KycPolicy } from "../src/providers/kyc-chain.ts";
-
-type IdlAccount = { name: string; writable?: boolean; signer?: boolean };
-type Idl = {
-  instructions: Array<{ name: string; discriminator: number[]; accounts: IdlAccount[] }>;
-  accounts: Array<{ name: string; discriminator: number[] }>;
-};
-// The IDL is the program's own statement of its wire format; a rename or reorder there must fail here.
-const idl = JSON.parse(readFileSync(new URL("../../target/idl/relstate.json", import.meta.url), "utf8")) as Idl;
-const ix = (name: string) => idl.instructions.find((i) => i.name === name)!;
-const acct = (name: string) => idl.accounts.find((a) => a.name === name)!;
+// The IDL is the program's own statement of its wire format; a rename or reorder there must fail
+// here. Read through the fixture so the tracked copy in app/idl/ is used when target/ is absent,
+// which it is in CI and in any worktree that has not run `anchor build`.
+import { account as acct, instruction as ix } from "./idlfixtures.ts";
 
 const enc = getAddressEncoder();
 const WALLET = "EBMibFLTvr5GDpgxNqt5Gqp9B1xLMr32aNwGDJV2oGJ6" as Address;
