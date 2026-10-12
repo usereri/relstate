@@ -17,3 +17,4 @@ txtx.yml
 *.tsbuildinfo
 .env
 .keys
+fly.toml
