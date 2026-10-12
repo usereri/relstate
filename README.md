@@ -1,3 +1,5 @@
+<p align="center"><img src="app/public/brand/mark.svg" alt="Relstate" width="96"></p>
+
 # Relstate
 
 **Rent with a record nobody can edit.**
@@ -9,7 +11,7 @@ Relstate is a rental marketplace on Solana where the deposit sits in an on-chain
 <p>
   <img alt="Solana" src="https://img.shields.io/badge/Solana-Anchor%201.1-9945FF?logo=solana&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white">
-  <img alt="Tests" src="https://img.shields.io/badge/program%20tests-54%20passing-2ea44f">
+  <img alt="Tests" src="https://img.shields.io/badge/program%20tests-147%20passing-2ea44f">
   <img alt="Status" src="https://img.shields.io/badge/status-hackathon%20prototype-orange">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
@@ -32,6 +34,9 @@ Renting runs on trust that nobody can check.
 | **Reputation written by the program** | On-time payments, late payments, defaults, deposits returned in full, amounts deducted and *typical rent* are counters on the wallet's `Profile`. No one can edit them. |
 | **Portable across cities** | A profile belongs to a wallet, not a platform. Every lease carries a country code, so a profile shows the countries of its finished leases. |
 | **Better terms for a good record** | A tenant with a clean record and a comparable rent pays **50% less deposit**, enforced on-chain. |
+| **Disputes end in an answer** | A deduction the tenant rejects twice goes to an independent appraiser company that the two parties choose themselves. The appraiser signs a verdict; the fee comes out of the deposit and is capped at 10%. If nobody decides in time, the deposit goes back to the tenant. |
+| **Private rent** | Rent can be paid with Token-2022 confidential transfers: the network records that a period was paid, not the amount. The landlord decrypts what arrived with their own viewing key (`docs/privacy.md`). |
+| **No SOL needed** | A backend sponsors transaction fees and the rent for new accounts, so tenants and landlords only ever hold USDC. |
 | **Contract bound to the lease** | The signed contract's SHA-256 is stored on the lease. The tenant can only accept by attaching the *same* file. The file itself never leaves the device. |
 | **A complete marketplace flow** | Listings, applications that show the applicant's record, lease proposals, acceptance, rent with a grace period, default, release and claim. |
 | **Two windows, two roles** | Each browser tab plays one role (landlord or tenant) with its own colour theme, so you can play both sides of a lease on one machine. |
@@ -85,6 +90,7 @@ The third rule closes the cheap trick of finishing a tiny lease to earn a discou
 | `Listing` | `listing`, landlord, id | rent, standard deposit, country, title, city, description, photo |
 | `Application` | `application`, listing, tenant | a tenant's interest in a listing (either side can close it) |
 | `Lease` | `lease`, landlord, id | parties, terms, contract hash, country, status, payments, discount applied |
+| `Dispute` | `dispute`, lease | the appraiser selection for a lease in `Mediation`: three company candidates per side, the agreed company, its wallet and the deadlines |
 | Vault | `vault`, lease | token account holding the deposit, owned by the lease PDA |
 | `Profile` | `profile`, wallet | the reputation counters above |
 
@@ -103,6 +109,12 @@ The third rule closes the cheap trick of finishing a tiny lease to earn a discou
 | `abandon_dispute` | tenant | Rejects the proposal inside the dispute window; the claim clock resumes and `claim_deposit` returns the whole deposit. |
 | `finalize_deduction` | landlord | After the dispute window, if the tenant stayed silent: the proposal stands. |
 | `settle_dispute` | tenant **and** landlord | Both sign a final deduction (any amount up to the deposit); the deposit is split and the lease closes. |
+| `escalate_to_mediation` | tenant | Rejects the landlord's second proposal: the lease moves to `Mediation` and a `Dispute` account is created. |
+| `propose_appraisers` | landlord / tenant | Each side names up to three appraisal companies by name, each with a fee. |
+| `pick_appraiser` | landlord / tenant | Each side picks a company; when both pick the same one, it is agreed (the lower fee wins). |
+| `propose_appraiser_key` / `confirm_appraiser_key` | landlord / tenant | The company's wallet is attached only when both parties confirm the same wallet. |
+| `submit_verdict` | appraiser | The bound wallet signs a deduction; the fee is paid from the deposit and the rest is split. |
+| `expire_mediation` | anyone | If no appraiser is agreed or no verdict arrives in time, the whole deposit returns to the tenant. |
 | `claim_deposit` | tenant | If the landlord does not release within the claim window (paused while a dispute is open), the tenant takes it all back and the landlord's record shows it. |
 
 Program ID: `G4iMjveQKXztnGoxigAeWPrb5evT9yt6qaLkgQEp2dXm`
@@ -179,6 +191,10 @@ The demo wallets are fixed keys per role for local networks, so the two tabs are
 5. **Landlord tab:** release the deposit, with or without a deduction. Or let the tenant claim it, or declare a default.
 6. **Profiles** now show the outcome. Propose another lease to the same tenant and the deposit is 50% lower.
 
+## Hosted demo
+
+The same code runs hosted on devnet: the web app on GitHub Pages (built from the `deploy` branch by `.github/workflows/pages.yml`) and the sponsoring backend on Fly.io (`fly.toml`, `backend/`). The hosted app uses an embedded demo wallet, so there is nothing to install. The full ordered runbook, with every variable, secret and smoke test, is in [`docs/deploy-checklist.md`](docs/deploy-checklist.md).
+
 ## Devnet
 
 1. Build and deploy the demo build: `anchor build -- --features demo`, then `anchor deploy --provider.cluster devnet`. **The demo build must be the deployed one** (the app reads the claim and dispute windows from the IDL it is built against, so build the app from the same `anchor build -- --features demo` output you deployed).
@@ -188,7 +204,7 @@ The demo wallets are fixed keys per role for local networks, so the two tabs are
 3. Create the mint and fund your wallets: `RPC=https://api.devnet.solana.com make demo-setup WALLETS="<landlord> <tenant>"`
 4. `npm run app`, then open the two roles in **separate browser profiles or browsers**, each with its own wallet account.
 
-On devnet a rent period is 45 seconds and the demo-clock is hidden. The built-in test wallets exist only on local networks.
+On devnet a rent period is 45 seconds and the demo-clock is hidden. The hosted deployment needs more than this quick path (backend, secrets, the Pages build); follow [`docs/deploy-checklist.md`](docs/deploy-checklist.md). The built-in test wallets exist only on local networks.
 
 ## Tests
 
@@ -203,14 +219,16 @@ make test-demo      # anchor test -- --features demo   (needs port 8899 free)
 > `anchor test` itself needs 8899, so the authoritative run is with your chain stopped.
 ```
 
-44 program tests cover the lease lifecycle, listings, applications, the discount rules, defaults, the mint allowlist, a Token-2022 lease and every rejection path. They run against Surfpool and jump its clock to simulate months. `anchor test` runs 10 Rust unit tests first, covering the confidential-transfer introspection in `pay_rent`.
+147 program tests cover the lease lifecycle, listings, applications, the discount rules, defaults, disputes and mediation, the mint allowlist, a Token-2022 lease and every rejection path. They run against Surfpool and jump its clock to simulate months. `anchor test` runs 10 Rust unit tests first, covering the confidential-transfer introspection in `pay_rent`.
 
 ## Project layout
 
 ```
 programs/relstate/     Anchor program (state, instructions, constants, errors)
 tests/                 program tests (mocha, run by Node's built-in TypeScript support)
+backend/               Hono backend: fee sponsor, KYC and on-ramp mocks, appraiser invitations, RPC proxy
 app/                   Vite + React + Tailwind frontend
+  public/brand/        logo mark, horizontal logos and social card (SVG)
   src/lib/chain.ts     every read and transaction the UI performs
   src/screens.tsx      lease screens (propose, accept, pay, release, ...)
   src/views.tsx        listings and profile pages
@@ -223,8 +241,8 @@ Makefile               demo-chain, demo-setup, demo-app, test-demo
 This is a prototype, not audited, and it only accepts test tokens an admin has allowed.
 
 - **Mint.** Leases are only allowed on a mint in the program's `Config` allowlist, so a worthless token cannot build a reputation. Whoever calls `init_config` first on a network owns that list.
-- **Timing.** The `demo` build allows 1-second periods a 3-second claim window and a 15-second dispute window. Without it, a period is at least **28 days** and the landlord has **14 days** to release the deposit.
-- **Deductions are the landlord's call.** They are recorded on both profiles, but there is no dispute process yet.
+- **Timing.** The `demo` build allows 1-second periods, a 3-second claim window, a 45-second dispute window, a 3-minute appraiser selection window and a 2-minute verdict window. Without it, a period is at least **28 days** and the landlord has **14 days** to release the deposit.
+- **Deductions can be disputed.** A landlord gets two proposals per lease. After the second rejection an appraiser chosen by both parties decides (`docs/contracts/dispute-mediation.md`). The appraiser is not verified by the program: the parties assert which wallet belongs to which company. If the tenant stalls the selection, the tenant gets the full deposit back.
 - **A wallet is not a person.** A bad tenant can start a fresh wallet. New wallets get no discount, but identity attestation is the real answer and is not built.
 - **Farming.** Two wallets you control can still lease to each other at real rent to earn a discount. It costs time and locked capital, not nothing.
 - **Listing to lease.** A lease is not enforced to match a listing on-chain; the app fills the lease from the listing.
@@ -233,7 +251,7 @@ This is a prototype, not audited, and it only accepts test tokens an admin has a
 
 ### Roadmap
 
-Dispute resolution for deductions, identity attestations, importing rental history from outside, a real USDC mint, deposit insurance and yield on idle deposits, and an indexer.
+Verified appraiser companies, real identity attestations, importing rental history from outside, a real USDC mint, deposit insurance and yield on idle deposits, and an indexer.
 
 ## Troubleshooting
 
@@ -249,7 +267,7 @@ Dispute resolution for deductions, identity attestations, importing rental histo
 
 ## Tech
 
-Anchor 1.1 (Rust) · Solana · SPL Token / Token-2022 · TypeScript · React 19 · Vite 7 · Tailwind 4 · Solana wallet-adapter · Surfpool for local networks and tests.
+Anchor 1.1 (Rust) · Solana · SPL Token / Token-2022 (confidential transfers) · TypeScript · React 19 · Vite 7 · Tailwind 4 · Solana wallet-adapter · Hono · Fly.io · GitHub Pages · Surfpool for local networks and tests.
 
 ## License
 
