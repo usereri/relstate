@@ -51,7 +51,11 @@ export function useChain<T>(load: () => Promise<T>, deps: unknown[]): T | undefi
  */
 export function useChainClock(now: number | undefined): number | undefined {
   const base = useRef<{ chain: number; wall: number }>(undefined);
+  const shown = useRef<number>(undefined);
   const [, redraw] = useState(0);
+  // Refs are written during render here. That is safe because both writes are idempotent for a given
+  // `now` and instant: re-rendering (StrictMode, a discarded concurrent render) recomputes the same
+  // base and a `max` that cannot move further. Do not put anything non-idempotent in this body.
   if (now !== undefined && base.current?.chain !== now) base.current = { chain: now, wall: Date.now() };
 
   useEffect(() => {
@@ -61,5 +65,19 @@ export function useChainClock(now: number | undefined): number | undefined {
   }, [now === undefined]);
 
   if (now === undefined || !base.current) return undefined;
-  return base.current.chain + Math.floor((Date.now() - base.current.wall) / 1000);
+  const estimate = base.current.chain + Math.floor((Date.now() - base.current.wall) / 1000);
+  return (shown.current = monotonicClock(shown.current, estimate));
 }
+
+/** A re-base that lands this far behind what was shown is a real clock change, not read-lag jitter. */
+export const CLOCK_JITTER_SECS = 5;
+
+/**
+ * The next clock value to show: never behind the last one by read-lag jitter, so a countdown built
+ * on it only ever runs down (a bar that refills at each poll reads as broken).
+ *
+ * A larger step back is believed. A local chain that was reset, or a clock that really moved, must
+ * not leave every window-gate stuck on a figure the chain no longer has.
+ */
+export const monotonicClock = (previous: number | undefined, estimate: number): number =>
+  previous !== undefined && estimate < previous && previous - estimate <= CLOCK_JITTER_SECS ? previous : estimate;
