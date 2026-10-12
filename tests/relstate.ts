@@ -1869,9 +1869,13 @@ describe("relstate", () => {
   });
 
   it("a verdict bound on one lease cannot be submitted against another", async () => {
+    // Bind A before creating B: B's own setup (disputed -> abandon -> release -> escalate) time
+    // travels the shared clock, and binding after that would push A past its own
+    // verdict_deadline and fail BindingWindowClosed before this test ever reaches the replay it
+    // means to pin.
     const envA = await mediating();
-    const envB = await mediating();
     await bind(envA, apprLow);
+    const envB = await mediating();
 
     await expectFail(
       program.methods
