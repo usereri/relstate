@@ -63,6 +63,11 @@ export interface ConfidentialKeyPair {
  * obtained ONLY through the dedicated capability on {@link WalletProvider} — never through
  * generic message signing, which refuses that message outright.
  */
+// The derivation signature is deterministic, so asking the wallet again only produces another
+// pop-up. Held in memory for the life of the page (never stored), per wallet, and dropped if the
+// wallet refuses so a declined prompt can be retried.
+const derivation = new Map<string, Promise<Uint8Array>>();
+
 export async function deriveKeys(wallet: WalletProvider): Promise<ConfidentialKeyPair> {
   if (!wallet.deriveConfidentialKeyMaterial)
     throw new Error(
@@ -78,7 +83,14 @@ export async function deriveKeys(wallet: WalletProvider): Promise<ConfidentialKe
     throw new Error("The wallet contract's derivation message no longer matches ConfidentialKeys.signerMessage(). Refusing to derive keys.");
   if (!isConfidentialDerivationMessage(canonical)) throw new Error("Internal: derivation message guard disagrees with itself.");
 
-  const signature = await wallet.deriveConfidentialKeyMaterial();
+  const cacheKey = wallet.publicKey.toString();
+  let pending = derivation.get(cacheKey);
+  if (!pending) {
+    pending = wallet.deriveConfidentialKeyMaterial();
+    derivation.set(cacheKey, pending);
+    pending.catch(() => derivation.delete(cacheKey));
+  }
+  const signature = await pending;
   if (signature.length !== 64) throw new Error(`Expected a 64-byte ed25519 signature for key derivation, got ${signature.length} bytes.`);
   const keys = zk.ConfidentialKeys.fromSignature(signature);
   return { elgamal: keys.elgamal(), ae: keys.ae() };
