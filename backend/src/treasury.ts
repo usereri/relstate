@@ -733,19 +733,29 @@ export function createTreasury(deps: TreasuryDeps) {
   const LISTING_MAX_SIZE = 8 + 59 + (4 + 60) + (4 + 40) + (4 + 120) + (4 + 120);
 
   /**
-   * Enough for two Applications (a tenant comparing flats), a Profile, and one Listing (a landlord's
-   * first). Fees are the sponsor's; this is only account rent, which the program charges the wallet.
-   * Granted once per wallet, so it is the whole budget of a demo user: about 0.0086 SOL at devnet
-   * rent rates (documented in docs/deploy.md with the treasury cost).
+   * Enough for two Applications (a tenant comparing flats), a Profile, one Listing (a landlord's
+   * first) and one Dispute. Fees are the sponsor's; this is only account rent, which the program
+   * charges the wallet. Granted once per wallet, so it is the whole budget of a demo user.
+   *
+   * **`Dispute` is in here because `escalate_to_mediation` has `payer = tenant`** (review G3): the
+   * tenant's own lamports buy the 891-byte mediation account no matter who pays the transaction fee,
+   * and without it a dusted tenant who had already spent their Application and Profile rent hit an
+   * opaque insufficient-lamports error on the one step the whole mediation demo turns on. The old
+   * grant was short by roughly 1.64M lamports, which is to say it only ever worked by accident:
+   * revision 1's 347-byte `Dispute` happened to fit inside the leftover Listing allowance.
+   *
+   * Every size comes from the program's IDL through `layout.ts`, so a struct that changes again
+   * changes this figure with it and the one place to look is still that file.
    */
   async function rentDustAmount(): Promise<bigint> {
     const layout = deps.accountLayout ?? accountLayout;
-    const [application, profile, listing] = await Promise.all([
+    const [application, profile, listing, dispute] = await Promise.all([
       deps.rpc.getMinimumBalanceForRentExemption(BigInt(layout("Application").size)).send(),
       deps.rpc.getMinimumBalanceForRentExemption(BigInt(layout("Profile").size)).send(),
       deps.rpc.getMinimumBalanceForRentExemption(BigInt(LISTING_MAX_SIZE)).send(),
+      deps.rpc.getMinimumBalanceForRentExemption(BigInt(layout("Dispute").size)).send(),
     ]);
-    return 2n * BigInt(application) + BigInt(profile) + BigInt(listing);
+    return 2n * BigInt(application) + BigInt(profile) + BigInt(listing) + BigInt(dispute);
   }
 
   /**

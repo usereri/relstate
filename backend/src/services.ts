@@ -2,11 +2,10 @@
 // actually needs it, which is what lets `GET /health` answer in a fresh clone
 // with no secrets and no RPC reachable.
 import type { Address } from "@solana/kit";
-import { createAppraiserChain, type AppraiserChain, type AppraiserRpc } from "./appraiser-chain.ts";
-import { parseAppraiserDirectory, type AppraiserEntry } from "./appraisers.ts";
 import { SPONSOR_ALLOWLIST } from "./contracts.ts";
 import { env } from "./env.ts";
-import { getAppraiserSigners, getAuditorKeys, getKey, type ConfidentialKeyPair } from "./keys.ts";
+import { createInvites, type Invites } from "./invites.ts";
+import { getAuditorKeys, getKey, type ConfidentialKeyPair } from "./keys.ts";
 import { createRateLimiter } from "./limits.ts";
 import { kyc as createKycService, offramp as createOfframpService, onramp as createOnrampService } from "./providers/index.ts";
 import { createAttestationChain, type AttestationChain, type AttestationChainRpc } from "./providers/kyc-chain.ts";
@@ -35,10 +34,8 @@ export type Services = {
   attestationChain(): Promise<AttestationChain>;
   /** The auditor ElGamal pair. Throws `ServiceUnavailable` when no auditor seed is configured. */
   auditor(): Auditor;
-  /** The off-chain appraiser directory, from `APPRAISERS`. Empty when this deployment mirrors no registry. */
-  appraisers(): readonly AppraiserEntry[];
-  /** The verdict writer behind the demo console. Throws `ServiceUnavailable` when it cannot submit one. */
-  appraiserChain(): Promise<AppraiserChain>;
+  /** Appraiser invitations: the off-chain carrier between an agreed company name and a wallet. */
+  invites(): Invites;
   /** For /health: which keys are throwaways generated for this process. */
   keyReport(): Promise<{ feePayer: string; attestationIssuer: string; treasury: string; ephemeral: string[] }>;
 };
@@ -53,8 +50,7 @@ export function createServices(log: (...args: unknown[]) => void = console.log):
   let kyc: Kyc | undefined;
   let attestationChain: Promise<AttestationChain> | undefined;
   let auditor: Auditor | undefined;
-  let appraisers: readonly AppraiserEntry[] | undefined;
-  let appraiserChain: Promise<AppraiserChain> | undefined;
+  let invites: Invites | undefined;
 
   const getClient = () => (client ??= getSolanaClient());
 
@@ -166,51 +162,8 @@ export function createServices(log: (...args: unknown[]) => void = console.log):
       return auditor;
     },
 
-    appraisers() {
-      // Parsed once; `assertEnvConsistent` has already proved it parses, so a route never 500s here.
-      return (appraisers ??= parseAppraiserDirectory(env.appraisers.directory));
-    },
-
-    /**
-     * The verdict writer: the fee payer pays, an appraiser key authorises.
-     *
-     * Refuses rather than improvises in three cases, each of which would otherwise fail on chain
-     * with a confusing error. No key configured means there is nothing to sign with. An ephemeral
-     * fee payer has no lamports, so it could neither pay the fee nor fund the appraiser's token
-     * account. And a fee payer that is *also* an appraiser key would mean the key that pays for
-     * everything the platform does can also decide a deposit — exactly the role separation
-     * `assertEnvConsistent` enforces for the other three keys.
-     */
-    appraiserChain() {
-      return (appraiserChain ??= (async () => {
-        const [feePayer, signers, treasuryKey, issuerKey] = await Promise.all([getKey("feePayer"), getAppraiserSigners(), getKey("treasury"), getKey("attestationIssuer")]);
-        if (signers.size === 0) {
-          throw new ServiceUnavailable("APPRAISER_KEYPAIRS is not set, so this backend holds no appraiser key to sign a verdict with");
-        }
-        if (feePayer.ephemeral) {
-          throw new ServiceUnavailable("FEE_PAYER_KEYPAIR is not set, so there is no funded key to pay for the verdict transaction");
-        }
-        if (signers.has(feePayer.signer.address)) {
-          throw new ServiceUnavailable("the fee payer's key is listed in APPRAISER_KEYPAIRS; the key that pays fees must not also be able to decide a deposit");
-        }
-        const solana = getClient();
-        return createAppraiserChain({
-          rpc: solana.rpc as AppraiserRpc,
-          run: createPlanRunner(solana, log),
-          payer: feePayer.signer,
-          appraisers: signers,
-          forbidden: new Map([
-            [feePayer.signer.address, "fee payer"],
-            [treasuryKey.signer.address, "treasury"],
-            [issuerKey.signer.address, "attestation issuer"],
-          ]),
-          log,
-        });
-      })().catch((error: unknown) => {
-        // Same rule as attestationChain: a missing key is permanent, an RPC that was down is not.
-        if (!(error instanceof ServiceUnavailable)) appraiserChain = undefined;
-        throw error;
-      }));
+    invites() {
+      return (invites ??= createInvites({ rpc: () => getClient().rpc, log }));
     },
 
     async keyReport() {

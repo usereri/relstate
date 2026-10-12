@@ -14,7 +14,7 @@ import {
   type V0CompiledTransactionMessage,
 } from "@solana/kit";
 import { instructionDiscriminator } from "./anchor.ts";
-import { ADMIN_ONLY_RELSTATE_INSTRUCTIONS, RELSTATE_PROGRAM, SPONSORABLE_RELSTATE_INSTRUCTIONS } from "./contracts.ts";
+import { ADMIN_ONLY_RELSTATE_INSTRUCTIONS, ASSOCIATED_TOKEN_PROGRAM, RELSTATE_PROGRAM, SPONSORABLE_RELSTATE_INSTRUCTIONS } from "./contracts.ts";
 
 /**
  * The message versions the sponsor inspects. Version 1 (SIMD-0385) encodes its
@@ -257,6 +257,100 @@ export function assertRelstateInstructionsAllowed(
 const hexPrefix = (bytes: Uint8Array): string => Buffer.from(bytes).toString("hex");
 
 /**
+ * `submit_verdict`'s account positions, by name. Reproduced by hand and **pinned against the
+ * program's IDL by name** in `test/txinspect.test.ts`, the same way `providers/kyc-chain.ts` pins
+ * its instruction mirrors.
+ *
+ * Not read from the IDL at runtime, deliberately: everything in this module is pure — no
+ * filesystem, no RPC — which is what lets the sponsor's checks be reasoned about and tested in
+ * isolation, and the IDL is in any case optional (a fresh clone has none). The pinning test is the
+ * guarantee instead, so a reordered account list fails loudly rather than silently moving which
+ * account the check below constrains.
+ */
+export const SUBMIT_VERDICT_ACCOUNTS = { appraiser: 0, mint: 3, appraiserAta: 8 } as const;
+
+/** `CreateIdempotent`: a one-byte discriminator and six accounts, in this order. */
+const ATA_CREATE_IDEMPOTENT = 1;
+const ATA_ACCOUNTS = { payer: 0, ata: 1, owner: 2, mint: 3, systemProgram: 4, tokenProgram: 5 } as const;
+const ATA_ACCOUNT_COUNT = 6;
+
+/**
+ * The one shape in which a sponsored transaction may name the fee payer inside an instruction: an
+ * idempotent create of the **bound appraiser's** token account, in the same transaction as the
+ * verdict that pays into it.
+ *
+ * Why an exception has to exist at all. The appraiser's wallet is created when they open the
+ * invitation and holds neither SOL nor a token account, but `submit_verdict` transfers the fee to
+ * `appraiser_ata` as an initialised account, so the client must put a create-idempotent in front of
+ * it and *somebody* must pay the rent (docs/contracts/dispute-mediation.md §4, phase 3). The payer
+ * slot of that instruction is a writable signer, which
+ * {@link assertSponsorNotUsedByInstructions} otherwise refuses outright — correctly, because that
+ * slot is exactly how a System transfer would drain the sponsor.
+ *
+ * So the exception is made structural rather than trusted, and all of it is checkable without any
+ * RPC:
+ *
+ *   * the instruction is `CreateIdempotent` on the associated-token program, with **no trailing
+ *     data** and exactly six accounts, so it cannot be some other ATA instruction;
+ *   * the fee payer appears **only** in the payer slot, and nowhere else in that account list;
+ *   * the account being created, its owner and its mint are **the very accounts the verdict
+ *     instruction uses** as `appraiser_ata`, `appraiser` and `mint`. The ATA program derives the
+ *     address from (owner, mint, token program) and refuses a mismatch, so the sponsor can only
+ *     ever fund the canonical token account of the wallet signing the verdict;
+ *   * the owner **signs** the transaction, so the sponsor is not funding an account for a wallet
+ *     that is merely named;
+ *   * it comes *before* the verdict, which is where it has to be for Anchor to see an initialised
+ *     account, and there is **at most one** of them.
+ *
+ * The property that makes this safe is the last one in that list combined with atomicity: **no rent
+ * leaves the sponsor unless a valid `submit_verdict` lands in the same transaction.** If the verdict
+ * fails any of the program's checks — not the bound appraiser, not in mediation, past the verdict
+ * deadline — the whole transaction reverts and the account is never created. The blast radius is
+ * therefore one token-account rent per lease that actually reaches a verdict, which is a cost the
+ * platform is paying for on purpose.
+ *
+ * What this does NOT bound is the sponsor's lamport budget: `worstCaseFeeLamports` counts fees, and
+ * the rent is debited by the System program inside the instruction, so it is not booked against the
+ * per-wallet daily cap. That is a deliberate, documented gap — the structural bound above is what
+ * limits it — and it is noted in `docs/env-checklist.md`.
+ */
+export function sponsorFundedAtaInstructions(
+  tx: InspectedTransaction,
+  sponsor: Address,
+  program: Address = RELSTATE_PROGRAM as Address,
+): ReadonlySet<number> {
+  const verdict = instructionDiscriminator("submit_verdict");
+  const verdicts = tx.instructions.filter(
+    (ix) => ix.programAddress === program && ix.data.length >= 8 && hexPrefix(ix.data.subarray(0, 8)) === hexPrefix(verdict),
+  );
+  // Two verdicts in one transaction is not a shape we understand, so nothing is exempt.
+  if (verdicts.length !== 1) return new Set();
+  const paying = verdicts[0]!;
+  const account = (index: number): Address | undefined => paying.accounts[index]?.address;
+  const appraiser = paying.accounts[SUBMIT_VERDICT_ACCOUNTS.appraiser];
+  if (appraiser === undefined || !appraiser.isSigner) return new Set();
+
+  const exempt = new Set<number>();
+  for (const ix of tx.instructions) {
+    if (ix.programAddress !== ASSOCIATED_TOKEN_PROGRAM) continue;
+    if (ix.index >= paying.index) continue;
+    if (ix.data.length !== 1 || ix.data[0] !== ATA_CREATE_IDEMPOTENT) continue;
+    if (ix.accounts.length !== ATA_ACCOUNT_COUNT) continue;
+    const payer = ix.accounts[ATA_ACCOUNTS.payer]!;
+    if (payer.address !== sponsor || !payer.isSigner || !payer.isWritable) continue;
+    if (ix.accounts.some((a, i) => i !== ATA_ACCOUNTS.payer && a.address === sponsor)) continue;
+    if (ix.accounts[ATA_ACCOUNTS.ata]!.address !== account(SUBMIT_VERDICT_ACCOUNTS.appraiserAta)) continue;
+    if (ix.accounts[ATA_ACCOUNTS.owner]!.address !== appraiser.address) continue;
+    if (ix.accounts[ATA_ACCOUNTS.mint]!.address !== account(SUBMIT_VERDICT_ACCOUNTS.mint)) continue;
+    if (ix.accounts[ATA_ACCOUNTS.systemProgram]!.address !== SYSTEM_PROGRAM) continue;
+    exempt.add(ix.index);
+  }
+  // One account, one rent. Several matching creates would all be for the same ATA — idempotent, so
+  // only the first can charge rent — but a shape nobody needs is a shape not worth allowing.
+  return exempt.size > 1 ? new Set() : exempt;
+}
+
+/**
  * The central sponsor invariant: **the sponsor key may appear only as the
  * message fee payer, never inside an instruction.**
  *
@@ -269,12 +363,22 @@ const hexPrefix = (bytes: Uint8Array): string => Buffer.from(bytes).toString("he
  * Flows where the sponsor legitimately has to fund rent cannot satisfy this and
  * do not go through here; see `treasury.sponsorConfidentialAccountSetup`, which
  * uses a different key with its own bounded policy.
+ *
+ * **The one exception** is the verdict's create-ATA, whose shape is constrained so tightly by
+ * {@link sponsorFundedAtaInstructions} that the sponsor cannot be made to fund any other account —
+ * read that function's comment for why it is safe. The exemption is computed here rather than
+ * passed in, so no call site can forget it or widen it; `exempt` is a test seam.
  */
-export function assertSponsorNotUsedByInstructions(tx: InspectedTransaction, sponsor: Address): void {
+export function assertSponsorNotUsedByInstructions(
+  tx: InspectedTransaction,
+  sponsor: Address,
+  exempt: ReadonlySet<number> = sponsorFundedAtaInstructions(tx, sponsor),
+): void {
   for (const ix of tx.instructions) {
     if (ix.programAddress === sponsor) {
       reject("sponsor-as-program", `instruction ${ix.index} names the sponsor as its program`);
     }
+    if (exempt.has(ix.index)) continue;
     for (const account of ix.accounts) {
       if (account.address !== sponsor) continue;
       const how = [account.isWritable ? "writable" : "readonly", account.isSigner ? "signer" : "non-signer"].join(" ");
