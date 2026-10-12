@@ -168,7 +168,7 @@ stays **218 bytes**. §8 has the compatibility argument. No other `Lease` field 
 `lease.disputed_at` is reused as "when the current dispute *or* mediation started" and stays the only
 copy of that timestamp (§5).
 
-### `Dispute` — PDA `[b"dispute", lease]`, 890 bytes
+### `Dispute` — PDA `[b"dispute", lease]`, 891 bytes
 
 Created by `escalate_to_mediation`, paid for by the tenant, **closed on every exit** with the rent
 going back to `lease.tenant`. There is no `Appraiser` account: everything the program knows about the
@@ -194,7 +194,8 @@ pub struct Dispute {
     pub agreed_fee: u64,                                 // the bound fee (§4)
     pub proposed_key: Pubkey,                            // all-zero = no wallet proposed yet
     pub key_proposer: Pubkey,                            // which party proposed it
-    pub key_proposals: u8,                               // how many proposals so far, <= MAX_KEY_PROPOSALS
+    pub landlord_key_proposals: u8,                      // each party's own proposals, <= MAX_KEY_PROPOSALS_PER_PARTY
+    pub tenant_key_proposals: u8,
     pub appraiser: Pubkey,                               // the bound wallet; all-zero = not bound
     pub selection_deadline: i64,
     pub verdict_deadline: i64,                           // 0 until bound
@@ -222,7 +223,7 @@ basis points of the deposit would be mint-agnostic and is the obvious follow-up.
 | `release_deposit(d)` *(changed)* | landlord | `d > 0` allowed while `dispute_rounds < MAX_DISPUTE_ROUNDS`; `d == 0` always |
 | `propose_appraisers(candidates)` | landlord or tenant | phase 1: records 1–3 `(name, fee)` candidates for the signer's side; once per side |
 | `pick_appraiser(name)` | landlord or tenant | phase 1: records the signer's pick; when both picks name the same company, the name and fee are agreed |
-| `propose_appraiser_key(wallet)` | landlord or tenant | phase 2: proposes the wallet for the agreed company; bounded re-proposals |
+| `propose_appraiser_key(wallet)` | landlord or tenant | phase 2: proposes the wallet for the agreed company; at most two proposals per party |
 | `confirm_appraiser_key(wallet)` | the party that did **not** propose | phase 2: confirms the same wallet; binds the appraiser and starts the verdict window |
 | `submit_verdict(deduction)` | the bound wallet | inside the verdict window: pays out per §6, closes the lease and the `Dispute` |
 | `expire_mediation()` | landlord or tenant | unbound and past `selection_deadline`, or bound and past `verdict_deadline`: lease back to `Active`, claim clock resumed, `Dispute` closed |
@@ -236,16 +237,21 @@ admin instructions in mediation.
 `propose_appraisers(candidates: Vec<CandidateInput { name: String, fee: u64 }>)` — 1 to 3 entries.
 Per candidate:
 
-* **Name validation, on chain.** The name is trimmed, internal whitespace runs are collapsed to one
-  space, and the result must be **1 to 64 bytes of valid UTF-8 with no control characters** (which
-  excludes NUL). Violations are `InvalidAppraiserName`. The stored `name` is that normalised display
+* **Name validation, on chain.** The name is trimmed, internal whitespace runs (including NBSP) are
+  collapsed to one space, and the result must be **1 to 64 bytes of valid UTF-8 with no control
+  characters** (which excludes NUL) **and no invisible code points**: zero-width, format and bidi
+  characters (U+200B–200F, U+202A–202E, U+2060–2064, U+2066–206F, U+FEFF, U+180E, U+00AD, and the
+  other Cf blocks by explicit range) are refused, so two rows a person cannot tell apart cannot
+  carry different hashes. Violations are `InvalidAppraiserName`. The stored `name` is that normalised display
   form.
 * **Canonical form for comparison.** `canonical = ascii_lowercase(display)`; `name_hash =
   sha256(canonical)` is stored next to the name and is the **only** thing compared. So `"Acme  Wycena"`
   and `"acme wycena "` are the same company. Only ASCII is case-folded and no Unicode normalisation
-  is applied: `"Wycena Łódź"` and `"WYCENA ŁÓDŹ"` are *different* companies to the program. That can
-  only ever cost liveness, never safety: a side can always pick the other side's candidate exactly
-  as spelled, which is how the two converge.
+  is applied: `"Wycena Łódź"` and `"WYCENA ŁÓDŹ"` are *different* companies to the program. That costs
+  liveness only (a side can always pick the other side's candidate exactly as spelled, which is how
+  the two converge). **What remains, and is disclosed (§10 item 3):** visually confusable *visible*
+  letters (Latin vs Cyrillic `a`) are still distinct hashes, so a name is an assertion the parties
+  check off chain, never something the program verifies.
 * **Fee cap.** `fee <= deposit / APPRAISER_FEE_CAP_DIVISOR` at proposal (`FeeAboveCap`). The verdict
   still clamps (`verdict_split` is unchanged), so this is a UX gate, not the safety property.
 * Candidates are distinct **within** a side by `name_hash` (`DuplicateCandidate`); across sides they
@@ -277,9 +283,9 @@ wallet. So the link is made by **two matching calls**, one from each party, exac
 
 * `propose_appraiser_key(wallet)` — either party. Requires: name agreed (`NameNotAgreed`), unbound,
   `now < selection_deadline`, `wallet` non-zero (`InvalidAppraiserKey`), **`wallet` is neither
-  `lease.landlord` nor `lease.tenant`** (`NotMediationParty`), and fewer than `MAX_KEY_PROPOSALS`
-  (= 4) proposals so far (`KeyProposalsExhausted`). Sets `proposed_key = wallet`,
-  `key_proposer = signer`, `key_proposals += 1`.
+  `lease.landlord` nor `lease.tenant`** (`NotMediationParty`), and the **signer's own** proposal
+  budget not spent (`MAX_KEY_PROPOSALS_PER_PARTY` = 2, `KeyProposalsExhausted`). Sets `proposed_key =
+  wallet`, `key_proposer = signer` and spends one of the signer's two proposals.
 * `confirm_appraiser_key(wallet)` — the party that is **not** `key_proposer` (`CannotConfirmOwnProposal`).
   Requires a proposal (`NoKeyProposed`), `wallet == proposed_key` (`KeyMismatch`), unbound,
   `now < selection_deadline` (`SelectionWindowClosed`), the party exclusion again (the same check on
@@ -290,11 +296,14 @@ Why `confirm` takes the wallet as an argument and does not just confirm "whateve
 proposer who swaps the key in the same slot as the other party's confirmation cannot bind a wallet
 the confirmer did not look at. The confirmation fails with `KeyMismatch` instead.
 
-**Grief bounds.** Either party may propose a different key until confirmed — that is how the parties
-switch. Because a proposal can be replaced by the other party's, the pair could otherwise ping-pong
-for the whole window; `MAX_KEY_PROPOSALS = 4` (two each) makes the *last* proposal final, so the
-other side can always confirm it or let the mediation expire. Nothing here extends any deadline: all
-of it is inside `selection_deadline`. A party who refuses to confirm does not stall anything — they
+**Grief bounds.** Either party may propose a different key until confirmed — that is how the
+parties switch. Each party has **its own budget of two proposals** (`MAX_KEY_PROPOSALS_PER_PARTY`,
+an IDL constant), tracked per party, so one party can never burn the other's budget: whatever the
+first party does, the other can always counter-propose, and when both budgets are spent (four
+proposals in all) the last proposal is final and its recipient can confirm it or let the mediation
+expire. (An earlier draft shared one counter of four; the party landing the fourth proposal would
+then have chosen the only confirmable wallet. Review G4.) Nothing here extends any deadline: all of
+it is inside `selection_deadline`. A party who refuses to confirm does not stall anything — they
 simply decline to bind, and the mediation expires (§10 on who that favours).
 
 ### Phase 3: the verdict, and the appraiser's token account
@@ -454,7 +463,7 @@ D2 errors, in IDL order (numbers from 6038 are in the IDL):
 | `NameAlreadyAgreed` | phase 1 instructions after the company is agreed |
 | `NameNotAgreed` | `propose_appraiser_key` before both picks match |
 | `InvalidAppraiserKey` | an all-zero wallet |
-| `KeyProposalsExhausted` | a fifth proposal |
+| `KeyProposalsExhausted` | a third proposal from the same party |
 | `NoKeyProposed` | `confirm_appraiser_key` with nothing proposed |
 | `CannotConfirmOwnProposal` | `confirm_appraiser_key` by `key_proposer` |
 | `KeyMismatch` | `confirm_appraiser_key(wallet)` where `wallet != proposed_key` |
@@ -510,6 +519,13 @@ speak and *when*. The disclosure list, in the order a judge would ask:
    may use a throwaway wallet operated by whoever runs the demo; that is not something the program can
    see or depends on.)
 
+**Expiry strictly dominates any verdict for a rational tenant.** Stalling costs the tenant nothing
+and returns the whole deposit with no fee (`expire_mediation` then `claim_deposit`); any verdict
+costs them at least the appraiser's fee and possibly a deduction. So mediation runs only with a
+cooperative tenant — one who wants a neutral decision more than the free option of stalling. The
+roadmap mitigations below (a bond forfeited by the stalling side, an opt-in directory that makes
+cooperation cheap) exist to change that arithmetic; none is built.
+
 **The sharp edge of having no fallback — say it before a judge finds it.** **Mediation binds only
 if both parties cooperate; a party who declines forfeits to the status quo, which is a full refund to
 the tenant.** There is no default appraiser, so a mediation that never binds expires, and the tenant
@@ -540,9 +556,11 @@ Each a named test; the mocha suite is written against these.
    propose, confirm and verdict; the proposer cannot confirm their own proposal; a confirmation of a
    different wallet fails; one verdict per dispute; a verdict cannot be replayed against another lease.
 4. **Candidate limits** — 1–3 per side, distinct by canonical name, once per side, fee cap, name
-   validation (empty, 65 bytes, control char, NUL, invalid UTF-8), canonicalisation (case and
+   validation (empty, 65 bytes, control char, NUL, zero-width/format/bidi code points; invalid
+   UTF-8 cannot be sent by any client and is guaranteed by Borsh, not by `display_name`), canonicalisation (case and
    whitespace), lower-fee-wins.
-5. **Key phase limits** — at most four proposals; no proposal before the name is agreed or after
+5. **Key phase limits** — two proposals per party (one party cannot exhaust the other's; the other
+   can always counter; both spent ⇒ no more proposals and the last stays confirmable); no proposal before the name is agreed or after
    binding; no bind after `selection_deadline`.
 6. **The stall outcome** — a tenant who never picks (or never confirms) leaves the mediation to
    expire at `selection_deadline`, the lease returns to `Active`, and `claim_deposit` pays the tenant
