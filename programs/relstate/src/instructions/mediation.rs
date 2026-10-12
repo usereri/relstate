@@ -109,6 +109,7 @@ pub fn handle_propose_appraisers(ctx: Context<ProposeAppraisers>) -> Result<()> 
             !candidates[..count].contains(&entry.wallet),
             ErrorCode::DuplicateCandidate
         );
+        require_not_a_party(lease, &entry.wallet)?;
         candidates[count] = entry.wallet;
         count += 1;
     }
@@ -179,6 +180,7 @@ pub fn handle_pick_appraiser(ctx: Context<PickAppraiser>) -> Result<()> {
     require!(lease.status == Status::Mediation, ErrorCode::WrongStatus);
     let is_landlord = mediation_party(lease, &ctx.accounts.party.key())?;
     let pick = ctx.accounts.appraiser.wallet;
+    require_not_a_party(lease, &pick)?;
 
     let dispute = &mut ctx.accounts.dispute;
     require!(!dispute.is_bound(), ErrorCode::AppraiserAlreadyBound);
@@ -253,6 +255,7 @@ pub fn handle_bind_default_appraiser(ctx: Context<BindDefaultAppraiser>) -> Resu
     require!(lease.status == Status::Mediation, ErrorCode::WrongStatus);
 
     let appraiser = ctx.accounts.appraiser.wallet;
+    require_not_a_party(lease, &appraiser)?;
     let dispute = &mut ctx.accounts.dispute;
     require!(!dispute.is_bound(), ErrorCode::AppraiserAlreadyBound);
     require!(
@@ -369,6 +372,10 @@ pub fn handle_submit_verdict(ctx: Context<SubmitVerdict>, deduction: u64) -> Res
         ErrorCode::DeductionTooLarge
     );
 
+    // Last line of defence, so the money path does not rely on the three selection instructions
+    // having been the only way this appraiser got bound.
+    require_not_a_party(lease, &ctx.accounts.appraiser.key())?;
+
     let dispute = &ctx.accounts.dispute;
     require!(dispute.is_bound(), ErrorCode::AppraiserNotBound);
     require_keys_eq!(
@@ -480,4 +487,21 @@ fn mediation_party(lease: &Lease, signer: &Pubkey) -> Result<bool> {
     } else {
         err!(ErrorCode::NotMediationParty)
     }
+}
+
+/// An appraiser must not be a party to the lease they are deciding.
+///
+/// Nothing above this would have caught it: the registry says who *may* arbitrate and the picks say
+/// who *did*, and a landlord whom the admin had registered and who then nominated and picked
+/// themselves would pass both. Conservation would still hold — the vault total is fixed, and a
+/// three-way split into two accounts one party owns still drains to the deposit — so the money
+/// could not be conjured; what they would get is a deduction of their own choosing, which is
+/// exactly the unilateral deduction this whole subsystem exists to remove.
+///
+/// Checked at every entry into a candidate list, a pick and a binding, so such an appraiser can
+/// never be bound in the first place and the mediation does not have to limp to its expiry.
+fn require_not_a_party(lease: &Lease, appraiser: &Pubkey) -> Result<()> {
+    require_keys_neq!(*appraiser, lease.landlord, ErrorCode::NotMediationParty);
+    require_keys_neq!(*appraiser, lease.tenant, ErrorCode::NotMediationParty);
+    Ok(())
 }

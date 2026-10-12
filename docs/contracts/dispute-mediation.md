@@ -399,6 +399,12 @@ constrain *who* may speak and *when*:
 
 - only a key the Config admin registered, that is still active, that **both parties selected** (or
   that the admin designated as the fallback after the two failed to agree), may submit a verdict;
+- **the appraiser may not be a party to the lease.** Checked at proposal, pick, binding and
+  verdict. Nothing else would catch it: the registry says who *may* arbitrate and the picks say who
+  *did*, and a landlord whom the admin had registered and who nominated and picked themselves would
+  pass both. Conservation would still hold, so no money could be conjured; what they would get is a
+  deduction of their own choosing, which is the unilateral deduction this subsystem exists to
+  remove;
 - exactly one verdict per dispute: `submit_verdict` closes the lease, so there is nothing to replay;
 - a verdict cannot be moved to another lease — the `Dispute` PDA is seeded by the lease and the
   vault is signed by the lease PDA;
@@ -427,8 +433,9 @@ The invariants the mocha suite is written against (plan §2), each a named test:
 2. **No stuck state** — for `Disputed` and for `Mediation`, at least two exits that do not depend on
    the counterparty (the table in §2).
 3. **Authority** — only the bound, registered, active appraiser can submit; an unregistered or
-   inactive candidate is refused at proposal, pick and verdict; one verdict per dispute; a verdict
-   cannot be replayed against another lease.
+   inactive candidate is refused at proposal, pick and verdict; a party to the lease is refused as
+   an appraiser at all four (`NotMediationParty`); one verdict per dispute; a verdict cannot be
+   replayed against another lease.
 4. **Round limits** — a third `release_deposit(d>0)` is refused (`DisputeRoundsExhausted`);
    `abandon_dispute` and `escalate_to_mediation` each refuse the other's round
    (`WrongDisputeRound`); `dispute_rounds` never decrements.
