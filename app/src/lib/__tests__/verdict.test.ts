@@ -71,6 +71,34 @@ describe("asked / previewGate", () => {
     expect(asked("L", 1)).not.toBe(asked("L", 10));
     expect(asked("L1", 10)).not.toBe(asked("L", 110));
   });
+
+  // A preview only authorises an answer that is ABOUT the question it was asked: the form matching
+  // what was asked (`asked`) is not enough if the backend's own echo describes something else.
+  it("a preview only authorises an answer that is about the question it was asked (the backend's echoed lease must match)", () => {
+    const preview = { asked: asked("LEASE1", 100), result: { lease: "LEASE2", deduction: 100 } };
+    expect(previewGate(preview, "LEASE1", 100)).toEqual({ armed: false, reason: "echo" });
+  });
+
+  it("...and the backend's echoed amount must match too, by one base unit either way", () => {
+    const over = { asked: asked("LEASE1", 100), result: { lease: "LEASE1", deduction: 101 } };
+    const under = { asked: asked("LEASE1", 100), result: { lease: "LEASE1", deduction: 99 } };
+    expect(previewGate(over, "LEASE1", 100)).toEqual({ armed: false, reason: "echo" });
+    expect(previewGate(under, "LEASE1", 100)).toEqual({ armed: false, reason: "echo" });
+  });
+
+  it("stale and echo are not confusable: a form mismatch is stale, a form match with a bad echo is echo", () => {
+    const stale = { asked: asked("LEASE1", 100), result: { lease: "LEASE1", deduction: 100 } };
+    expect(previewGate(stale, "LEASE1", 101)).toMatchObject({ reason: "stale" });
+    const echo = { asked: asked("LEASE1", 100), result: { lease: "LEASE1", deduction: 999 } };
+    expect(previewGate(echo, "LEASE1", 100)).toMatchObject({ reason: "echo" });
+  });
+
+  it("when both the form and the echo disagree, stale wins (it is checked first)", () => {
+    const preview = { asked: asked("LEASE1", 100), result: { lease: "LEASE1", deduction: 999 } };
+    // The form no longer matches what was asked (now asking about 101, not 100) AND the echo
+    // (999) does not match either -- pin whichever this actually does, not whichever reads safer.
+    expect(previewGate(preview, "LEASE1", 101)).toEqual({ armed: false, reason: "stale" });
+  });
 });
 
 describe("verdictProblem", () => {
@@ -140,20 +168,21 @@ describe("consoleErrorMessage", () => {
     expect(consoleErrorMessage(500, {})).toMatch(/500/);
   });
 
-  it("survives a non-object-but-indexable body (string, number, array) without throwing", () => {
-    // NOT covered here: `null` and `undefined` DO throw ("Cannot read properties of null/undefined
-    // (reading 'error')"), because the function reads `body.error` / `body.code` with no guard for
-    // those two. `postVerdict` can hand this a literal JSON `null` (a valid `res.json()` result, not
-    // a parse failure, so the `.catch(() => ({}))` there never runs). Reported to the app agent
-    // rather than fixed; see the handoff report.
-    expect(() => consoleErrorMessage(500, "oops" as never)).not.toThrow();
-    expect(() => consoleErrorMessage(500, 42 as never)).not.toThrow();
-    expect(() => consoleErrorMessage(500, [] as never)).not.toThrow();
+  it("survives any junk body without throwing, including null and undefined (fixed in 1aa66db)", () => {
+    // `body` is `unknown`: a bare `null` is valid JSON and `res.json()` resolves it rather than
+    // rejecting, so postVerdict's `.catch(() => ({}))` never sees it -- this used to throw
+    // "Cannot read properties of null (reading 'error')" in place of the message.
+    expect(() => consoleErrorMessage(500, null)).not.toThrow();
+    expect(() => consoleErrorMessage(500, undefined)).not.toThrow();
+    expect(() => consoleErrorMessage(500, "oops")).not.toThrow();
+    expect(() => consoleErrorMessage(500, 42)).not.toThrow();
+    expect(() => consoleErrorMessage(500, [])).not.toThrow();
+    expect(consoleErrorMessage(500, null)).toMatch(/500/);
   });
 
   it("survives error/code fields that are not strings without throwing", () => {
-    expect(() => consoleErrorMessage(500, { error: 42, code: 7 } as never)).not.toThrow();
-    expect(consoleErrorMessage(500, { error: 42, code: 7 } as never)).toMatch(/500/);
+    expect(() => consoleErrorMessage(500, { error: 42, code: 7 })).not.toThrow();
+    expect(consoleErrorMessage(500, { error: 42, code: 7 })).toMatch(/500/);
   });
 });
 

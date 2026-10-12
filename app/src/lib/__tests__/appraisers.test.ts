@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { directoryEntries, mergeDirectory, nameHash } from "../appraisers";
+import { directoryEntries, mergeDirectory, nameHash, trustedLabel } from "../appraisers";
 import type { RegistryEntry } from "../appraisers";
 
 // appraisers.ts reads VITE_API through sponsor.ts at module load (DIRECTORY_AVAILABLE, loadAppraiserDirectory),
@@ -95,6 +95,42 @@ describe("mergeDirectory", () => {
       [{ wallet: "NAMED", name: "Rzeczoznawca A" }],
     );
     expect(merged.map((o) => o.wallet)).toEqual(["NAMED", "NAMELESS"]);
+  });
+
+  it("the returned name is sanitised, but nameVerified is computed from the RAW directory name", () => {
+    // The sharp case: a zero-width character inside a name that still hashes correctly (the
+    // registry committed to the RAW string). Hashing the sanitised string first would fail a
+    // legitimately registered name -- this is the test that stops someone "simplifying" that order.
+    const raw = "Rzeczoznawca​ A";
+    const [o] = mergeDirectory([entry({ wallet: "W1", nameHashHex: nameHash(raw) })], [{ wallet: "W1", name: raw }]);
+    expect(o.nameVerified).toBe(true);
+    expect(o.name).toBe("Rzeczoznawca A"); // the zero-width character is gone from what is shown
+  });
+});
+
+describe("trustedLabel", () => {
+  const opt = (overrides: Partial<{ name: string; nameVerified: boolean; wallet: string }> = {}) => ({
+    name: "Rzeczoznawca A",
+    nameVerified: true,
+    wallet: "WALLETKEY",
+    ...overrides,
+  });
+  const shorten = (s: string) => `short(${s})`;
+
+  it("shows the name when it is verified and non-empty", () => {
+    expect(trustedLabel(opt(), shorten)).toBe("Rzeczoznawca A");
+  });
+
+  it("falls back to the shortened key when nameVerified is true but the name is empty", () => {
+    expect(trustedLabel(opt({ nameVerified: true, name: "" }), shorten)).toBe("short(WALLETKEY)");
+  });
+
+  it("falls back to the shortened key when the name is unverified", () => {
+    expect(trustedLabel(opt({ nameVerified: false }), shorten)).toBe("short(WALLETKEY)");
+  });
+
+  it("falls back to the shortened empty key when the option itself is undefined", () => {
+    expect(trustedLabel(undefined, shorten)).toBe("short()");
   });
 });
 
