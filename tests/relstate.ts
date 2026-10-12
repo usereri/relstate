@@ -226,6 +226,59 @@ describe("relstate", () => {
     await setMintAllowed(USDC_2022, true);
   });
 
+  // ---- D2: the appraiser registry (admin-managed, global -- not per lease) ----
+
+  const appraiserPda = (wallet: anchor.web3.PublicKey) =>
+    pda(Buffer.from("appraiser"), wallet.toBuffer());
+
+  type Appraiser = { wallet: anchor.web3.Keypair; pda: anchor.web3.PublicKey; ata: anchor.web3.PublicKey };
+
+  // Registers `wallet` (which may be an existing lease's own landlord or tenant, for the "an
+  // appraiser cannot be a party" tests) without creating a token account for it: these callers
+  // never reach submit_verdict, which is the only instruction that needs one.
+  async function registerAsAppraiser(wallet: anchor.web3.Keypair, fee: number): Promise<Appraiser> {
+    const p = appraiserPda(wallet.publicKey);
+    await program.methods
+      .registerAppraiser(wallet.publicKey, new BN(fee), Array(32).fill(1))
+      .accountsPartial({ admin: provider.wallet.publicKey, config: configPda, appraiser: p })
+      .rpc();
+    return { wallet, pda: p, ata: null as unknown as anchor.web3.PublicKey };
+  }
+
+  // A fresh registered, active appraiser with a funded ATA on USDC, for the tests that submit a
+  // verdict and collect the fee.
+  async function registerAppraiser(fee: number): Promise<Appraiser> {
+    const wallet = Keypair.generate();
+    await airdrop(wallet);
+    const base = await registerAsAppraiser(wallet, fee);
+    const ata = await createAssociatedTokenAccount(
+      freshConnection(), (provider.wallet as anchor.Wallet).payer, USDC, wallet.publicKey
+    );
+    return { ...base, ata };
+  }
+
+  // fee 50 is well under DEPOSIT/10 = 200 (the per-lease cap); fee 500 is well over it, so the
+  // two exercise the cap in both directions (docs/contracts/dispute-mediation.md §6).
+  let apprLow: Appraiser;
+  let apprHigh: Appraiser;
+  let apprDefault: Appraiser;
+  let apprSuspended: Appraiser;
+
+  before(async () => {
+    apprLow = await registerAppraiser(50);
+    apprHigh = await registerAppraiser(500);
+    apprDefault = await registerAppraiser(50);
+    await program.methods
+      .setDefaultAppraiser(true)
+      .accountsPartial({ admin: provider.wallet.publicKey, config: configPda, appraiser: apprDefault.pda })
+      .rpc();
+    apprSuspended = await registerAppraiser(10);
+    await program.methods
+      .setAppraiserActive(false)
+      .accountsPartial({ admin: provider.wallet.publicKey, config: configPda, appraiser: apprSuspended.pda })
+      .rpc();
+  });
+
   // `returning` = an earlier Env whose tenant (wallet, token account, record) takes another lease
   async function setup(periodSecs = PERIOD, mint = USDC, returning?: { tenant: anchor.web3.Keypair; tenantAta: anchor.web3.PublicKey }, tokenProgram = TOKEN_PROGRAM_ID) {
     const conn = freshConnection();
@@ -358,6 +411,52 @@ describe("relstate", () => {
         program.methods
           .escalateToMediation()
           .accountsPartial({ tenant: signer.publicKey, lease, dispute })
+          .signers([signer])
+          .rpc(),
+
+      // D2 mediation. `candidates` is 1 to 3 Appraiser handles for the signer's side; the
+      // candidates are accounts, not arguments (docs/contracts/dispute-mediation.md §4).
+      proposeAppraisers: (party: anchor.web3.Keypair, candidates: Appraiser[]) =>
+        program.methods
+          .proposeAppraisers()
+          .accountsPartial({
+            party: party.publicKey, lease, dispute,
+            appraiserOne: candidates[0].pda,
+            appraiserTwo: candidates[1]?.pda ?? null,
+            appraiserThree: candidates[2]?.pda ?? null,
+          })
+          .signers([party])
+          .rpc(),
+
+      pickAppraiser: (party: anchor.web3.Keypair, appr: Appraiser) =>
+        program.methods
+          .pickAppraiser()
+          .accountsPartial({ party: party.publicKey, lease, dispute, appraiser: appr.pda })
+          .signers([party])
+          .rpc(),
+
+      bindDefaultAppraiser: (caller: anchor.web3.Keypair, appr: Appraiser = apprDefault) =>
+        program.methods
+          .bindDefaultAppraiser()
+          .accountsPartial({ caller: caller.publicKey, lease, dispute, appraiser: appr.pda })
+          .signers([caller])
+          .rpc(),
+
+      submitVerdict: (deduction: number, appr: Appraiser = apprLow, signer = appr.wallet) =>
+        program.methods
+          .submitVerdict(new BN(deduction))
+          .accountsPartial({
+            appraiser: signer.publicKey, appraiserRecord: appr.pda, lease, dispute, mint, vault,
+            tenant: tenant.publicKey, tenantAta, landlordAta, appraiserAta: appr.ata,
+            tenantProfile, landlordProfile, tokenProgram,
+          })
+          .signers([signer])
+          .rpc(),
+
+      expireMediation: (signer = tenant) =>
+        program.methods
+          .expireMediation()
+          .accountsPartial({ party: signer.publicKey, lease, dispute, tenant: tenant.publicKey })
           .signers([signer])
           .rpc(),
 
