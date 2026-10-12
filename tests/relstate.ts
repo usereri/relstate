@@ -1997,7 +1997,36 @@ describe("relstate", () => {
   it("a total win for the tenant (d=0) still costs them the whole fee -- the honest wart", async () => {
     const env = await mediating();
     await bind(env, apprLow);
+    const tenantBefore = await program.account.profile.fetch(env.tenantProfile);
+    const landlordBefore = await program.account.profile.fetch(env.landlordProfile);
+
+    // tenantAta rises by exactly deposit - fee = 1950, asserted by expectVerdict
     await expectVerdict(env, apprLow, 0, 1950, 0, 50);
+
+    // S3 F3: to_tenant (1950) is not the deposit (2000), even though the verdict number itself
+    // (d=0) reads as a total tenant win. Crediting on `deduction == 0` instead of on
+    // `to_tenant == deposit` would have made a fee-bearing verdict look like a voluntary full
+    // return for both sides.
+    const tenantAfter = await program.account.profile.fetch(env.tenantProfile);
+    const landlordAfter = await program.account.profile.fetch(env.landlordProfile);
+    expect(tenantAfter.depositsReturnedFull).to.equal(tenantBefore.depositsReturnedFull);
+    expect(landlordAfter.depositsReturnedFull).to.equal(landlordBefore.depositsReturnedFull);
+    // the lease still completed for both -- only the "full return" counter is withheld
+    expect(tenantAfter.leasesCompleted).to.equal(tenantBefore.leasesCompleted + 1);
+    expect(landlordAfter.leasesCompleted).to.equal(landlordBefore.leasesCompleted + 1);
+  });
+
+  // S3 F3 positive control: settle_dispute(0) from Mediation pays no fee (fee_ata is None), so
+  // to_tenant == deposit holds exactly as it did before the fix. Pins that the other four exits
+  // sharing close_with_fee's profile loop (release(0), accept, finalize, settle) were not broken
+  // by moving the check from `deduction == 0` to `split.to_tenant == deposit`.
+  it("settle_dispute(0) from Mediation is still a fee-free full return on both profiles", async () => {
+    const env = await mediating();
+    await env.settle(0, [env.tenant, env.landlord], env.dispute);
+    await expectConserved(env, DEPOSIT, 0);
+    for (const profile of [env.tenantProfile, env.landlordProfile]) {
+      expect((await program.account.profile.fetch(profile)).depositsReturnedFull).to.equal(1);
+    }
   });
 
   // ---- D2 invariant 5: the claim clock ----
