@@ -3724,6 +3724,11 @@
       "code": 6053,
       "name": "UnexpectedDisputeAccount",
       "msg": "This lease has no dispute account to pass"
+    },
+    {
+      "code": 6054,
+      "name": "BindingWindowClosed",
+      "msg": "Too late to bind an appraiser: the verdict window has already passed, so the mediation can be expired"
     }
   ],
   "types": [

@@ -140,7 +140,11 @@ pub fn close_with_fee<'info>(
     for profile in [tenant_profile, landlord_profile] {
         profile.leases_completed = profile.leases_completed.saturating_add(1);
         profile.record_deposit_outcome(deposit, deduction)?;
-        if deduction == 0 {
+        // Credited on what reached the tenant, not on the number: a `d = 0` verdict still pays the
+        // appraiser out of the deposit, so it is not a full return, and the landlord who lost the
+        // arbitration did not choose to give one (S3 F3). For every path without a fee,
+        // `to_tenant == deposit` is exactly `deduction == 0`, so those are unchanged.
+        if split.to_tenant == deposit {
             profile.deposits_returned_full = profile.deposits_returned_full.saturating_add(1);
         }
     }

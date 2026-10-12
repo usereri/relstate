@@ -115,4 +115,6 @@ pub enum ErrorCode {
     DisputeAccountRequired,
     #[msg("This lease has no dispute account to pass")]
     UnexpectedDisputeAccount,
+    #[msg("Too late to bind an appraiser: the verdict window has already passed, so the mediation can be expired")]
+    BindingWindowClosed,
 }
