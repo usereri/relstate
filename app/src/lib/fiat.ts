@@ -9,6 +9,7 @@
 // Deliberately free of React so it can be tested without a DOM, and free of
 // web3.js so the top-up screen does not pull in the chain stack.
 import { clearSession, obtainSession } from "@/auth/session";
+import { updateHash } from "@/lib/route";
 import { API } from "@/lib/sponsor";
 
 export type OnrampConfig = {
@@ -229,13 +230,18 @@ export function topUpReturn(hash = globalThis.location?.hash ?? ""): { outcome: 
   return { outcome, intent };
 }
 
-/** Drops the top-up query from the hash so a reload does not replay the return. */
+/**
+ * Drops the top-up query from the hash so a reload does not replay the return.
+ *
+ * Only those two keys: `tab=wallet` is what put the user on this screen and is still true, so
+ * clearing the whole query would throw them back to Apartments on the next reload.
+ */
 export function clearTopUpReturn(): void {
-  try {
-    const hash = globalThis.location?.hash ?? "";
-    const base = hash.split("?")[0] ?? "#/app";
-    history.replaceState(null, "", `${globalThis.location.pathname}${globalThis.location.search}${base}`);
-  } catch {
-    /* no history API: the banner simply shows again on reload */
-  }
+  updateHash(
+    (q) => {
+      q.delete("topup");
+      q.delete("intent");
+    },
+    { replace: true },
+  );
 }

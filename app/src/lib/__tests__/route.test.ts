@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRoute } from "../Brand";
+import { parseRoute } from "../route";
 
 describe("parseRoute", () => {
   it("routes the known paths", () => {

@@ -2,7 +2,8 @@ import { Suspense, lazy, useContext, useEffect, useRef, useState } from "react";
 import { UserRound, ArrowLeftRight, Building2, ChevronDown, Copy, Home, KeyRound, LogOut } from "lucide-react";
 import { AuthPage } from "@/Auth";
 import { Landing } from "@/Landing";
-import { Logo, go, useRoute } from "@/components/Brand";
+import { Logo, useRoute } from "@/components/Brand";
+import { go, hashQuery, updateHash } from "@/lib/route";
 import { Gamify } from "@/gamify";
 import { initials, loadAccount } from "@/lib/account";
 import { EmbeddedWalletProvider, useEmbeddedWallet } from "@/auth/embedded";
@@ -169,18 +170,16 @@ const TABS: Record<Role, [Tab, string][]> = {
 };
 
 /**
- * The fiat checkout sends the user back to `#/app?tab=wallet&…`, which is the
- * only reason a tab can be chosen from the URL.
+ * Which tab the URL asks for. `#/app?tab=wallet` is the whole of the app's screen state, so a
+ * reload, a back and a pasted link all land where the user was; a fiat or KYC return naming its own
+ * tab is just another caller of the same thing.
+ *
+ * A tab the role does not have — `apartments` after switching to landlord, or anything typed by
+ * hand — falls back to the role's first tab rather than showing nothing.
  */
-const tabFromHash = (role: Role): Tab => {
-  try {
-    const hash = location.hash;
-    const asked = new URLSearchParams(hash.slice(hash.indexOf("?") + 1)).get("tab");
-    const known = TABS[role].find(([t]) => t === asked);
-    return known?.[0] ?? TABS[role][0][0];
-  } catch {
-    return TABS[role][0][0];
-  }
+export const tabFromHash = (role: Role, hash = globalThis.location?.hash ?? ""): Tab => {
+  const asked = hashQuery(hash).get("tab");
+  return TABS[role].find(([t]) => t === asked)?.[0] ?? TABS[role][0][0];
 };
 
 function Workspace({ role, switchRole, signOut }: { role: Role; switchRole: () => void; signOut: () => void }) {
@@ -231,7 +230,22 @@ function Shell({
 }) {
   const me = useMe();
   const address = me?.key.toBase58() ?? null;
-  const [tab, setTab] = useState<Tab>(() => tabFromHash(role));
+  // The URL owns the tab. `setTab` writes it and the listener below reads it back, so the address
+  // bar can never disagree with the screen — and back, forward and reload all work for free.
+  const [tab, showTab] = useState<Tab>(() => tabFromHash(role));
+  const setTab = (t: Tab) => updateHash((q) => q.set("tab", t));
+  useEffect(() => {
+    const sync = () => showTab(tabFromHash(role));
+    sync();
+    addEventListener("hashchange", sync);
+    return () => removeEventListener("hashchange", sync);
+  }, [role]);
+  // The URL says nothing about the tab (a fresh `#/app`), or names one this role does not have
+  // (a role switch): make it say what is on screen, without adding a history entry for a move the
+  // user never made.
+  useEffect(() => {
+    if (hashQuery(globalThis.location?.hash ?? "").get("tab") !== tab) updateHash((q) => q.set("tab", tab), { replace: true });
+  }, [tab]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // apply / propose_lease refused for want of a verified identity: a prompt, not an error

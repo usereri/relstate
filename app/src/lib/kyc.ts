@@ -7,6 +7,7 @@
 //
 // Free of React and of web3.js so it can be tested without a DOM.
 import idl from "@target/idl/relstate.json";
+import { updateHash } from "@/lib/route";
 import { API } from "@/lib/sponsor";
 import { withSession } from "@/lib/fiat";
 
@@ -73,15 +74,20 @@ export function kycReturn(hash = globalThis.location?.hash ?? ""): { outcome: "d
   return { outcome, session };
 }
 
-/** Drops the kyc query from the hash so a reload does not replay the return. */
+/**
+ * Drops the kyc query from the hash so a reload does not replay the return, and pins the tab the
+ * user is looking at — they came back from the provider straight onto Verify, so a reload belongs
+ * there and not on the role's first tab.
+ */
 export function clearKycReturn(): void {
-  try {
-    const hash = globalThis.location?.hash ?? "";
-    const base = hash.split("?")[0] ?? "#/app";
-    history.replaceState(null, "", `${globalThis.location.pathname}${globalThis.location.search}${base}?tab=identity`);
-  } catch {
-    /* no history API: the banner simply shows again on reload */
-  }
+  updateHash(
+    (q) => {
+      q.delete("kyc");
+      q.delete("session");
+      q.set("tab", "identity");
+    },
+    { replace: true },
+  );
 }
 
 const KYC_REQUIRED_CODE: number | undefined = (idl as { errors?: { name: string; code: number }[] }).errors?.find((e) => e.name === "KycRequired")?.code;

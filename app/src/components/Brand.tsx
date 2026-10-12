@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { parseRoute, type Route } from "@/lib/route";
 import { cn } from "@/lib/utils";
 
 /** The mark: a door frame whose lintel is a ledger line. */
@@ -28,25 +29,14 @@ export function Logo({ className, onClick }: { className?: string; onClick?: () 
 }
 
 /**
- * Tiny hash router: #/, #/signup, #/signin, #/app, #/appraiser.
- *
- * `appraiser` is the operator verdict console. It is reachable only by typing the URL and is
- * deliberately linked from nowhere in either role's app (`screens/Verdict.tsx`).
+ * The current route, re-read whenever the hash changes. The router itself is in `@/lib/route`,
+ * which is free of React; this is only the subscription.
  */
-export type Route = "home" | "signup" | "signin" | "app" | "appraiser";
-export const parseRoute = (hash: string): Route => {
-  const h = hash.replace(/^#\/?/, "").split(/[?#]/)[0];
-  return h === "signup" || h === "signin" || h === "app" || h === "appraiser" ? h : "home";
-};
-const parse = (): Route => parseRoute(location.hash);
-export const go = (r: Route) => {
-  location.hash = r === "home" ? "/" : `/${r}`;
-};
 export function useRoute(): Route {
-  const [r, setR] = useState(parse);
+  const [r, setR] = useState(() => parseRoute(location.hash));
   useEffect(() => {
     const on = () => {
-      setR(parse());
+      setR(parseRoute(location.hash));
       // in-page anchors (#how etc.) are handled by the browser; route changes start at the top
       if (location.hash.startsWith("#/")) window.scrollTo({ top: 0 });
     };
