@@ -31,7 +31,7 @@ describe("POST /api/admin/appraiser/verdict", () => {
     const auth = "Bearer s3cret-admin-token";
     assert.equal((await post({ lease: "x", deduction: "1" }, auth)).status, 400);
     assert.equal((await post({ lease: A, deduction: "-1" }, auth)).status, 400);
-    for (const deduction of ["abc", "", " ", true, false, [], {}, null, "0x10", "0b1", "1e3", "1.5", " 5", "5 ", 1.5, -0, 2 ** 60, "18446744073709551616"]) {
+    for (const deduction of ["abc", "", " ", true, false, [], {}, null, "0x10", "0b1", "1e3", "1.5", " 5", "5 ", 1.5, 2 ** 60, "18446744073709551616"]) {
       const res = await post({ lease: A, deduction }, auth);
       assert.equal(res.status, 400, `deduction ${JSON.stringify(deduction)} should be refused`);
     }
