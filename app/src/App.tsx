@@ -368,9 +368,9 @@ function Shell({
   return (
     <div className="min-h-dvh">
       <header className="sticky top-0 z-40 border-b bg-card/85 backdrop-blur-md">
-        <div className="mx-auto flex h-16 max-w-7xl items-center gap-6 px-5 sm:px-8">
+        <div className="mx-auto flex h-16 max-w-7xl items-center gap-3 px-4 sm:gap-6 sm:px-8">
           <Logo />
-          <nav role="tablist" aria-label="Sections" className="hidden gap-1 md:flex">
+          <nav role="tablist" aria-label="Sections" className="hidden gap-1 lg:flex">
             {TABS[role].map(([t, label]) => (
               <button
                 key={t}
@@ -387,8 +387,8 @@ function Shell({
               </button>
             ))}
           </nav>
-          <div className="ml-auto flex items-center gap-2">
-            <span className="hidden items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[11px] text-muted-foreground sm:flex">
+          <div className="ml-auto flex min-w-0 items-center gap-2">
+            <span className="hidden items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[11px] text-muted-foreground xl:flex">
               <span className="size-1.5 rounded-full bg-success" /> {IS_LOCAL ? "localnet" : "devnet"}
             </span>
             <RoleSwitch role={role} onPick={pickRole} />
@@ -396,7 +396,7 @@ function Shell({
             <AccountMenu role={role} name={account?.name} switchRole={switchRole} signOut={signOut} />
           </div>
         </div>
-        <nav role="tablist" aria-label="Sections" className="flex gap-1 overflow-x-auto px-3 md:hidden">
+        <nav role="tablist" aria-label="Sections" className="flex gap-1 overflow-x-auto px-3 lg:hidden">
           {TABS[role].map(([t, label]) => (
             <button
               key={t}
