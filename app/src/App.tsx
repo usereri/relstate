@@ -479,7 +479,9 @@ function Shell({
         )}
         {tab === "lease" &&
           (address ? (
-            <LeaseTab role={role} me={address} listings={(listings ?? []).filter((l) => l.landlord === address)} now={now} h={h} log={log} goListings={() => setTab("listings")} />
+            // every listing, not only this wallet's: a tenant's lease names the landlord's
+            // apartment, and LeaseTab narrows to `landlord === me` for what may be proposed on
+            <LeaseTab role={role} me={address} listings={listings ?? []} now={now} h={h} log={log} goListings={() => setTab("listings")} />
           ) : (
             connectFirst
           ))}

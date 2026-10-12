@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Listing } from "@/components/Terms";
 import { ProfileCard } from "@/components/ProfileCard";
 import { EventsStrip, NearbyBanner, NearbyNote, useNearby } from "@/events";
+import { apartmentName } from "@/lib/apartment";
 import { Handlers, Waiting, statusBadge } from "@/screens";
 import { useKycStatus } from "@/screens/Kyc";
 import * as chain from "@/lib/chain";
@@ -255,6 +256,9 @@ export function MyProfile({ role, me }: { role: Role; me: string }) {
   const profile = useChain(() => chain.loadProfile(me), [me]);
   const kycStatus = useKycStatus(me);
   const leases = useChain(() => chain.loadLeases(me, role), [me, role]);
+  // The same shared read the Apartments tab does, for the apartment names below: a lease does not
+  // carry its listing, so the name is matched (lib/apartment.ts).
+  const listings = useChain(() => chain.loadListings(), []);
   const other: Role = role === "landlord" ? "tenant" : "landlord";
   const records = useRecords(unique((leases ?? []).map((l) => l[other])));
 
@@ -273,18 +277,21 @@ export function MyProfile({ role, me }: { role: Role; me: string }) {
         items.map((l) => (
           <Card key={l.address} className="flex flex-col gap-2 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <button
-                title="Copy full address"
-                onClick={() => navigator.clipboard?.writeText(l[other])}
-                className="flex items-center gap-2 font-mono text-sm font-medium hover:text-accent"
-              >
-                <UserRound className="size-4" /> {short(l[other], 6)} <Copy className="size-3.5 text-muted-foreground" />
-              </button>
+              {/* The apartment names the card. The counterparty's key is below it: an address is
+                  how the program identifies them, not how a person recognises a lease. */}
+              <p className="min-w-0 font-medium">{apartmentName(l, listings)}</p>
               {statusBadge(l.status)}
             </div>
+            <button
+              title="Copy full address"
+              onClick={() => navigator.clipboard?.writeText(l[other])}
+              className="flex items-center gap-2 self-start font-mono text-xs text-muted-foreground hover:text-accent"
+            >
+              <UserRound className="size-3.5" /> {short(l[other], 6)} <Copy className="size-3 " />
+            </button>
             <p className="text-sm text-muted-foreground">{recordLine(other, records[l[other]])}</p>
             <p className="text-xs text-muted-foreground">
-              {usdc(l.rent)} USDC / {duration(l.periodSecs)} · {l.paidCount}/{l.termPeriods} paid · deposit {usdc(l.deposit)} USDC · {l.region}
+              {usdc(l.rent)} USDC / {duration(l.periodSecs)} · {l.paidCount}/{l.termPeriods} paid · deposit {usdc(l.deposit)} USDC
               {l.startTs ? ` · started ${new Date(l.startTs * 1000).toLocaleDateString()}` : " · not started"}
             </p>
           </Card>

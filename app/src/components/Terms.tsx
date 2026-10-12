@@ -43,18 +43,33 @@ export function Terms({ rows }: { rows: [string, string][] }) {
   );
 }
 
+/**
+ * The lease terms as rows.
+ *
+ * The apartment comes first and by name: a two-letter country code is not what either party calls
+ * the place they are signing for, and "Region: PL" was all these rows used to say about which
+ * apartment this is. `where` carries the city and the country under it, so nothing is lost.
+ */
 export const termRows = (o: {
   rent: number;
   deposit: number;
   term: number;
   periodSecs: number;
   hashHex?: string;
-  region?: string;
+  apartment?: string;
+  where?: string;
+  landlord?: string;
   discountPct?: number;
 }): [string, string][] => [
-  ...(o.region ? ([["Region", o.region]] as [string, string][]) : []),
+  ...(row("Apartment", o.apartment)),
+  ...(row("Where", o.where)),
   ["Rent", `${usdc(o.rent)} USDC / period`],
   ["Deposit", `${usdc(o.deposit)} USDC · held in vault${o.discountPct ? ` · −${o.discountPct}% good standing` : ""}`],
   ["Term", `${o.term} periods of ${duration(o.periodSecs)}`],
-  ...(o.hashHex ? ([["Lease fingerprint", short(o.hashHex, 8)]] as [string, string][]) : []),
+  ...(row("Landlord", o.landlord && short(o.landlord, 5))),
+  ...(row("Lease fingerprint", o.hashHex && short(o.hashHex, 8))),
 ];
+
+/** One row, or none at all when there is nothing to put in it. Never a label with a blank beside it. */
+const row = (label: string, value: string | undefined | false): [string, string][] =>
+  value && value.trim() ? [[label, value]] : [];
