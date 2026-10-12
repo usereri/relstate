@@ -152,6 +152,9 @@ function ClaimStep({ invite, token, me, onClaimed }: { invite: InviteCase; token
             setError(null);
             try {
               await claimInvite(token);
+              // The token has done its job; strip it from the fragment so it does not linger in
+              // browser history. `#/invite` with no token still works for a returning appraiser.
+              if (token) globalThis.history?.replaceState(null, "", "#/invite");
               setDone(true);
               onClaimed();
             } catch (e) {
