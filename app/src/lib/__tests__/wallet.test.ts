@@ -1,13 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
+import * as anchor from "@anchor-lang/core";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import {
   CONFIDENTIAL_DERIVATION_MESSAGE as MSG,
   adapterWallet,
+  chainAwareAccount,
   embeddedKeypairWallet,
   embeddedWallet,
   isConfidentialDerivationMessage,
   localKeypair,
   localWallet,
+  type StandardAccount,
+  type StandardWallet,
 } from "../wallet";
 
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -176,6 +180,111 @@ describe("embedded and local derive the same keys from the same keypair", () => 
     expect(Array.from(a)).toEqual(Array.from(b));
     expect(ed25519.verify(a, MSG, kp.publicKey.toBytes())).toBe(true);
     expect(ed25519.verify(b, MSG, kp.publicKey.toBytes())).toBe(true);
+  });
+});
+
+describe("chainAwareAccount", () => {
+  const CHAIN = "solana:localnet";
+  const publicKey = localKeypair("tenant").publicKey;
+  const address = publicKey.toBase58();
+
+  const account = (over: Partial<StandardAccount> = {}): StandardAccount => ({
+    address,
+    features: ["solana:signTransaction"],
+    chains: [CHAIN],
+    ...over,
+  });
+
+  const wallet = (over: { accounts?: StandardAccount[]; signFn?: unknown } = {}): StandardWallet => ({
+    accounts: over.accounts ?? [account()],
+    features: { "solana:signTransaction": { signTransaction: over.signFn ?? vi.fn() } },
+  });
+
+  it("happy path: the account is returned when every condition holds", () => {
+    const w = wallet();
+    expect(chainAwareAccount(w, publicKey, CHAIN)).toEqual(account());
+  });
+
+  it("no wallet at all: null", () => {
+    expect(chainAwareAccount(null, publicKey, CHAIN)).toBeNull();
+    expect(chainAwareAccount(undefined, publicKey, CHAIN)).toBeNull();
+  });
+
+  it("the wallet offers no solana:signTransaction feature: null", () => {
+    const w: StandardWallet = { accounts: [account()], features: {} };
+    expect(chainAwareAccount(w, publicKey, CHAIN)).toBeNull();
+  });
+
+  it("the feature is present but not a function: null", () => {
+    const w: StandardWallet = { accounts: [account()], features: { "solana:signTransaction": { signTransaction: "nope" } } };
+    expect(chainAwareAccount(w, publicKey, CHAIN)).toBeNull();
+  });
+
+  it("no account matches the connected public key: null", () => {
+    const w = wallet({ accounts: [account({ address: "someone-else" })] });
+    expect(chainAwareAccount(w, publicKey, CHAIN)).toBeNull();
+  });
+
+  it("the account is missing the feature: null", () => {
+    const w = wallet({ accounts: [account({ features: [] })] });
+    expect(chainAwareAccount(w, publicKey, CHAIN)).toBeNull();
+  });
+
+  it("the account does not list the requested cluster: null (a wallet that refuses solana:localnet)", () => {
+    const w = wallet({ accounts: [account({ chains: ["solana:devnet"] })] });
+    expect(chainAwareAccount(w, publicKey, CHAIN)).toBeNull();
+  });
+});
+
+describe("adapterWallet with a Wallet Standard wallet attached", () => {
+  const CHAIN = "solana:localnet";
+  const publicKey = localKeypair("tenant").publicKey;
+  const address = publicKey.toBase58();
+
+  // A real legacy transaction, so the adapter's wire handling (serialize without requiring every
+  // signature, deserialize back) runs for real instead of being stubbed out.
+  const legacyTx = () => {
+    const tx = new anchor.web3.Transaction({ feePayer: publicKey, recentBlockhash: anchor.web3.PublicKey.default.toBase58() });
+    tx.add(
+      new anchor.web3.TransactionInstruction({ keys: [], programId: anchor.web3.PublicKey.default, data: Buffer.alloc(0) }),
+    );
+    return tx;
+  };
+
+  it("signs through the standard feature, naming the chain, when the wallet can serve it", async () => {
+    // Echoes the serialized bytes back unchanged: a real wallet would add its signature, but this
+    // only has to prove the request named the right account and chain, and that the bytes round-trip.
+    const signTransaction = vi.fn(async (...inputs: { account: unknown; chain?: string; transaction: Uint8Array }[]) =>
+      inputs.map((i) => ({ signedTransaction: i.transaction })),
+    );
+    const standard: StandardWallet = {
+      accounts: [{ address, features: ["solana:signTransaction"], chains: [CHAIN] }],
+      features: { "solana:signTransaction": { signTransaction } },
+    };
+    const adapterSign = vi.fn();
+    const w = adapterWallet({ publicKey, signTransaction: adapterSign, signAllTransactions: vi.fn(), standard }, CHAIN);
+
+    const out = await w.signTransaction(legacyTx());
+    expect(out.feePayer?.equals(publicKey)).toBe(true);
+    expect(signTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ chain: CHAIN, account: expect.objectContaining({ address }) }),
+    );
+    expect(adapterSign).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the adapter's own signer when the standard account does not list the chain", async () => {
+    const standard: StandardWallet = {
+      accounts: [{ address, features: ["solana:signTransaction"], chains: ["solana:devnet"] }],
+      features: { "solana:signTransaction": { signTransaction: vi.fn() } },
+    };
+    const adapterSign = vi.fn(async (t: any) => t);
+    const w = adapterWallet(
+      { publicKey, signTransaction: adapterSign, signAllTransactions: vi.fn(), standard },
+      CHAIN,
+    );
+    const tx = { n: 1 } as any;
+    await w.signTransaction(tx);
+    expect(adapterSign).toHaveBeenCalledWith(tx);
   });
 });
 
