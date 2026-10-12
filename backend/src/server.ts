@@ -6,6 +6,8 @@ import { Hono } from "hono";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
+import { VerdictRefused } from "./appraiser-chain.ts";
+import { appraiserNameHash, hex } from "./appraisers.ts";
 import { AuthError, assertAdmin, createSessionToken, sessionFromAuthorizationHeader } from "./auth.ts";
 import { verifyRentPayment } from "./confidential.ts";
 import { RELSTATE_PROGRAM, type HealthResponse, type SponsorInfoResponse, type SponsorRequest, type TreasuryInvariantView } from "./contracts.ts";
@@ -29,6 +31,7 @@ const asInvariantView = (report: InvariantReport): TreasuryInvariantView => repo
 /** Maps a thrown error to a status and a message safe to return to a caller. */
 function problem(error: unknown): { status: 400 | 401 | 403 | 404 | 409 | 429 | 500 | 502 | 503; body: Record<string, unknown> } {
   if (error instanceof RejectedTransaction) return { status: 400, body: { error: error.message, code: error.code } };
+  if (error instanceof VerdictRefused) return { status: 409, body: { error: error.message, code: error.code } };
   if (error instanceof AuthError) return { status: 401, body: { error: error.message, code: "unauthorized" } };
   if (error instanceof RateLimited) return { status: 429, body: { error: error.message, code: "rate-limited", scope: "ip" } };
   if (error instanceof LimitError) return { status: 429, body: { error: error.message, code: "rate-limited", scope: error.scope } };
@@ -604,6 +607,62 @@ export function createApp(
       return c.html(mockVerificationPage(session, safeReturnBase(c.req.query("back"), env.appUrl, "/#/app?tab=identity&kyc=")));
     });
   }
+
+  // --- Appraisers (D2, docs/contracts/dispute-mediation.md §3, §10) -------------
+
+  /**
+   * The human-readable directory the chain deliberately does not hold. Public: names are fictional,
+   * wallets are public keys. `nameHash` is what `Appraiser.name_hash` must equal, so anyone can check
+   * the directory against the registry. Empty until APPRAISERS is configured.
+   */
+  app.get("/api/appraisers", (c) => {
+    const appraisers = services.appraisers().map((a) => ({
+      name: a.name,
+      wallet: a.wallet,
+      fee: a.fee.toString(),
+      isDefault: a.isDefault,
+      nameHash: hex(appraiserNameHash(a.name)),
+    }));
+    return c.json({ appraisers });
+  });
+
+  /**
+   * Demo appraiser console: signs a verdict with a configured appraiser key. Operator-only (admin
+   * token) because the key decides a deposit. The route never takes a key or a signer from the body:
+   * the appraiser is whoever the chain says is bound, and the backend must hold that key or it refuses.
+   * `dryRun: true` returns what the verdict would pay and sends nothing.
+   */
+  app.post("/api/admin/appraiser/verdict", async (c) => {
+    treasuryLimit(`a:${clientIp(c)}`);
+    assertAdmin(c.req.header("authorization"));
+    const body = await readJson<{ lease?: unknown; deduction?: unknown; dryRun?: unknown }>(c);
+    if (typeof body.lease !== "string" || !isAddress(body.lease)) {
+      throw new RejectedTransaction("lease must be the lease account's address", "malformed-body");
+    }
+    let deduction: bigint;
+    try {
+      deduction = BigInt(body.deduction as string | number);
+    } catch {
+      throw new RejectedTransaction("deduction must be a base-unit integer", "malformed-body");
+    }
+    if (deduction < 0n) throw new RejectedTransaction("deduction cannot be negative", "malformed-body");
+    const chain = await services.appraiserChain();
+    const input = { lease: body.lease as Address, deduction };
+    const view = (plan: Awaited<ReturnType<typeof chain.plan>>) => ({
+      lease: plan.lease,
+      appraiser: plan.appraiser,
+      deduction: plan.deduction.toString(),
+      deposit: plan.deposit.toString(),
+      toTenant: plan.split.toTenant.toString(),
+      toLandlord: plan.split.toLandlord.toString(),
+      feePaid: plan.split.feePaid.toString(),
+      appraiserAta: plan.appraiserAta,
+      appraiserAtaExists: plan.appraiserAtaExists,
+    });
+    if (body.dryRun === true) return c.json({ dryRun: true, ...view(await chain.plan(input)) });
+    const result = await chain.submit(input);
+    return c.json({ dryRun: false, signatures: result.signatures, ...view(result.plan) });
+  });
 
   app.notFound((c) => c.json({ error: "not found", code: "not-found" }, 404));
   return app;

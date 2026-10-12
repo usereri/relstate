@@ -22,6 +22,7 @@ import {
   getAddressDecoder,
   getBase64Encoder,
   sequentialInstructionPlan,
+  singleInstructionPlan,
   type AccountMeta,
   type AccountSignerMeta,
   type Address,
@@ -161,6 +162,26 @@ export async function fetchMintTokenProgram(rpc: AppraiserRpc, mint: Address): P
   const { value } = await rpc.getAccountInfo(mint, { encoding: "base64", commitment: "confirmed" }).send();
   if (value === null) throw new AppraiserDecodeError(`no mint account at ${mint}`);
   return value.owner;
+}
+
+/**
+ * The mints the Config allows leases to use: `mints: Vec<Pubkey>` right after discriminator, admin
+ * and a one-byte field (same offset `kyc-chain.decodeKycPolicy` reads). Empty if Config is absent.
+ */
+export async function fetchAllowedMints(rpc: AppraiserRpc): Promise<Address[]> {
+  const account = await fetchEncodedAccount(rpc, await configPda());
+  if (!account.exists) return [];
+  const data = account.data as Uint8Array;
+  const at = 8 + 32 + 1;
+  if (data.length < at + 4) return [];
+  const count = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(at, true);
+  if (data.length < at + 4 + count * 32) return [];
+  return Array.from({ length: count }, (_, i) => addressDecoder.decode(data.subarray(at + 4 + i * 32, at + 36 + i * 32)));
+}
+
+/** Whether an account exists. submit_verdict transfers fee_paid (even 0) to the appraiser's ATA, so it must. */
+export async function accountExists(rpc: AppraiserRpc, address: Address): Promise<boolean> {
+  return (await fetchEncodedAccount(rpc, address)).exists;
 }
 
 export type VerdictSplit = {
@@ -335,6 +356,13 @@ export async function associatedToken(owner: Address, mint: Address, tokenProgra
   return address;
 }
 
+/** Idempotent create of an appraiser's token account; exported so scripts/ need not import token-2022 themselves. */
+export const getCreateAppraiserAtaInstruction = (input: { payer: TransactionSigner; owner: Address; mint: Address; tokenProgram: Address }) =>
+  getCreateAssociatedTokenIdempotentInstructionAsync(input);
+
+/** Re-exported for scripts/, which resolve @solana/kit only through backend/src. */
+export { singleInstructionPlan };
+
 export class VerdictRefused extends Error {
   readonly code: string;
   constructor(message: string, code: string) {
@@ -351,6 +379,8 @@ export type VerdictPlan = {
   split: VerdictSplit;
   /** Where the fee lands. Created idempotently by `submit`, because the program transfers to it even when the fee is 0. */
   appraiserAta: Address;
+  /** False means `submit` will create it first (idempotently, paid by the fee payer). */
+  appraiserAtaExists: boolean;
   mint: Address;
   tokenProgram: Address;
 };
@@ -399,13 +429,15 @@ export function createAppraiserChain(deps: {
     if (!record.active) throw new VerdictRefused(`the bound appraiser ${dispute.appraiser} is suspended; the mediation can still be settled or expired`, "appraiser-inactive");
 
     const tokenProgram = await fetchMintTokenProgram(deps.rpc, decoded.mint);
+    const appraiserAta = await associatedToken(dispute.appraiser, decoded.mint, tokenProgram);
     return {
       lease,
       appraiser: dispute.appraiser,
       deduction,
       deposit: decoded.depositAmount,
       split: verdictSplit(decoded.depositAmount, deduction, record.fee),
-      appraiserAta: await associatedToken(dispute.appraiser, decoded.mint, tokenProgram),
+      appraiserAta,
+      appraiserAtaExists: await accountExists(deps.rpc, appraiserAta),
       mint: decoded.mint,
       tokenProgram,
     };
