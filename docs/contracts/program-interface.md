@@ -226,7 +226,7 @@ needs its own `solana-keygen` step.
 
 `release_deposit` with a deduction no longer pays anything. It moves the lease to `Disputed` and
 records `proposed_deduction` and `disputed_at`. Constants (`constants.rs`, demo / release):
-`DISPUTE_WINDOW_SECS` = 15 s / 14 days, `CLAIM_WINDOW_SECS` = 3 s / 14 days.
+`DISPUTE_WINDOW_SECS` = 45 s / 14 days, `CLAIM_WINDOW_SECS` = 3 s / 14 days.
 
 New / changed instructions (all take the lease mint's `token_program`; the Anchor client fills PDAs):
 

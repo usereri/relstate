@@ -96,7 +96,7 @@ window to have run out, so neither party can shorten it unilaterally.
 | Constant | Demo build (`--features demo`) | Release build |
 |---|---|---|
 | `CLAIM_WINDOW_SECS` | 3 s | 14 days |
-| `DISPUTE_WINDOW_SECS` | 15 s | 14 days |
+| `DISPUTE_WINDOW_SECS` | 45 s | 14 days |
 | `SELECTION_WINDOW_SECS` | **30 s** | **7 days** |
 | `VERDICT_WINDOW_SECS` | **60 s** | **14 days** |
 

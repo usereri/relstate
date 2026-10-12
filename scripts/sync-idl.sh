@@ -8,7 +8,7 @@
 #   scripts/sync-idl.sh
 #
 # Refuses a release-build IDL. All four windows the app reads must carry their demo values --
-# CLAIM_WINDOW_SECS=3, DISPUTE_WINDOW_SECS=15 (docs/contracts/program-interface.md §5) and
+# CLAIM_WINDOW_SECS=3, DISPUTE_WINDOW_SECS=45 (docs/contracts/program-interface.md §5) and
 # SELECTION_WINDOW_SECS=30, VERDICT_WINDOW_SECS=60 (docs/contracts/dispute-mediation.md §2) --
 # so a stale or wrongly-featured build fails here instead of silently shipping the wrong timing to
 # the app. A release build has 1_209_600 / 1_209_600 / 604_800 / 1_209_600.
@@ -48,7 +48,7 @@ check_constant() {
 
 # Every window the app reads out of the IDL, so none of them can ship with a release value.
 check_constant CLAIM_WINDOW_SECS 3
-check_constant DISPUTE_WINDOW_SECS 15
+check_constant DISPUTE_WINDOW_SECS 45
 check_constant SELECTION_WINDOW_SECS 30
 check_constant VERDICT_WINDOW_SECS 60
 
@@ -56,4 +56,4 @@ mkdir -p "$OUT_DIR"
 cp "$TARGET_IDL" "$OUT_DIR/relstate.json"
 cp "$TARGET_TYPES" "$OUT_DIR/relstate.ts"
 
-echo "synced app/idl/relstate.json and app/idl/relstate.ts from target/ (claim=3, dispute=15, selection=30, verdict=60)"
+echo "synced app/idl/relstate.json and app/idl/relstate.ts from target/ (claim=3, dispute=45, selection=30, verdict=60)"

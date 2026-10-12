@@ -4642,7 +4642,7 @@ export type Relstate = {
     {
       "name": "disputeWindowSecs",
       "type": "i64",
-      "value": "15"
+      "value": "45"
     },
     {
       "name": "goodStandingDiscountPct",

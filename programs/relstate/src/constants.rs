@@ -82,9 +82,14 @@ pub const CLAIM_WINDOW_SECS: i64 = 1_209_600;
 // How long the tenant has to answer a proposed deduction (accept it or reject it) before the
 // landlord may finalize it unanswered. Same 14 days as CLAIM_WINDOW_SECS in a real deployment,
 // and short enough in the demo build to be shown on stage without waiting.
+//
+// 45 s, not the 15 s this started at: 15 s is less than the time it takes a person to read the
+// proposal, switch to the tenant window and sign a rejection in a wallet, so a hand-run demo lost
+// the rejection to the clock. The window is the only thing that changes; every rule around it is
+// the same, and the tenant's screen now counts the remaining seconds down.
 #[cfg(feature = "demo")]
 #[constant]
-pub const DISPUTE_WINDOW_SECS: i64 = 15;
+pub const DISPUTE_WINDOW_SECS: i64 = 45;
 #[cfg(not(feature = "demo"))]
 #[constant]
 pub const DISPUTE_WINDOW_SECS: i64 = 1_209_600;

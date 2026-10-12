@@ -4636,7 +4636,7 @@
     {
       "name": "DISPUTE_WINDOW_SECS",
       "type": "i64",
-      "value": "15"
+      "value": "45"
     },
     {
       "name": "GOOD_STANDING_DISCOUNT_PCT",
