@@ -259,9 +259,13 @@ const hexPrefix = (bytes: Uint8Array): string => Buffer.from(bytes).toString("he
 /**
  * `submit_verdict`'s account positions, by name. Reproduced by hand and **pinned against the
  * program's IDL by name** in `test/txinspect.test.ts`, the same way `providers/kyc-chain.ts` pins
- * its instruction mirrors: a deployed backend carries no `target/idl`, so these cannot be derived at
- * runtime, and a reordered account list has to fail a test rather than silently move which account
- * the check below constrains.
+ * its instruction mirrors.
+ *
+ * Not read from the IDL at runtime, deliberately: everything in this module is pure — no
+ * filesystem, no RPC — which is what lets the sponsor's checks be reasoned about and tested in
+ * isolation, and the IDL is in any case optional (a fresh clone has none). The pinning test is the
+ * guarantee instead, so a reordered account list fails loudly rather than silently moving which
+ * account the check below constrains.
  */
 export const SUBMIT_VERDICT_ACCOUNTS = { appraiser: 0, mint: 3, appraiserAta: 8 } as const;
 

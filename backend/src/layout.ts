@@ -111,8 +111,11 @@ export const FALLBACK_LAYOUTS: Readonly<Record<string, Layout>> = {
 
 /**
  * The `#[constant]`s this backend needs a value for, snapshotted for the same reason
- * {@link FALLBACK_LAYOUTS} is: a deployed backend carries no `target/idl`. `test/layout.test.ts`
- * pins every entry against the IDL, so a program that retunes a window fails exactly one test.
+ * {@link FALLBACK_LAYOUTS} is: the IDL is optional. The deployed image points `RELSTATE_IDL` at the
+ * tracked copy, but a fresh clone or a plain `node src/index.ts` has neither that nor `target/`,
+ * and a window that read as `undefined` there would silently become an invite that never expires.
+ * `test/layout.test.ts` pins every entry against the IDL, so a program that retunes a window fails
+ * exactly one test.
  *
  * Values as the IDL writes them (strings), parsed by {@link idlConstant}.
  */
