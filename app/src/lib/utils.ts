@@ -58,3 +58,21 @@ export function safeName(raw: string, max = 48): string {
 
 /** `JSON.stringify` that survives the bigints kit puts in transaction errors (instruction error codes). */
 export const jsonSafe = (v: unknown): string => JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x));
+
+/**
+ * Base units from a decimal amount somebody typed — a fee quote, a verdict.
+ *
+ * Deliberately not `Number(x) * 1e6`: that maps "", " ", "1e3" and "0x10" to numbers, and a
+ * seventh decimal place would be silently rounded into a different amount than the one on screen.
+ * Both callers put the result next to a deposit, so "nearly what you typed" is not good enough.
+ */
+export function parseAmountInput(text: string, whenEmpty = "Enter an amount."): { base: number } | { error: string } {
+  const s = text.trim();
+  if (s === "") return { error: whenEmpty };
+  if (s.startsWith("-")) return { error: "An amount cannot be negative." };
+  if (!/^\d+(\.\d{1,6})?$/.test(s)) return { error: "Use digits, with at most six decimal places, for example 12.5." };
+  const [whole, frac = ""] = s.split(".");
+  const base = Number(whole) * 1_000_000 + Number(frac.padEnd(6, "0"));
+  if (!Number.isSafeInteger(base)) return { error: "That amount is too large." };
+  return { base };
+}

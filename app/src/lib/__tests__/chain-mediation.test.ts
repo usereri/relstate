@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as anchor from "@anchor-lang/core";
 import idl from "@target/idl/relstate.json";
 import { localKeypair, localWallet } from "../wallet";
-import { MAX_CANDIDATES } from "../mediation";
+import { MAX_CANDIDATES } from "../appraisers";
 import type { LeaseView } from "../chain";
 
 const { PublicKey } = anchor.web3;
@@ -14,7 +14,6 @@ const PROGRAM_ID = new PublicKey(idl.address);
 // null sends the program id. Every wrapper below must send an explicit value for every optional
 // slot it does not use, or a stale build would silently send the wrong account.
 const disputePda = (lease: anchor.web3.PublicKey) => PublicKey.findProgramAddressSync([Buffer.from("dispute"), lease.toBuffer()], PROGRAM_ID)[0];
-const appraiserPda = (wallet: anchor.web3.PublicKey) => PublicKey.findProgramAddressSync([Buffer.from("appraiser"), wallet.toBuffer()], PROGRAM_ID)[0];
 
 // Reads the account ORDER straight off the IDL rather than hard-coding positions, so a reordering
 // of the program's own account list would fail this test instead of passing it silently.
@@ -123,87 +122,123 @@ async function capture(run: (chain: Chain, me: ReturnType<Chain["makeMe"]>) => P
   return captured;
 }
 
-describe("proposeAppraisers: the three candidate slots", () => {
-  const w1 = localKeypair("landlord").publicKey;
-  const w2 = localKeypair("tenant").publicKey;
-  const w3 = PublicKey.unique();
+const LEASE = () => lease({ status: "mediation", deposit: 10_000_000 });
+const stranger = PublicKey.unique().toBase58();
 
-  it("with one wallet: the first slot holds its PDA, the other two hold the program id", async () => {
-    const tx = await capture((chain, me) => chain.proposeAppraisers(me, lease({ status: "mediation" }), [w1.toBase58()]));
-    const m = metas(tx, "propose_appraisers");
-    expect(m.appraiserOne).toBe(appraiserPda(w1).toBase58());
-    expect(m.appraiserTwo).toBe(PROGRAM_ID.toBase58());
-    expect(m.appraiserThree).toBe(PROGRAM_ID.toBase58());
-  });
-
-  it("with two wallets: the named slots hold PDAs in order, the unused slot holds the program id", async () => {
-    const tx = await capture((chain, me) => chain.proposeAppraisers(me, lease({ status: "mediation" }), [w1.toBase58(), w2.toBase58()]));
-    const m = metas(tx, "propose_appraisers");
-    expect(m.appraiserOne).toBe(appraiserPda(w1).toBase58());
-    expect(m.appraiserTwo).toBe(appraiserPda(w2).toBase58());
-    expect(m.appraiserThree).toBe(PROGRAM_ID.toBase58());
-  });
-
-  it("with three wallets: every slot holds a PDA, in the order given", async () => {
+describe("proposeAppraisers", () => {
+  it("sends the candidates vec (normalised name, fee) and only party/lease/dispute accounts", async () => {
+    const l = LEASE();
     const tx = await capture((chain, me) =>
-      chain.proposeAppraisers(me, lease({ status: "mediation" }), [w1.toBase58(), w2.toBase58(), w3.toBase58()]),
+      chain.proposeAppraisers(me, l, [{ name: "  Acme   Wycena ", fee: 500_000 }, { name: "Beta", fee: 0 }]),
     );
     const m = metas(tx, "propose_appraisers");
-    expect(m.appraiserOne).toBe(appraiserPda(w1).toBase58());
-    expect(m.appraiserTwo).toBe(appraiserPda(w2).toBase58());
-    expect(m.appraiserThree).toBe(appraiserPda(w3).toBase58());
+    expect(Object.keys(m)).toEqual(["party", "lease", "dispute"]);
+    expect(m.dispute).toBe(disputePda(new PublicKey(l.address)).toBase58());
+    expect(tx.instructions[0].data.length).toBeGreaterThan(8 + 4);
+    // the display form is what is sent, so what the screen showed is what gets hashed
+    expect(tx.instructions[0].data.includes(Buffer.from("Acme Wycena"))).toBe(true);
   });
-});
 
-describe("proposeAppraisers: invalid candidate lists", () => {
-  it("gives each invalid list a distinct error before building or sending a transaction", async () => {
+  it("rejects each invalid list distinctly, before building or sending anything", async () => {
     vi.stubEnv("VITE_API", "");
     const chain = await load();
     const me = chain.makeMe(localWallet("tenant"));
-    const buildInstruction = vi.spyOn(me.program.methods, "proposeAppraisers");
-    // If a regression reaches the send path, keep the test isolated from any network call and
-    // assert that neither simulation nor submission was attempted.
+    const build = vi.spyOn(me.program.methods, "proposeAppraisers");
     const simulate = vi.spyOn(anchor.AnchorProvider.prototype, "simulate").mockResolvedValue({ logs: [] } as never);
-    const send = vi.spyOn(anchor.AnchorProvider.prototype, "sendAndConfirm").mockResolvedValue("SIGNATURE" as never);
-    const duplicate = localKeypair("landlord").publicKey.toBase58();
-    const tooMany = Array.from({ length: MAX_CANDIDATES + 1 }, () => PublicKey.unique().toBase58());
-    const invalidLists = [[], tooMany, [duplicate, duplicate]];
-
-    const errors: unknown[] = [];
-    for (const wallets of invalidLists) {
-      try {
-        await chain.proposeAppraisers(me, lease({ status: "mediation" }), wallets);
-        errors.push(null);
-      } catch (error) {
-        errors.push(error);
-      }
-    }
-
-    expect(errors.every((error) => error instanceof Error)).toBe(true);
-    const messages = errors.map((error) => (error as Error).message);
-    expect(messages[0]).toMatch(/at least one appraiser/);
-    expect(messages[1]).toContain(`at most ${MAX_CANDIDATES} appraisers`);
-    expect(messages[2]).toMatch(/only be put forward once/);
-    expect(new Set(messages).size).toBe(3);
-    expect(buildInstruction).not.toHaveBeenCalled();
+    const l = LEASE(); // deposit 10 USDC -> cap 1 USDC
+    const q = (name: string, fee = 0) => ({ name, fee });
+    const cases: [ReturnType<typeof q>[], RegExp][] = [
+      [[], /at least one/],
+      [Array.from({ length: MAX_CANDIDATES + 1 }, (_, i) => q(`C${i}`)), new RegExp(`at most ${MAX_CANDIDATES}`)],
+      [[q("Acme"), q("  ACME ")], /twice/],
+      [[q("Ac\u200Bme")], /invisible/],
+      [[q("x".repeat(65))], /limit/],
+      [[q("Acme", 1_000_001)], /tenth of the deposit/],
+      [[q("Acme", -1)], /whole amount/],
+    ];
+    for (const [list, re] of cases) await expect(Promise.resolve().then(() => chain.proposeAppraisers(me, l, list))).rejects.toThrow(re);
+    expect(build).not.toHaveBeenCalled();
     expect(simulate).not.toHaveBeenCalled();
-    expect(send).not.toHaveBeenCalled();
   });
 });
 
-describe("pickAppraiser / bindDefaultAppraiser: the appraiser slot", () => {
-  const wallet = PublicKey.unique();
-
-  it("pickAppraiser puts the [b\"appraiser\", wallet] PDA in the appraiser slot", async () => {
-    const tx = await capture((chain, me) => chain.pickAppraiser(me, lease({ status: "mediation" }), wallet.toBase58()));
-    const m = metas(tx, "pick_appraiser");
-    expect(m.appraiser).toBe(appraiserPda(wallet).toBase58());
+describe("pickAppraiser", () => {
+  it("sends the display name and no appraiser account", async () => {
+    const tx = await capture((chain, me) => chain.pickAppraiser(me, LEASE(), " Acme   Wycena "));
+    expect(Object.keys(metas(tx, "pick_appraiser"))).toEqual(["party", "lease", "dispute"]);
+    expect(tx.instructions[0].data.includes(Buffer.from("Acme Wycena"))).toBe(true);
   });
+  it("refuses an unusable name before sending", async () => {
+    vi.stubEnv("VITE_API", "");
+    const chain = await load();
+    const me = chain.makeMe(localWallet("tenant"));
+    expect(() => chain.pickAppraiser(me, LEASE(), "")).toThrow(/Type the/);
+  });
+});
 
-  it("bindDefaultAppraiser puts the [b\"appraiser\", wallet] PDA in the appraiser slot", async () => {
-    const tx = await capture((chain, me) => chain.bindDefaultAppraiser(me, lease({ status: "mediation" }), wallet.toBase58()));
-    const m = metas(tx, "bind_default_appraiser");
-    expect(m.appraiser).toBe(appraiserPda(wallet).toBase58());
+describe("proposeAppraiserKey / confirmAppraiserKey", () => {
+  it("both take the wallet as an argument and the same three accounts", async () => {
+    for (const [fn, ixName] of [["proposeAppraiserKey", "propose_appraiser_key"], ["confirmAppraiserKey", "confirm_appraiser_key"]] as const) {
+      const tx = await capture((chain, me) => chain[fn](me, LEASE(), stranger));
+      expect(Object.keys(metas(tx, ixName))).toEqual(["party", "lease", "dispute"]);
+      expect(tx.instructions[0].data.subarray(8).equals(new PublicKey(stranger).toBuffer())).toBe(true);
+    }
+  });
+  it("refuses a bad address, the all-zero key and either party before sending", async () => {
+    vi.stubEnv("VITE_API", "");
+    const chain = await load();
+    const me = chain.makeMe(localWallet("tenant"));
+    const l = LEASE();
+    for (const fn of [chain.proposeAppraiserKey, chain.confirmAppraiserKey]) {
+      expect(() => fn(me, l, "not a key")).toThrow(/not a valid account address/);
+      expect(() => fn(me, l, PublicKey.default.toBase58())).toThrow(/all-zero/);
+      expect(() => fn(me, l, l.landlord)).toThrow(/landlord or tenant/);
+      expect(() => fn(me, l, l.tenant)).toThrow(/landlord or tenant/);
+    }
+  });
+});
+
+describe("submitVerdict", () => {
+  it("puts the idempotent create-ATA first, paid by the appraiser when unsponsored, then submit_verdict", async () => {
+    const appraiser = localWallet("landlord"); // any wallet that is not a party to the lease
+    const l = lease({ status: "mediation", landlord: anchor.web3.Keypair.generate().publicKey.toBase58(), tenant: anchor.web3.Keypair.generate().publicKey.toBase58() });
+    const chain = await load();
+    const me = chain.makeMe(appraiser);
+    let captured: anchor.web3.Transaction | undefined;
+    vi.spyOn(anchor.AnchorProvider.prototype, "simulate").mockImplementation((async (tx: unknown) => ((captured ??= tx as anchor.web3.Transaction), { logs: [] })) as never);
+    vi.spyOn(anchor.AnchorProvider.prototype, "sendAndConfirm").mockResolvedValue("SIG" as never);
+    await chain.submitVerdict(me, l, 1_000_000);
+    const [ata, verdict] = captured!.instructions;
+    expect(ata.programId.toBase58()).toBe("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+    expect(ata.keys[0].pubkey.toBase58()).toBe(me.key.toBase58()); // payer
+    expect(ata.data.length).toBe(1); // CreateIdempotent, no trailing data
+    expect(ata.data[0]).toBe(1);
+    expect(ata.keys).toHaveLength(6); // payer, ata, owner, mint, system, token program
+    expect(ata.keys[2].pubkey.toBase58()).toBe(me.key.toBase58()); // owner = the appraiser
+    expect(captured!.instructions.indexOf(ata)).toBeLessThan(captured!.instructions.indexOf(verdict));
+    expect(verdict.programId.toBase58()).toBe(PROGRAM_ID.toBase58());
+    const order = accountOrder("submit_verdict");
+    // the appraiser's token account is the one the create-ATA instruction opens
+    expect(verdict.keys[order.indexOf("appraiser_ata")].pubkey.toBase58()).toBe(ata.keys[1].pubkey.toBase58());
+    expect(verdict.keys[order.indexOf("appraiser")].pubkey.toBase58()).toBe(me.key.toBase58());
+    expect(verdict.keys[order.indexOf("dispute")].pubkey.toBase58()).toBe(disputePda(new PublicKey(l.address)).toBase58());
+    expect(verdict.keys[order.indexOf("tenant")].pubkey.toBase58()).toBe(l.tenant);
+  });
+  it("refuses a verdict above the deposit or a fractional one", async () => {
+    const chain = await load();
+    const me = chain.makeMe(localWallet("tenant"));
+    await expect(chain.submitVerdict(me, LEASE(), 10_000_001)).rejects.toThrow(/more than the deposit/);
+    await expect(chain.submitVerdict(me, LEASE(), 1.5)).rejects.toThrow(/whole amount/);
+  });
+});
+
+describe("IDL-derived layout", () => {
+  it("Dispute is 891 bytes and the appraiser field sits at 842", async () => {
+    const chain = await load();
+    expect(chain.accountSize("Dispute")).toBe(891);
+    expect(chain.fieldOffset("Dispute", "appraiser")).toBe(842);
+    expect(chain.accountSize("Lease")).toBe(218);
+    expect(chain.fieldOffset("Lease", "dispute_rounds")).toBe(217);
   });
 });
 

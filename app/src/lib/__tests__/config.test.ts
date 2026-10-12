@@ -9,34 +9,6 @@ async function load() {
   return import("../config");
 }
 
-describe("APPRAISER_CONSOLE", () => {
-  it("is enabled only by the literal string '1'", async () => {
-    vi.stubEnv("VITE_APPRAISER_CONSOLE", "1");
-    expect((await load()).APPRAISER_CONSOLE).toBe(true);
-
-    vi.stubEnv("VITE_APPRAISER_CONSOLE", "true");
-    expect((await load()).APPRAISER_CONSOLE).toBe(false);
-
-    // Vite's test env is backed by process.env, which coerces every assigned value to a string.
-    // Replace that object only for this import so the runtime number 1 stays a number.
-    const originalEnv = process.env;
-    Object.defineProperty(process, "env", {
-      configurable: true,
-      enumerable: true,
-      writable: true,
-      value: { ...originalEnv, VITE_APPRAISER_CONSOLE: 1 } as unknown as typeof process.env,
-    });
-    try {
-      expect((await load()).APPRAISER_CONSOLE).toBe(false);
-    } finally {
-      Object.defineProperty(process, "env", { configurable: true, enumerable: true, writable: true, value: originalEnv });
-    }
-
-    vi.stubEnv("VITE_APPRAISER_CONSOLE", "0");
-    expect((await load()).APPRAISER_CONSOLE).toBe(false);
-  });
-});
-
 describe("RPC / IS_LOCAL defaults", () => {
   it("routes through the backend's proxy when VITE_API is set and VITE_RPC is not, and is not local", async () => {
     // VITE_RPC and VITE_LOCAL are left unstubbed (undefined), not set to "": config.ts tells

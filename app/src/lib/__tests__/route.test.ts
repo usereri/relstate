@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { hashQuery, parseRoute, withHashQuery } from "../route";
+import { hashQuery, inviteToken, parseRoute, withHashQuery } from "../route";
 
 describe("parseRoute", () => {
   it("routes the known paths", () => {
-    expect(parseRoute("#/appraiser")).toBe("appraiser");
+    expect(parseRoute("#/invite/abc")).toBe("invite");
+    expect(parseRoute("#/invite")).toBe("invite");
     expect(parseRoute("#/app")).toBe("app");
     expect(parseRoute("#/signup")).toBe("signup");
     expect(parseRoute("#/signin")).toBe("signin");
@@ -12,8 +13,8 @@ describe("parseRoute", () => {
   });
 
   it("strips a query string or in-page fragment after the route", () => {
-    expect(parseRoute("#/appraiser?x=1")).toBe("appraiser");
-    expect(parseRoute("#/appraiser#frag")).toBe("appraiser");
+    expect(parseRoute("#/invite/abc?x=1")).toBe("invite");
+    expect(parseRoute("#/invite/abc#frag")).toBe("invite");
   });
 
   it("anything unknown falls back to home", () => {
@@ -21,13 +22,12 @@ describe("parseRoute", () => {
     expect(parseRoute("")).toBe("home");
   });
 
-  it("'#/app' is its own route, not swallowed by a prefix match against 'appraiser'", () => {
-    expect(parseRoute("#/app")).toBe("app");
-    expect(parseRoute("#/app")).not.toBe("appraiser");
+  it("the retired '#/appraiser' console route is gone", () => {
+    expect(parseRoute("#/appraiser")).toBe("home");
   });
 
   it("a path that merely starts with a known route but is not exactly it falls back to home", () => {
-    expect(parseRoute("#/appraiser-extra")).toBe("home");
+    expect(parseRoute("#/invited")).toBe("home");
     expect(parseRoute("#/apps")).toBe("home");
   });
 });
@@ -65,8 +65,21 @@ describe("withHashQuery", () => {
   });
 
   it("never touches the route segment, whatever the change does to the query", () => {
-    expect(withHashQuery("#/appraiser?x=1", (q) => q.set("y", "2"))).toBe("#/appraiser?x=1&y=2");
-    expect(withHashQuery("#/appraiser?x=1", (q) => q.delete("x"))).toBe("#/appraiser");
+    expect(withHashQuery("#/app?x=1", (q) => q.set("y", "2"))).toBe("#/app?x=1&y=2");
+    expect(withHashQuery("#/app?x=1", (q) => q.delete("x"))).toBe("#/app");
     expect(withHashQuery("#/signin", (q) => q.set("return", "app"))).toBe("#/signin?return=app");
+  });
+});
+
+describe("inviteToken", () => {
+  it("reads the token from the path the backend's e-mail link uses", () => {
+    expect(inviteToken("#/invite/abc123")).toBe("abc123");
+    expect(inviteToken("#/invite/abc123?x=1")).toBe("abc123");
+    expect(inviteToken("#/invite/a%2Fb")).toBe("a/b");
+  });
+  it("is empty without a token, on another route, or for a half-escaped one", () => {
+    expect(inviteToken("#/invite")).toBe("");
+    expect(inviteToken("#/app?tab=lease")).toBe("");
+    expect(inviteToken("#/invite/%E0%A4%A")).toBe("");
   });
 });

@@ -1,147 +1,115 @@
-// The appraiser directory, app half (docs/contracts/dispute-mediation.md §3).
+// Appraisal company names, app half (docs/contracts/dispute-mediation.md §4, revision 2).
 //
-// The chain holds no strings: an `Appraiser` entry carries `sha256(company name)` and nothing else
-// about who they are, so the human-readable directory lives off chain at `GET /api/appraisers`.
-// Because the hash is a commitment, the app does not have to *trust* that directory — it can check
-// it, which is the whole reason the hash is on chain. A name that hashes to the registry's
-// `name_hash` is marked verified; one that does not is still shown, as a name the backend asserts.
+// Revision 2 of the contract has no registry: no `Appraiser` account, no admin-maintained
+// directory, nothing to look up. A candidate is a company NAME a party types, and the only thing
+// the program ever compares is `sha256(canonical(name))`. So this module is no longer a directory
+// client — it is the app's MIRROR of the program's own name rules (`display_name`, `is_invisible`
+// and `name_hash` in programs/relstate/src/state.rs).
 //
-// Free of React and of web3.js: the registry half comes from `chain.loadAppraisers()`, and merging
-// the two is a pure function.
+// It mirrors, it does not decide. The program re-does every check and refuses what it dislikes
+// (`InvalidAppraiserName`). What the mirror buys is two things: somebody typing a company name
+// learns why it cannot be used before a transaction is spent finding out, and the app can say
+// WHICH candidate the chain's `agreed_name_hash` names without asking a backend for anything.
+//
+// Free of React, of web3.js and of `chain.ts`, so every rule here is testable on its own.
 import { sha256 } from "@noble/hashes/sha2";
-import { API } from "@/lib/sponsor";
+import idl from "@target/idl/relstate.json";
 import { safeName } from "@/lib/utils";
 
-/** True when this deployment has a backend that could serve the directory at all. */
-export const DIRECTORY_AVAILABLE = !!API;
-
-/** One row of `GET /api/appraisers`: a name for a key the on-chain registry already holds. */
-export interface DirectoryEntry {
-  wallet: string;
-  name: string;
-}
-
-/** A registry entry as the picker needs it: what the chain says, with a name where one is known. */
-export interface AppraiserOption {
-  /** The `Appraiser` PDA, which is what the instructions take. */
-  address: string;
-  wallet: string;
-  /** The directory's name, or `""` when nothing matched this key. */
-  name: string;
-  /** `sha256(name)` equals the registry's `name_hash`, so the name is committed, not just asserted. */
-  nameVerified: boolean;
-  active: boolean;
-  isDefault: boolean;
-  /** Base units of the lease mint, before the per-lease cap. */
-  fee: number;
-}
-
-/** What `mergeDirectory` needs of a registry entry, which is the shape `chain.AppraiserView` has. */
-export interface RegistryEntry {
-  address: string;
-  wallet: string;
-  active: boolean;
-  isDefault: boolean;
-  fee: number;
-  nameHashHex: string;
-}
-
-const hex = (bytes: Uint8Array) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-
-/** `sha256(name)` as lower-case hex, the commitment `register_appraiser` was given. */
-export const nameHash = (name: string): string => hex(sha256(new TextEncoder().encode(name)));
-
-/** Accepts either a bare array or `{ appraisers: [...] }`, and drops rows without a usable key. */
-export function directoryEntries(body: unknown): DirectoryEntry[] {
-  const rows = Array.isArray(body) ? body : Array.isArray((body as { appraisers?: unknown })?.appraisers) ? (body as { appraisers: unknown[] }).appraisers : [];
-  return rows.flatMap((row) => {
-    // A null or primitive element has to be skipped before any field is read: this function's
-    // whole job is to survive a body nobody here wrote, and `null.wallet` throws.
-    if (typeof row !== "object" || row === null) return [];
-    const r = row as { wallet?: unknown; key?: unknown; name?: unknown };
-    const wallet = typeof r.wallet === "string" ? r.wallet : typeof r.key === "string" ? r.key : "";
-    return wallet ? [{ wallet, name: typeof r.name === "string" ? r.name : "" }] : [];
-  });
-}
+type IdlArrayType = { array?: [unknown, number] };
+type IdlTypeDef = { name: string; type: { kind: string; fields?: { name: string; type: IdlArrayType | string }[] } };
 
 /**
- * The names for the registry, or an empty directory when there is nobody to ask.
+ * A fixed-size array's length, straight off the IDL.
  *
- * An empty answer is not a failure: without a backend, or against one that predates the route, the
- * picker still works off the on-chain registry alone and shows wallet addresses instead of names.
- * Anything else — a 500, a body that is not a list — is raised, because then the directory exists
- * and is broken, which is worth seeing.
+ * `MAX_NAME_LEN` and `MAX_CANDIDATES` are not `#[constant]`, so they never reach `idl.constants` —
+ * but the account layout states both: a name is `[u8; MAX_NAME_LEN]` and each side's list is
+ * `[Candidate; MAX_CANDIDATES]`. Reading them from there is what makes a program that grew a
+ * fourth slot, or a longer name, move the app with it instead of leaving a mirror that quietly
+ * disagrees with the chain.
  */
-export async function loadAppraiserDirectory(): Promise<DirectoryEntry[]> {
-  if (!API) return [];
-  const res = await fetch(`${API}/api/appraisers`);
-  if (res.status === 404) return [];
-  if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `The appraiser directory is unavailable (${res.status}).`);
-  }
-  return directoryEntries(await res.json());
+function arrayLen(typeName: string, fieldName: string): number {
+  const def = (idl as unknown as { types: IdlTypeDef[] }).types.find((t) => t.name === typeName);
+  const field = def?.type.fields?.find((f) => f.name === fieldName);
+  const array = typeof field?.type === "object" ? field.type.array : undefined;
+  if (!array) throw new Error(`the IDL's ${typeName}.${fieldName} is not a fixed-size array`);
+  return array[1];
 }
+
+/** Bytes of the normalised display name the program stores. Longer is `InvalidAppraiserName`. */
+export const MAX_NAME_LEN = arrayLen("Candidate", "name");
+
+/** How many companies one side may put forward, in its single `propose_appraisers` call. */
+export const MAX_CANDIDATES = arrayLen("Dispute", "landlord_candidates");
 
 /**
- * The registry, with a name attached where the directory has one.
+ * The program's `display_name`: trim, and collapse every run of whitespace to one space.
  *
- * The chain is the authority on who exists: a directory row for a key with no registry entry is
- * dropped, because the program would refuse it as a candidate anyway (the setup script has not
- * registered it yet). Ordering puts the pickable ones first, then names before bare keys, so a
- * suspended entry never heads the list.
+ * Whitespace is the Unicode `White_Space` property, which is what Rust's `split_whitespace` uses,
+ * so a no-break space between two words is the same company as a plain one. `\p{White_Space}` is
+ * that exact set; JavaScript's `\s` is NOT (it omits U+0085 and includes U+FEFF), and both of
+ * those differences are characters {@link nameProblem} refuses anyway.
  */
-export function mergeDirectory(registry: RegistryEntry[], directory: DirectoryEntry[]): AppraiserOption[] {
-  const names = new Map(directory.map((d) => [d.wallet, d.name]));
-  return registry
-    .map((entry) => {
-      const raw = names.get(entry.wallet) ?? "";
-      // Verify against the RAW string — the registry committed to what was registered — then show
-      // the sanitised one. A name is untrusted input that ends up beside an amount, so it must not
-      // be able to carry bidi overrides or run long enough to push the amount off the card.
-      const verified = !!raw && nameHash(raw) === entry.nameHashHex;
-      return {
-        address: entry.address,
-        wallet: entry.wallet,
-        name: safeName(raw),
-        nameVerified: verified,
-        active: entry.active,
-        isDefault: entry.isDefault,
-        fee: entry.fee,
-      };
-    })
-    .sort(
-      (a, b) =>
-        Number(b.active) - Number(a.active) ||
-        Number(!!b.name) - Number(!!a.name) ||
-        (a.name || a.wallet).localeCompare(b.name || b.wallet),
-    );
-}
+export const displayName = (raw: string): string => raw.split(/\p{White_Space}+/u).filter(Boolean).join(" ");
 
 /**
- * The label to use where a click commits something — a pick, a binding, a verdict.
+ * Unicode format and bidi-control code points: exactly the ranges the program's `is_invisible`
+ * lists, in the same order.
  *
- * Only a name the chain's `name_hash` confirms may stand in for identity there; anything else
- * shows the key, because an unverified name is the directory's claim about who this is and the
- * key is the only thing the program actually acts on. Browsing lists may still show an unverified
- * name, where it sits next to its own missing verification mark rather than next to a button.
+ * They render as nothing, or reorder what is around them, so two rows a person cannot tell apart
+ * would carry different hashes — which decides which fee is agreed and which company the
+ * invitation is sent to (review G6). Whitespace-class separators (NBSP, U+2028, U+3000) are
+ * absent on purpose: {@link displayName} has already collapsed those to a plain space.
  */
-export function trustedLabel(o: Pick<AppraiserOption, "name" | "nameVerified" | "wallet"> | undefined, shorten: (s: string) => string): string {
-  return o?.nameVerified && o.name ? o.name : shorten(o?.wallet ?? "");
-}
+const INVISIBLE =
+  /[­؀-؅؜۝܏᠎​-‏‪-‮⁠-⁤⁦-⁯﻿￹-￻\u{E0001}\u{E0020}-\u{E007F}]/u;
+
+/** The program measures the name in BYTES of UTF-8, so "Łódź" is eight of the sixty-four. */
+export const nameBytes = (s: string): number => new TextEncoder().encode(s).length;
 
 /**
- * `trustedLabel` for a key you already hold.
- *
- * The directory is off chain and optional: it 404s on a backend that predates the route, and the
- * registry itself may not have loaded when a bound appraiser is already on screen. `trustedLabel`
- * then has no entry and no key to shorten, and would render an empty label exactly where A.4 says
- * the key belongs — on a commit site, next to the deposit it moves.
+ * Why the program would refuse this name, in words somebody can act on, or null when it would be
+ * accepted. Branch for branch, this is `display_name`'s single `require!` (`InvalidAppraiserName`).
  */
-export function trustedLabelFor(o: Pick<AppraiserOption, "name" | "nameVerified" | "wallet"> | undefined, wallet: string, shorten: (s: string) => string): string {
-  return trustedLabel(o ?? { wallet, name: "", nameVerified: false }, shorten);
+export function nameProblem(raw: string): string | null {
+  const display = displayName(raw);
+  if (!display) return "Type the appraisal company's name.";
+  const bytes = nameBytes(display);
+  if (bytes > MAX_NAME_LEN)
+    return `That name takes ${bytes} characters of storage and the limit is ${MAX_NAME_LEN}. Shorten it — the legal form ("sp. z o.o.") can be left off.`;
+  if (/\p{Cc}/u.test(display)) return "That name contains a control character. Retype it rather than pasting it.";
+  if (INVISIBLE.test(display))
+    return "That name contains an invisible character, so two different companies could look identical on screen. Retype it by hand rather than pasting it.";
+  return null;
 }
 
-/** How to call an appraiser on screen: their directory name, or a shortened key when there is none. */
-export const appraiserLabel = (o: Pick<AppraiserOption, "name" | "wallet">, shorten: (s: string) => string): string =>
-  o.name || shorten(o.wallet);
+const hex = (bytes: Uint8Array): string => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+
+/**
+ * `ascii_lowercase`, never `toLowerCase()`.
+ *
+ * The program folds ASCII only and normalises nothing, so "Wycena Łódź" and "WYCENA ŁÓDŹ" are two
+ * different companies to it. An app that folded Unicode here would show the two rows as one name
+ * and then watch the pick fail with `CandidateNotProposed`.
+ */
+export const canonicalName = (display: string): string => display.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
+/**
+ * `sha256(canonical(display_name(raw)))` as lower-case hex: the one value the program compares, and
+ * the one the `Dispute` account stores next to each name.
+ */
+export const nameHashHex = (raw: string): string => hex(sha256(new TextEncoder().encode(canonicalName(displayName(raw)))));
+
+/** Two names are the same company exactly when their hashes match — nothing else is compared. */
+export const sameCompany = (a: string, b: string): boolean => nameHashHex(a) === nameHashHex(b);
+
+/**
+ * A name read back off the chain, made safe to put next to an amount.
+ *
+ * The program rejects control and invisible characters, so for every name it accepted this is the
+ * identity. It stays because a display string that sits beside money should not depend on a remote
+ * program's validation being what this app believes it to be — and the cap is `MAX_NAME_LEN`, not
+ * `safeName`'s shorter default, so a name the program accepted is never truncated with an ellipsis
+ * on the step where somebody confirms it.
+ */
+export const companyName = (stored: string): string => safeName(stored, MAX_NAME_LEN);
