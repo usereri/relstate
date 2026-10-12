@@ -2,7 +2,7 @@ import "./noenv.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { getAddressEncoder, generateKeyPairSigner } from "@solana/kit";
-import { FALLBACK_LAYOUTS, accountLayout, computeLayout, fieldOffset, type Idl } from "../src/layout.ts";
+import { FALLBACK_CONSTANTS, FALLBACK_LAYOUTS, accountLayout, computeLayout, fieldOffset, idlConstant, type Idl } from "../src/layout.ts";
 import { LEASE_DISCRIMINATOR, decodeLease } from "../src/lease.ts";
 import { IDL } from "./idlfixtures.ts";
 
@@ -47,9 +47,26 @@ describe("the fallback snapshot", () => {
   });
 
   it("covers every account this backend reads or sizes", () => {
-    // Lease (rent amount, status, parties), Profile + Application (rent dust), and the two D2
-    // accounts appraiser-chain.ts reads to work out who is bound and what the fee would be.
-    assert.deepEqual(Object.keys(FALLBACK_LAYOUTS).sort(), ["Application", "Appraiser", "Dispute", "Lease", "Profile"]);
+    // Lease (rent amount, status, parties), Profile + Application + Dispute (rent dust), and
+    // Dispute again for dispute.ts, which reads the agreed name hash and the bound wallet. There is
+    // no Appraiser account any more: revision 2 of mediation removed the registry.
+    assert.deepEqual(Object.keys(FALLBACK_LAYOUTS).sort(), ["Application", "Dispute", "Lease", "Profile"]);
+  });
+
+  // The constants are snapshotted for the same reason the layouts are — a deployed backend carries
+  // no target/idl — so they need the same guard against going stale.
+  it("pins every program constant it snapshots to the IDL", { skip: idl === null }, () => {
+    for (const [name, value] of Object.entries(FALLBACK_CONSTANTS)) {
+      const live = idl!.constants?.find((c) => c.name === name);
+      assert.ok(live !== undefined, `the program no longer has a constant ${name}: drop it from FALLBACK_CONSTANTS`);
+      assert.equal(value, live.value, `FALLBACK_CONSTANTS.${name} in backend/src/layout.ts is stale: the program says ${live.value}`);
+      assert.equal(idlConstant(name, idl), Number(live.value));
+    }
+  });
+
+  it("reads a constant from the snapshot when there is no IDL, and refuses an unknown one", () => {
+    assert.equal(idlConstant("SELECTION_WINDOW_SECS", null), Number(FALLBACK_CONSTANTS.SELECTION_WINDOW_SECS));
+    assert.throws(() => idlConstant("NOPE_SECS", null), /no fallback value for the program constant NOPE_SECS/);
   });
 
   it("is what accountLayout returns when there is no IDL", () => {

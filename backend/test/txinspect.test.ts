@@ -150,9 +150,34 @@ describe("assertRelstateInstructionsAllowed", () => {
     assert.equal(new Set(classified).size, classified.length, "an instruction appears in both lists");
   });
 
-  it("accepts the party instructions, including the five new mediation ones", async () => {
-    for (const name of ["release_deposit", "abandon_dispute", "escalate_to_mediation", "propose_appraisers", "pick_appraiser", "bind_default_appraiser", "submit_verdict", "expire_mediation", "settle_dispute"]) {
+  // Every one of these is signed by a lease party or by the bound appraiser, and none of the three
+  // holds SOL. Phase 2 was the gap review G2 found: without propose/confirm_appraiser_key here the
+  // sponsor refused to co-sign the wallet hand-off, which made mediation unreachable for every
+  // sponsored wallet — that is, for all of them.
+  it("accepts the party instructions, including all six mediation ones", async () => {
+    for (const name of [
+      "release_deposit",
+      "abandon_dispute",
+      "escalate_to_mediation",
+      "propose_appraisers",
+      "pick_appraiser",
+      "propose_appraiser_key",
+      "confirm_appraiser_key",
+      "submit_verdict",
+      "expire_mediation",
+      "settle_dispute",
+    ]) {
       assert.equal(await check(instructionDiscriminator(name)), undefined, `${name} should be sponsorable`);
+    }
+  });
+
+  it("no longer knows the registry instructions the rework deleted", async () => {
+    for (const name of ["register_appraiser", "set_appraiser_active", "set_default_appraiser", "bind_default_appraiser"]) {
+      assert.equal(await check(instructionDiscriminator(name)), "instruction-not-allowed", `${name} is gone from the program and must not be classified`);
+      assert.ok(
+        ![...SPONSORABLE_RELSTATE_INSTRUCTIONS, ...ADMIN_ONLY_RELSTATE_INSTRUCTIONS].includes(name as never),
+        `${name} is still listed in backend/src/contracts.ts but no longer exists in the program`,
+      );
     }
   });
 
@@ -165,10 +190,10 @@ describe("assertRelstateInstructionsAllowed", () => {
 
   it("refuses an admin instruction and names it", async () => {
     const { sponsor, user } = await twoKeys();
-    const tx = inspectTransaction(await buildTx({ feePayer: sponsor.address, instructions: [relstateIx(user, instructionDiscriminator("register_appraiser"))] }));
+    const tx = inspectTransaction(await buildTx({ feePayer: sponsor.address, instructions: [relstateIx(user, instructionDiscriminator("init_config"))] }));
     assert.throws(
       () => assertRelstateInstructionsAllowed(tx),
-      (e: unknown) => e instanceof RejectedTransaction && e.code === "instruction-not-allowed" && /register_appraiser/.test(e.message),
+      (e: unknown) => e instanceof RejectedTransaction && e.code === "instruction-not-allowed" && /init_config/.test(e.message),
     );
     for (const name of ADMIN_ONLY_RELSTATE_INSTRUCTIONS) {
       assert.equal(await check(instructionDiscriminator(name)), "instruction-not-allowed", `${name} must not be sponsorable`);

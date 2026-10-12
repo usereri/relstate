@@ -6,12 +6,12 @@ import { Hono } from "hono";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
-import { VerdictRefused, fetchAppraiser } from "./appraiser-chain.ts";
-import { appraiserNameHash, hex } from "./appraisers.ts";
-import { AuthError, assertAdmin, assertVerdictConsole, createSessionToken, sessionFromAuthorizationHeader } from "./auth.ts";
+import { AuthError, assertAdmin, createSessionToken, sessionFromAuthorizationHeader } from "./auth.ts";
 import { verifyRentPayment } from "./confidential.ts";
 import { RELSTATE_PROGRAM, type HealthResponse, type SponsorInfoResponse, type SponsorRequest, type TreasuryInvariantView } from "./contracts.ts";
 import { env, redactedRpcUrl } from "./env.ts";
+import { DisputeDecodeError, DisputeNotFound } from "./dispute.ts";
+import { InviteError } from "./invites.ts";
 import { LeaseDecodeError, LeaseNotFound, fetchLease, type DecodedLease } from "./lease.ts";
 import { LimitError } from "./limits.ts";
 import { KycError, mockVerificationPage } from "./providers/kyc.ts";
@@ -31,7 +31,7 @@ const asInvariantView = (report: InvariantReport): TreasuryInvariantView => repo
 /** Maps a thrown error to a status and a message safe to return to a caller. */
 function problem(error: unknown): { status: 400 | 401 | 403 | 404 | 409 | 429 | 500 | 502 | 503; body: Record<string, unknown> } {
   if (error instanceof RejectedTransaction) return { status: 400, body: { error: error.message, code: error.code } };
-  if (error instanceof VerdictRefused) return { status: 409, body: { error: error.message, code: error.code } };
+  if (error instanceof InviteError) return { status: error.status, body: { error: error.message, code: error.code } };
   if (error instanceof AuthError) return { status: 401, body: { error: error.message, code: "unauthorized" } };
   if (error instanceof RateLimited) return { status: 429, body: { error: error.message, code: "rate-limited", scope: "ip" } };
   if (error instanceof LimitError) return { status: 429, body: { error: error.message, code: "rate-limited", scope: error.scope } };
@@ -62,6 +62,8 @@ function problem(error: unknown): { status: 400 | 401 | 403 | 404 | 409 | 429 | 
   // Our bug, not the caller's, but a silent "internal error" would hide the one thing worth
   // knowing: this backend's hand-written Lease layout no longer matches the deployed program.
   if (error instanceof LeaseDecodeError) return { status: 500, body: { error: error.message, code: "lease-layout" } };
+  if (error instanceof DisputeDecodeError) return { status: 500, body: { error: error.message, code: "dispute-layout" } };
+  if (error instanceof DisputeNotFound) return { status: 404, body: { error: error.message, code: "not-found" } };
   // Anything else is a bug or an upstream failure: log it, return nothing specific.
   console.error("unhandled error:", error);
   return { status: 500, body: { error: "internal error", code: "internal" } };
@@ -212,6 +214,9 @@ export function createApp(
   // Per-IP limiter for the unauthenticated session-issuing routes (wallet login and mock sessions).
   const limit = createIpLimiter(env.authRatePerMinute);
   const treasuryLimit = createIpLimiter(env.treasuryRatePerMinute);
+  // Per WALLET, not per IP: issuing an invite sends an e-mail and claiming one decides which wallet
+  // both parties are about to confirm, so the budget belongs to the session that spends it.
+  const inviteLimit = createIpLimiter(env.authRatePerMinute);
   const clientIp = (c: Parameters<typeof getConnInfo>[0]): string => {
     let socket: string | undefined;
     try {
@@ -636,98 +641,47 @@ export function createApp(
     });
   }
 
-  // --- Appraisers (D2, docs/contracts/dispute-mediation.md §3, §10) -------------
+  // --- Appraiser invitations (D2 revision 2, docs/contracts/dispute-mediation.md §4, §10) ------
+  //
+  // The off-chain carrier between the company name the parties agreed on chain and the wallet that
+  // will sign the verdict. None of these routes can bind anything: the parties do that themselves
+  // with `propose_appraiser_key` / `confirm_appraiser_key`, having read the wallet from here. See
+  // `invites.ts` for why that is the whole security model.
 
-  /**
-   * The human-readable directory the chain deliberately does not hold. Public: names are fictional,
-   * wallets are public keys. `nameHash` is what `Appraiser.name_hash` must equal, so anyone can check
-   * the directory against the registry. Empty until APPRAISERS is configured.
-   */
-  // One registry read per entry is cheap but not free, so the answer is memoised for a few seconds
-  // per process and the route shares the per-IP limiter the unauthenticated login routes use.
-  const DIRECTORY_TTL_MS = 5000;
-  let directoryMemo: { at: number; body: unknown } | undefined;
-  app.get("/api/appraisers", async (c) => {
-    limit(`d:${clientIp(c)}`);
-    if (directoryMemo !== undefined && Date.now() - directoryMemo.at < DIRECTORY_TTL_MS) return c.json(directoryMemo.body);
-    // In live mode the registry is the truth for fee/active/default: the program applies ITS fee, so
-    // a directory that disagrees would show a verdict preview the chain will not honour. Best effort
-    // with a short timeout (a slow RPC must not take the directory down); drift is flagged, not hidden.
-    const onChain = async (wallet: Address) => {
-      if (env.mode !== "live") return undefined;
-      try {
-        return await Promise.race([
-          fetchAppraiser(services.client().rpc, wallet),
-          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 3000)),
-        ]);
-      } catch {
-        return undefined;
-      }
-    };
-    const appraisers = await Promise.all(
-      services.appraisers().map(async (a) => {
-        const record = await onChain(a.wallet);
-        const fee = record ? record.fee : a.fee;
-        return {
-          name: a.name,
-          wallet: a.wallet,
-          fee: fee.toString(),
-          feeSource: record ? "chain" : "directory",
-          isDefault: record ? record.isDefault : a.isDefault,
-          active: record ? record.active : null,
-          registered: record === undefined ? null : record !== null,
-          // The directory and the registry disagree: the setup script cannot edit a fee, so say so.
-          drift: record ? record.fee !== a.fee || record.nameHash !== hex(appraiserNameHash(a.name)) || record.isDefault !== a.isDefault : false,
-          nameHash: hex(appraiserNameHash(a.name)),
-        };
-      }),
-    );
-    directoryMemo = { at: Date.now(), body: { appraisers } };
-    return c.json(directoryMemo.body);
+  /** A party invites the agreed company. The e-mail address is write-only: no route ever returns it. */
+  app.post("/api/invites", async (c) => {
+    const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
+    inviteLimit(`i:${session.wallet}`);
+    const body = await readJson<{ lease?: unknown; companyName?: unknown; email?: unknown }>(c);
+    for (const key of Object.keys(body)) {
+      if (key !== "lease" && key !== "companyName" && key !== "email") throw new RejectedTransaction(`unknown field ${key}`, "malformed-body");
+    }
+    return c.json(await services.invites().issue({ lease: body.lease, companyName: body.companyName, email: body.email, wallet: session.wallet }));
   });
 
   /**
-   * Demo appraiser console: signs a verdict with a configured appraiser key. Operator-only (its own
-   * VERDICT_CONSOLE_TOKEN, never ADMIN_TOKEN) because the key decides a deposit. The route never takes a key or a signer from the body:
-   * the appraiser is whoever the chain says is bound, and the backend must hold that key or it refuses.
-   * `dryRun: true` returns what the verdict would pay and sends nothing.
+   * What the appraiser's page shows before they have a wallet. Public, because the whole point is
+   * that the recipient has no account yet; the token is the authorisation, and the per-IP limiter
+   * is what makes guessing one pointless.
    */
-  app.post("/api/admin/appraiser/verdict", async (c) => {
-    treasuryLimit(`a:${clientIp(c)}`);
-    assertVerdictConsole(c.req.header("authorization"));
-    const body = await readJson<{ lease?: unknown; deduction?: unknown; dryRun?: unknown }>(c);
-    if (typeof body.lease !== "string" || !isAddress(body.lease)) {
-      throw new RejectedTransaction("lease must be the lease account's address", "malformed-body");
-    }
-    const deduction = parseDeduction(body.deduction);
-    const dryRun = parseOptionalBoolean(body.dryRun, "dryRun");
-    // Any key the body carries beyond these is a typo for a flag we would silently ignore (a verdict
-    // that goes live when the operator meant a preview), so unknown keys are refused too.
-    for (const key of Object.keys(body)) {
-      if (key !== "lease" && key !== "deduction" && key !== "dryRun") throw new RejectedTransaction(`unknown field ${key}`, "malformed-body");
-    }
-    const allowed = env.appraisers.consoleLeases.split(",").map((l) => l.trim()).filter(Boolean);
-    if (allowed.length > 0 && !allowed.includes(body.lease)) {
-      throw new RejectedTransaction("this lease is not on VERDICT_CONSOLE_LEASES", "lease-not-allowed");
-    }
-    // Who asked, for which lease and amount. Never a token or key.
-    console.log(`verdict console: ${dryRun ? "dry run" : "SUBMIT"} lease=${body.lease} deduction=${deduction} ip=${clientIp(c)}`);
-    const chain = await services.appraiserChain();
-    const input = { lease: body.lease as Address, deduction };
-    const view = (plan: Awaited<ReturnType<typeof chain.plan>>) => ({
-      lease: plan.lease,
-      appraiser: plan.appraiser,
-      deduction: plan.deduction.toString(),
-      deposit: plan.deposit.toString(),
-      toTenant: plan.split.toTenant.toString(),
-      toLandlord: plan.split.toLandlord.toString(),
-      feePaid: plan.split.feePaid.toString(),
-      appraiserAta: plan.appraiserAta,
-      appraiserAtaExists: plan.appraiserAtaExists,
-    });
-    if (dryRun) return c.json({ dryRun: true, ...view(await chain.plan(input)) });
-    const result = await chain.submit(input);
-    return c.json({ dryRun: false, signatures: result.signatures, ...view(result.plan) });
+  app.get("/api/invites/:token", (c) => {
+    limit(`iv:${clientIp(c)}`);
+    return c.json(services.invites().read(c.req.param("token")));
+  });
+
+  /** The appraiser accepts, binding the invite to the wallet of their own session. */
+  app.post("/api/invites/:token/claim", (c) => {
+    const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
+    inviteLimit(`c:${session.wallet}`);
+    return c.json(services.invites().claim(c.req.param("token"), session.wallet as Address));
+  });
+
+  /** Either party reads the claimed wallet, which is what their app passes to phase 2. */
+  app.get("/api/invites", async (c) => {
+    const session = sessionFromAuthorizationHeader(c.req.header("authorization"));
+    const lease = c.req.query("lease");
+    if (lease === undefined) throw new RejectedTransaction("lease is required: GET /api/invites?lease=<address>", "malformed-query");
+    return c.json(await services.invites().pending({ lease, wallet: session.wallet }));
   });
 
   app.notFound((c) => c.json({ error: "not found", code: "not-found" }, 404));

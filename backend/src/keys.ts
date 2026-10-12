@@ -4,7 +4,6 @@ import { existsSync, readFileSync } from "node:fs";
 import type { webcrypto } from "node:crypto";
 import { createKeyPairSignerFromBytes, getBase58Encoder, getBase58Decoder, type KeyPairSigner } from "@solana/kit";
 import { AeKey, ConfidentialKeys, ElGamalKeypair } from "@solana/zk-sdk";
-import { parseKeySpecs } from "./appraisers.ts";
 import { env } from "./env.ts";
 
 export type KeyRole = "feePayer" | "treasury" | "attestationIssuer";
@@ -103,11 +102,6 @@ const secretValues = (): string[] =>
     env.onramp.stripeWebhookSecret,
     env.sessionSecret,
     env.adminToken,
-    env.appraisers.consoleToken,
-    // Both the whole variable and each spec in it: one of them may be an inline secret, and the
-    // combined string would not match a message that printed only the one that failed.
-    env.appraisers.keypairs,
-    ...parseKeySpecs(env.appraisers.keypairs),
   ].filter((v) => v !== "");
 
 /** Ed25519 keypair bytes in CLI layout, via WebCrypto — same approach as `spikes/ct`. */
@@ -147,40 +141,15 @@ export function getKey(role: KeyRole): Promise<LoadedKey> {
 }
 
 /**
- * The appraiser keys the demo console may sign a verdict with, indexed by their own wallet address.
+ * Test seam: drops the memoised keys so a test can re-read a changed environment.
  *
- * No wallet → key mapping is configured anywhere: the address IS derived from the key, so a
- * mismatch between "which appraiser this is" and "which key signs for them" cannot be configured
- * into existence. A key that is not the bound appraiser's is simply absent from this map, and
- * `appraiser-chain.ts` refuses rather than substituting another one.
- *
- * Unlike the three role keys there is no ephemeral fallback: a throwaway appraiser key would sign
- * verdicts as a wallet no registry entry names, which fails on chain and would look like a bug in
- * the program. An unconfigured console is an empty map.
+ * There is deliberately no appraiser key here any more. Revision 2 of mediation has the appraiser
+ * sign the verdict with their own wallet (docs/contracts/dispute-mediation.md §10 item 8), so this
+ * backend holds no key that can decide a deposit — only the three role keys above, none of which
+ * can.
  */
-export async function loadAppraiserSigners(specs: readonly string[]): Promise<Map<string, KeyPairSigner>> {
-  const byAddress = new Map<string, KeyPairSigner>();
-  for (const [index, spec] of specs.entries()) {
-    // The label is the POSITION, never the spec: the spec may be the secret itself.
-    const signer = await loadKeyPairSigner(spec, `APPRAISER_KEYPAIRS[${index}]`);
-    if (byAddress.has(signer.address)) {
-      throw new KeySpecError(`APPRAISER_KEYPAIRS[${index}]: ${signer.address} is listed twice`);
-    }
-    byAddress.set(signer.address, signer);
-  }
-  return byAddress;
-}
-
-let appraiserSigners: Promise<Map<string, KeyPairSigner>> | undefined;
-/** Memoised `loadAppraiserSigners` over `APPRAISER_KEYPAIRS`. */
-export function getAppraiserSigners(): Promise<Map<string, KeyPairSigner>> {
-  return (appraiserSigners ??= loadAppraiserSigners(parseKeySpecs(env.appraisers.keypairs)));
-}
-
-/** Test seam: drops the memoised keys so a test can re-read a changed environment. */
 export function resetKeyCache(): void {
   loaded.clear();
-  appraiserSigners = undefined;
 }
 
 export type ConfidentialKeyPair = { elgamal: ElGamalKeypair; ae: AeKey };
