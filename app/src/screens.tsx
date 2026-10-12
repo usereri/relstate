@@ -26,7 +26,8 @@ import { Doc } from "@/lib/hash";
 import * as chain from "@/lib/chain";
 import { ApplicationView, DISCOUNT_PCT, DisputeView, LeaseView, ListingView, NewListing, Role, Snapshot, Status, isWallet, maxDiscountRent, qualifiesForDiscount } from "@/lib/chain";
 import * as med from "@/lib/mediation";
-import { CAN_FAST_FORWARD, CLAIM_WINDOW_SECS, PERIOD_SECS, TERM_PERIODS, USDC } from "@/lib/config";
+import { CAN_FAST_FORWARD, CLAIM_WINDOW_SECS, PERIOD_SECS, USDC } from "@/lib/config";
+import { DEFAULT_TERM_PERIODS, MAX_TERM_PERIODS, MIN_TERM_PERIODS, parseTerm, periodWord, termLabel } from "@/lib/term";
 import { recordLine, unique, useRecords } from "@/lib/records";
 import { useChain, useChainClock } from "@/lib/useChain";
 import { cn, duration, short, usdc } from "@/lib/utils";
@@ -46,7 +47,7 @@ export interface Handlers {
   closeListing: (l: ListingView) => Promise<boolean>;
   apply: (l: ListingView) => Promise<boolean>;
   closeApplication: (a: ApplicationView) => Promise<boolean>;
-  propose: (id: string, l: ListingView, tenant: string, doc: Doc, application?: ApplicationView) => Promise<boolean>;
+  propose: (id: string, l: ListingView, tenant: string, doc: Doc, term: number, application?: ApplicationView) => Promise<boolean>;
   fund: (l: LeaseView, doc: Doc) => Promise<boolean>;
   pay: (l: LeaseView) => Promise<boolean>;
   release: (l: LeaseView, deduction: number) => Promise<boolean>;
@@ -130,6 +131,8 @@ export function ProposeLease({
   const [doc, setDoc] = useState<Doc | null>(null);
   const [tenant, setTenant] = useState(initial?.tenant ?? "");
   const [pick, setPick] = useState(initial?.listing ?? "");
+  const [termText, setTermText] = useState(String(DEFAULT_TERM_PERIODS));
+  const term = parseTerm(termText);
   const listing = listings.find((l) => l.address === pick) ?? listings[0];
   const applications = useChain(() => chain.loadApplications({ landlord: me }), [me]) ?? [];
   const applicants = applications.filter((a) => a.listing === listing?.address);
@@ -151,7 +154,7 @@ export function ProposeLease({
   const tooBig = valid && chain.goodStanding(record) && !discount;
   const deposit = depositFor(listing.deposit, discount ? DISCOUNT_PCT : 0);
   const propose = () =>
-    doc && valid && h.propose(chain.newId(), listing, who, doc, applicants.find((a) => a.tenant === who));
+    doc && valid && term.ok && h.propose(chain.newId(), listing, who, doc, term.value, applicants.find((a) => a.tenant === who));
 
   return (
     <>
@@ -249,12 +252,27 @@ export function ProposeLease({
                 ))}
               </select>
             </label>
+            <label className="flex flex-col gap-1.5 text-sm font-semibold">
+              Lease term ({periodWord(PERIOD_SECS)}s)
+              <Input
+                inputMode="numeric"
+                className="font-normal"
+                value={termText}
+                onChange={(e) => setTermText(e.target.value)}
+                aria-invalid={!term.ok}
+              />
+              <span className={cn("text-xs font-normal", term.ok ? "text-muted-foreground" : "text-destructive")}>
+                {term.ok
+                  ? `${termLabel(term.value, PERIOD_SECS)}: the tenant pays rent ${term.value} time${term.value === 1 ? "" : "s"}. Between ${MIN_TERM_PERIODS} and ${MAX_TERM_PERIODS}.`
+                  : term.error}
+              </span>
+            </label>
             <DocPicker label="Lease document" hint="PDF or scan, signed off-chain" doc={doc} onDoc={setDoc} />
             <Terms
               rows={termRows({
                 rent: listing.rent,
                 deposit,
-                term: TERM_PERIODS,
+                term: term.ok ? term.value : DEFAULT_TERM_PERIODS,
                 periodSecs: PERIOD_SECS,
                 apartment: listing.title,
                 where: [listing.city, listing.region].filter(Boolean).join(" · "),
@@ -265,7 +283,7 @@ export function ProposeLease({
         </Card>
       </div>
       <StickyAction>
-        <Button size="lg" disabled={!doc || !valid || !!h.busy} onClick={propose}>
+        <Button size="lg" disabled={!doc || !valid || !term.ok || !!h.busy} onClick={propose}>
           <Handshake /> {h.busy ?? "Propose lease"}
         </Button>
       </StickyAction>
@@ -435,6 +453,7 @@ export function ActiveLease({ lease, listing, now, role, h }: { lease: LeaseView
             <Terms
               rows={[
                 ...(apartmentWhere(lease, listing ? [listing] : []) ? ([["Where", apartmentWhere(lease, listing ? [listing] : [])]] as [string, string][]) : []),
+                ["Term", termLabel(lease.termPeriods, lease.periodSecs)],
                 ["Rent paid", `${usdc(lease.paidCount * lease.rent)} of ${usdc(lease.termPeriods * lease.rent)} USDC`],
                 ["Deposit in vault", `${usdc(lease.deposit)} USDC${lease.discountPct ? ` (−${lease.discountPct}% good standing)` : ""}`],
                 ["Grace period", duration(lease.graceSecs)],
@@ -1084,7 +1103,7 @@ export function LeaseTab({
                       <span className="block truncate text-sm font-medium">{apartmentName(l, listings)}</span>
                       <span className="text-xs text-muted-foreground">
                         {role === "landlord" ? "Tenant" : "Landlord"} {short(role === "landlord" ? l.tenant : l.landlord, 4)} · {usdc(l.rent)} USDC ·{" "}
-                        {l.paidCount}/{l.termPeriods} paid
+                        {l.paidCount}/{l.termPeriods} paid · {termLabel(l.termPeriods, l.periodSecs)}
                       </span>
                     </span>
                     {statusBadge(l.status)}

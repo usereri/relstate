@@ -162,10 +162,9 @@ make demo-setup     # terminal 2: mint + fund the built-in test wallets + four d
 make demo-app       # terminal 2: the web app at http://localhost:5173
 ```
 
-Open **two tabs**:
+Open **two tabs** at `http://localhost:5173/` and pick a different role in each at sign-in (the role switch in the header changes it any time; it is remembered per tab).
 
-- `http://localhost:5173/?role=landlord`
-- `http://localhost:5173/?role=tenant`
+For scripted demos and tests only, `?role=landlord` / `?role=tenant` opens a tab directly as that role (a testing override, not part of normal navigation; see [`docs/env-checklist.md`](docs/env-checklist.md#role-and-session)).
 
 In each, open **Connect wallet** and pick the built-in **Test wallet**. It is a fixed key per role for local networks, so the two tabs are two different people and no extension is needed.
 
@@ -174,9 +173,9 @@ In each, open **Connect wallet** and pick the built-in **Test wallet**. It is a 
 ### Try the whole flow (about 3 minutes)
 
 1. **Tenant tab:** browse *Apartments* and click **Apply to rent**.
-2. **Landlord tab:** in *My listings* add a listing (photos are files in `app/public/listings`, for example `kazimierz.jpg`). In *Leases*, the applicant appears with their record. Click **Propose lease** and attach the sample contract.
+2. **Landlord tab:** in *My listings* add a listing (photos are files in `app/public/listings`, for example `kazimierz.jpg`). In *Leases*, the applicant appears with their record. Choose the lease term (months, default 3), click **Propose lease** and attach the sample contract.
 3. **Tenant tab:** *My lease*, attach the same contract, accept. The deposit locks in the vault. A different file is refused.
-4. **Pay rent** three times using the demo-clock buttons (local network only) to jump forward. Try one late payment inside the grace period.
+4. **Pay rent** once per period of the term (three by default) using the demo-clock buttons (local network only) to jump forward. Try one late payment inside the grace period.
 5. **Landlord tab:** release the deposit, with or without a deduction. Or let the tenant claim it, or declare a default.
 6. **Profiles** now show the outcome. Propose another lease to the same tenant and the deposit is 50% lower.
 

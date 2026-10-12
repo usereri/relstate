@@ -3,6 +3,7 @@ import { UserRound, ArrowLeftRight, Building2, ChevronDown, Copy, Home, KeyRound
 import { AuthPage } from "@/Auth";
 import { Landing } from "@/Landing";
 import { Logo, useRoute } from "@/components/Brand";
+import { ROLES_LIST, dropRoleOverride, initialRole, writeTabRole } from "@/lib/role";
 import { go, hashQuery, updateHash } from "@/lib/route";
 import { Gamify } from "@/gamify";
 import { initials, loadAccount } from "@/lib/account";
@@ -38,22 +39,14 @@ const VerdictConsole = APPRAISER_CONSOLE
   ? lazy(() => import("@/screens/Verdict").then((m) => ({ default: m.VerdictConsole })))
   : null;
 
-const ROLE_KEY = "relstate.role";
 const storedRole = (): Role | null => {
-  try {
-    const r = new URLSearchParams(location.search).get("role") ?? sessionStorage.getItem(ROLE_KEY);
-    return r === "landlord" || r === "tenant" ? r : null;
-  } catch {
-    return null;
-  }
+  const r = initialRole(globalThis.location?.search ?? "");
+  if (r) writeTabRole(r);
+  return r;
 };
 const storeRole = (r: Role | null) => {
-  try {
-    if (r) sessionStorage.setItem(ROLE_KEY, r);
-    else sessionStorage.removeItem(ROLE_KEY);
-  } catch {
-    /* private mode: the role is simply asked again on reload */
-  }
+  writeTabRole(r);
+  dropRoleOverride();
 };
 
 const ROLES: Record<Role, { label: string; icon: typeof Home; blurb: string; does: string[] }> = {
@@ -134,8 +127,7 @@ export default function App() {
         <EmbeddedWalletProvider role={role}>
           <Workspace
             role={role}
-            switchRole={() => {
-              const next: Role = role === "tenant" ? "landlord" : "tenant";
+            switchRole={(next) => {
               storeRole(next);
               setRole(next);
             }}
@@ -182,7 +174,7 @@ export const tabFromHash = (role: Role, hash = globalThis.location?.hash ?? ""):
   return TABS[role].find(([t]) => t === asked)?.[0] ?? TABS[role][0][0];
 };
 
-function Workspace({ role, switchRole, signOut }: { role: Role; switchRole: () => void; signOut: () => void }) {
+function Workspace({ role, switchRole, signOut }: { role: Role; switchRole: (r: Role) => void; signOut: () => void }) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
     // A hidden tab polls nothing; coming back refreshes at once.
@@ -223,11 +215,12 @@ function Shell({
   readError,
 }: {
   role: Role;
-  switchRole: () => void;
+  switchRole: (r: Role) => void;
   signOut: () => void;
   bump: () => void;
   readError: string | null;
 }) {
+  const pickRole = (r: Role) => r !== role && switchRole(r);
   const me = useMe();
   const address = me?.key.toBase58() ?? null;
   // The URL owns the tab. `setTab` writes it and the listener below reads it back, so the address
@@ -325,12 +318,12 @@ function Shell({
       return run("Applying…", (m) => chain.applyTo(m, l));
     },
     closeApplication: (a) => run("Closing application…", (m) => chain.closeApplication(m, a)),
-    propose: async (id, l, tenant, doc: Doc, application) => {
+    propose: async (id, l, tenant, doc: Doc, term, application) => {
       if (address && (await needsVerification(address))) {
         sendToVerify("propose");
         return false;
       }
-      return run("Proposing lease…", (m) => chain.proposeLease(m, id, l, tenant, doc.hash, application));
+      return run("Proposing lease…", (m) => chain.proposeLease(m, id, l, tenant, doc.hash, term, application));
     },
     fund: async (l, doc) => {
       if (address) {
@@ -398,6 +391,7 @@ function Shell({
             <span className="hidden items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[11px] text-muted-foreground sm:flex">
               <span className="size-1.5 rounded-full bg-success" /> {IS_LOCAL ? "localnet" : "devnet"}
             </span>
+            <RoleSwitch role={role} onPick={pickRole} />
             <WalletButton balances={balances} />
             <AccountMenu role={role} name={account?.name} switchRole={switchRole} signOut={signOut} />
           </div>
@@ -543,7 +537,7 @@ const SUBTITLE: Record<Role, Partial<Record<Tab, string>>> = {
   },
 };
 
-function AccountMenu({ role, name, switchRole, signOut }: { role: Role; name?: string; switchRole: () => void; signOut: () => void }) {
+function AccountMenu({ role, name, switchRole, signOut }: { role: Role; name?: string; switchRole: (r: Role) => void; signOut: () => void }) {
   const [open, setOpen] = useState(false);
   const { disconnect } = useWallet();
   const local = useLocalWallet();
@@ -582,7 +576,7 @@ function AccountMenu({ role, name, switchRole, signOut }: { role: Role; name?: s
               <p className="text-xs capitalize text-muted-foreground">{role} account</p>
             </div>
             <div className="my-1 h-px bg-border" />
-            <button onClick={() => (setOpen(false), switchRole())} className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-sm hover:bg-muted">
+            <button onClick={() => (setOpen(false), switchRole(other))} className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-sm hover:bg-muted">
               <ArrowLeftRight className="size-4" /> Switch to {other}
             </button>
             <a href="#/" className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-sm hover:bg-muted">
@@ -594,6 +588,25 @@ function AccountMenu({ role, name, switchRole, signOut }: { role: Role; name?: s
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/** The role is a choice, so it is one click away at all times, not buried in the account menu. */
+function RoleSwitch({ role, onPick }: { role: Role; onPick: (r: Role) => void }) {
+  return (
+    <div role="radiogroup" aria-label="Acting as" className="hidden items-center rounded-full border p-0.5 text-xs font-medium sm:flex">
+      {ROLES_LIST.map((r) => (
+        <button
+          key={r}
+          role="radio"
+          aria-checked={role === r}
+          onClick={() => onPick(r)}
+          className={cn("rounded-full px-3 py-1.5 transition-colors", role === r ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
+        >
+          {ROLES[r].label}
+        </button>
+      ))}
     </div>
   );
 }

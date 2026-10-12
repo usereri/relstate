@@ -14,6 +14,7 @@ import * as chain from "@/lib/chain";
 import { LeaseView, ListingView, ProfileView, Role, typicalRent } from "@/lib/chain";
 import { MAX_TEXT, USDC } from "@/lib/config";
 import { count, recordLine, unique, useRecords } from "@/lib/records";
+import { termLabel } from "@/lib/term";
 import { useChain } from "@/lib/useChain";
 import { duration, photoUrl, short, usdc } from "@/lib/utils";
 
@@ -291,7 +292,7 @@ export function MyProfile({ role, me }: { role: Role; me: string }) {
             </button>
             <p className="text-sm text-muted-foreground">{recordLine(other, records[l[other]])}</p>
             <p className="text-xs text-muted-foreground">
-              {usdc(l.rent)} USDC / {duration(l.periodSecs)} · {l.paidCount}/{l.termPeriods} paid · deposit {usdc(l.deposit)} USDC
+              {usdc(l.rent)} USDC / {duration(l.periodSecs)} · {l.paidCount}/{l.termPeriods} paid · {termLabel(l.termPeriods, l.periodSecs)} · deposit {usdc(l.deposit)} USDC
               {l.startTs ? ` · started ${new Date(l.startTs * 1000).toLocaleDateString()}` : " · not started"}
             </p>
           </Card>

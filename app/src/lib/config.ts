@@ -55,7 +55,6 @@ export const CLUSTER: string | null = (() => {
 export const CAN_FAST_FORWARD = IS_LOCAL;
 export const PERIOD_SECS = IS_LOCAL ? 30 * 86_400 : 45;
 export const GRACE_SECS = IS_LOCAL ? 3 * 86_400 : 20;
-export const TERM_PERIODS = 3;
 // Read from the program's IDL (the build the app is built against), never mirrored: the demo
 // build is 3 s and the release build 14 days.
 export const CLAIM_WINDOW_SECS: number = Number(idl.constants.find((c) => c.name === "CLAIM_WINDOW_SECS")!.value);

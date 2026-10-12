@@ -3,7 +3,7 @@
 // A hash router, so the whole app is one static file with no server rewrites: the route is
 // `#/app`, and the screen state inside a route is the hash's own query, `#/app?tab=wallet`.
 //
-// `location.search` is deliberately left alone. It carries the page's own parameters — `?role=`,
+// `location.search` is deliberately left alone. It carries the page's own parameters — the demo-only `?role=` override (lib/role.ts),
 // and the "near an event" filter (events/useNearby.ts) — so the two never collide: selecting a tab
 // keeps `?role=landlord` exactly where it was, and vice versa.
 //

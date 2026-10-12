@@ -28,7 +28,7 @@ hard-codes the app's address.
 ## Links into the app
 
 `appHref()` builds `${SITE_APP_URL}/?<params>`. The parameters are a **contract with the app's
-listing search** — the app reads them from `location.search`, exactly as it already reads `?role=`.
+listing search** — the app reads them from `location.search`, exactly as the app's demo-only `?role=` override is read (see `docs/env-checklist.md`).
 Params sit before the hash, so they survive the app's hash router.
 
 | Param | Type | Example | Meaning |

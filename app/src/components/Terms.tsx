@@ -1,6 +1,7 @@
 import { Card } from "@/components/ui/card";
 import { ListingView } from "@/lib/chain";
-import { duration, photoUrl, short, usdc } from "@/lib/utils";
+import { termLabel } from "@/lib/term";
+import { photoUrl, short, usdc } from "@/lib/utils";
 
 export function Listing({ l, children }: { l: ListingView; children?: React.ReactNode }) {
   return (
@@ -65,7 +66,7 @@ export const termRows = (o: {
   ...(row("Where", o.where)),
   ["Rent", `${usdc(o.rent)} USDC / period`],
   ["Deposit", `${usdc(o.deposit)} USDC · held in vault${o.discountPct ? ` · −${o.discountPct}% good standing` : ""}`],
-  ["Term", `${o.term} periods of ${duration(o.periodSecs)}`],
+  ["Term", termLabel(o.term, o.periodSecs)],
   ...(row("Landlord", o.landlord && short(o.landlord, 5))),
   ...(row("Lease fingerprint", o.hashHex && short(o.hashHex, 8))),
 ];

@@ -3,7 +3,7 @@ import { AnchorProvider, BN, Program } from "@anchor-lang/core";
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, getAccount, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import idl from "@target/idl/relstate.json";
 import type { Relstate } from "@target/types/relstate";
-import { GRACE_SECS, IS_LOCAL, MINT, PERIOD_SECS, RPC, TERM_PERIODS } from "./config";
+import { GRACE_SECS, IS_LOCAL, MINT, PERIOD_SECS, RPC } from "./config";
 import { retryingFetch } from "./rpc";
 import { invalidateReads, sharedRead } from "./reads";
 import { isShortPublicBalance } from "./holdback";
@@ -533,7 +533,7 @@ export function closeApplication(me: Me, a: ApplicationView) {
 }
 
 // When the tenant had applied, the application is closed in the same transaction.
-export async function proposeLease(me: Me, id: string, l: ListingView, tenant: string, hash: number[], application?: ApplicationView) {
+export async function proposeLease(me: Me, id: string, l: ListingView, tenant: string, hash: number[], term: number, application?: ApplicationView) {
   const tenantKey = new PublicKey(tenant);
   const lease = leasePda(me.key, id);
   const tokenProgramId = await tokenProgram();
@@ -544,7 +544,7 @@ export async function proposeLease(me: Me, id: string, l: ListingView, tenant: s
       new BN(l.deposit),
       new BN(PERIOD_SECS),
       new BN(GRACE_SECS),
-      TERM_PERIODS,
+      term,
       hash,
       Array.from(l.region, (c) => c.charCodeAt(0)),
     )

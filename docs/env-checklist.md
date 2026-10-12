@@ -172,3 +172,27 @@ Honest framing for the runbook's smoke test and for the pitch, given the blocker
   assumes.
 - KYC is mock: the verification page this backend serves decides instantly, with no real Sumsub
   check. Say so on stage if asked.
+
+## Role and session
+
+- **The role is a user choice.** Tenant or landlord is picked at sign-in and switched from the
+  header's role switch; it is kept per browser tab in `sessionStorage` (`relstate.role`), so two
+  tabs can be two people. With no choice yet, a browser that holds exactly one role's wallet session
+  opens as that role; otherwise the user is asked.
+- **`?role=tenant|landlord` is a demo/testing override only.** It wins on first load (used by the
+  README demo steps and by screenshots), becomes that tab's choice, and is removed from the address
+  bar when the user switches role. The app never builds a link containing it. Do not rely on it in
+  production; it grants nothing, because the role only selects a view and a wallet slot, and
+  authority always comes from the wallet's signature.
+- **Why not cookies:** the app is a static site (GitHub Pages) with no server that could set or read
+  an HTTP session cookie, and the backend session is a bearer token the app sends in an
+  `Authorization` header. A cookie would be a second, weaker session next to it (and would be sent
+  on cross-site requests), so the role lives in `sessionStorage` and the session in the token.
+- `#/appraiser` stays gated by `VITE_APPRAISER_CONSOLE` and is unrelated to the role.
+
+## Lease term
+
+The landlord chooses the term (1 to 60 periods, default 3) when proposing a lease; it is stored in
+the lease as `term_periods` and every screen reads it from there. A period is 30 days on a local run
+and 45 s on devnet (`PERIOD_SECS` in `app/src/lib/config.ts`), so the app says "3 months" locally and
+"3 periods of 45s" on devnet.
