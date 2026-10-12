@@ -184,6 +184,13 @@ pub fn handle_pick_appraiser(ctx: Context<PickAppraiser>) -> Result<()> {
 
     let dispute = &mut ctx.accounts.dispute;
     require!(!dispute.is_bound(), ErrorCode::AppraiserAlreadyBound);
+    // Binding re-bases `verdict_deadline` to now + VERDICT_WINDOW_SECS, so a binding after the
+    // provisional deadline would push out an expiry the tenant is already entitled to (S3 F2).
+    // Exactly the complement of `expire_mediation`'s `now >= verdict_deadline`: no gap, no overlap.
+    require!(
+        now < dispute.verdict_deadline,
+        ErrorCode::BindingWindowClosed
+    );
     // The union of the two lists, so picking the other side's candidate is allowed — and so an
     // appraiser nobody nominated can never be bound by agreement.
     require!(
@@ -262,6 +269,11 @@ pub fn handle_bind_default_appraiser(ctx: Context<BindDefaultAppraiser>) -> Resu
         now >= dispute.selection_deadline,
         ErrorCode::SelectionWindowOpen
     );
+    // Same upper bound as `pick_appraiser`; see there.
+    require!(
+        now < dispute.verdict_deadline,
+        ErrorCode::BindingWindowClosed
+    );
 
     dispute.bind(appraiser, now);
     emit!(AppraiserBound {
@@ -294,7 +306,7 @@ pub struct SubmitVerdict<'info> {
         seeds = [LEASE_SEED, lease.landlord.as_ref(), &lease.lease_id.to_le_bytes()],
         bump = lease.bump
     )]
-    pub lease: Account<'info, Lease>,
+    pub lease: Box<Account<'info, Lease>>,
     /// Closed here, with the rent going back to the tenant who paid for it in
     /// `escalate_to_mediation`. Closing it is also what makes "one verdict per dispute" structural
     /// rather than a flag: there is no account left to submit against.
@@ -343,13 +355,13 @@ pub struct SubmitVerdict<'info> {
         seeds = [PROFILE_SEED, lease.tenant.as_ref()],
         bump
     )]
-    pub tenant_profile: Account<'info, Profile>,
+    pub tenant_profile: Box<Account<'info, Profile>>,
     #[account(
         mut,
         seeds = [PROFILE_SEED, lease.landlord.as_ref()],
         bump
     )]
-    pub landlord_profile: Account<'info, Profile>,
+    pub landlord_profile: Box<Account<'info, Profile>>,
     pub token_program: Interface<'info, TokenInterface>,
 }
 
