@@ -1827,6 +1827,51 @@ describe("relstate", () => {
     expect(bound.verdictDeadline.toNumber()).to.be.closeTo((await chainNow()) + VERDICT_WINDOW, 3);
   });
 
+  // ---- S3 F2: binding has an upper bound too (docs §2, "Binding has an upper bound too") ----
+  //
+  // Before this fix, a late pick or a late bind_default_appraiser re-based verdict_deadline to
+  // now + VERDICT_WINDOW_SECS, which took away an exit (expire_mediation) the tenant was already
+  // entitled to. pick_appraiser and bind_default_appraiser now refuse at or after
+  // verdict_deadline (BindingWindowClosed), the exact complement of expire_mediation's own
+  // `now >= verdict_deadline` -- no gap, no overlap.
+
+  it("pick_appraiser refuses once the verdict deadline has passed; expire_mediation still works", async () => {
+    const env = await mediating();
+    await env.proposeAppraisers(env.landlord, [apprLow]);
+    await timeTravel(SELECTION_WINDOW + VERDICT_WINDOW + 5);
+    await expectFail(env.pickAppraiser(env.tenant, apprLow), "BindingWindowClosed");
+    await env.expireMediation();
+    const lease = await program.account.lease.fetch(env.lease);
+    expect(lease.status).to.have.property("active");
+  });
+
+  it("bind_default_appraiser refuses once the verdict deadline has passed, even for a stranger", async () => {
+    const env = await mediating();
+    await timeTravel(SELECTION_WINDOW + VERDICT_WINDOW + 5);
+    const stranger = Keypair.generate();
+    await airdrop(stranger);
+    await expectFail(env.bindDefaultAppraiser(stranger), "BindingWindowClosed");
+    await env.expireMediation();
+  });
+
+  it("a lapsed mediation cannot be re-armed by a late pick -- the regression the review caught", async () => {
+    const env = await mediating();
+    // the tenant proposes and picks well inside the window; the landlord never answers
+    await env.proposeAppraisers(env.tenant, [apprLow]);
+    await env.pickAppraiser(env.tenant, apprLow);
+
+    await timeTravel(SELECTION_WINDOW + VERDICT_WINDOW + 5);
+    // without the fix, this would match the tenant's pick, bind apprLow and re-base
+    // verdict_deadline to now + VERDICT_WINDOW_SECS -- holding a good-faith pick in reserve to
+    // re-arm a lapsed mediation at a moment of the landlord's choosing
+    await expectFail(env.pickAppraiser(env.landlord, apprLow), "BindingWindowClosed");
+
+    await env.expireMediation();
+    const lease = await program.account.lease.fetch(env.lease);
+    expect(lease.status).to.have.property("active");
+    expect(await program.account.dispute.fetchNullable(env.dispute)).to.be.null;
+  });
+
   // ---- the verdict ----
 
   async function bind(env: Env, appr: Appraiser) {
