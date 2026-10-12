@@ -390,3 +390,86 @@ describe("compute budget", () => {
     assert.equal(worstCaseFeeLamports(tx), 10_000n + 1_400_000n);
   });
 });
+
+// Review G2 / phase 3: the verdict transaction carries a sponsor-paid create-idempotent for the
+// appraiser's token account. The sponsor invariant normally refuses the fee payer inside any
+// instruction, so this shape is a structural carve-out, and every way of widening it must fail.
+describe("the verdict's sponsor-paid create-ATA", async () => {
+  const { ASSOCIATED_TOKEN_PROGRAM, SYSTEM_PROGRAM } = await import("../src/contracts.ts");
+  const { SUBMIT_VERDICT_ACCOUNTS } = await import("../src/txinspect.ts");
+  const ATA = ASSOCIATED_TOKEN_PROGRAM as Address;
+  const SYS = SYSTEM_PROGRAM as Address;
+  const W = AccountRole.WRITABLE;
+  const R = AccountRole.READONLY;
+
+  it("pins the account positions it constrains to the IDL by name", () => {
+    const names = requireIdl().instructions.find((i) => i.name === "submit_verdict")!.accounts.map((a) => a.name);
+    assert.equal(names[SUBMIT_VERDICT_ACCOUNTS.appraiser], "appraiser");
+    assert.equal(names[SUBMIT_VERDICT_ACCOUNTS.mint], "mint");
+    assert.equal(names[SUBMIT_VERDICT_ACCOUNTS.appraiserAta], "appraiser_ata");
+  });
+
+  async function build(mutate: (p: { sponsor: Address; appraiser: TransactionSigner; ata: Address; mint: Address; create: any }) => void = () => {}, extra: { dropVerdict?: boolean; twoCreates?: boolean } = {}) {
+    const { sponsor, user: appraiser } = await twoKeys();
+    const [ata, mint, other] = (await Promise.all([0, 1, 2].map(async () => (await generateKeyPairSigner()).address))) as [Address, Address, Address];
+    const create: any = {
+      programAddress: ATA,
+      accounts: [
+        { address: sponsor.address, role: AccountRole.WRITABLE_SIGNER, signer: sponsor },
+        { address: ata, role: W },
+        { address: appraiser.address, role: R },
+        { address: mint, role: R },
+        { address: SYS, role: R },
+        { address: TOKEN_PROGRAM, role: R },
+      ],
+      data: new Uint8Array([1]),
+    };
+    mutate({ sponsor: sponsor.address, appraiser, ata, mint, create });
+    const verdictAccounts = Array.from({ length: 12 }, (_, i) => ({ address: other, role: W }));
+    verdictAccounts[SUBMIT_VERDICT_ACCOUNTS.appraiser] = { address: appraiser.address, role: AccountRole.WRITABLE_SIGNER, signer: appraiser } as never;
+    verdictAccounts[SUBMIT_VERDICT_ACCOUNTS.mint] = { address: mint, role: R };
+    verdictAccounts[SUBMIT_VERDICT_ACCOUNTS.appraiserAta] = { address: ata, role: W };
+    const data = new Uint8Array(16);
+    data.set(instructionDiscriminator("submit_verdict"), 0);
+    const verdict = { programAddress: RELSTATE_PROGRAM as Address, accounts: verdictAccounts, data } as unknown as Instruction;
+    const ixs = [create, ...(extra.twoCreates ? [create] : []), ...(extra.dropVerdict ? [] : [verdict])] as Instruction[];
+    // The sponsor is the fee payer by address; the create's payer slot names it as a signer.
+    const b64 = await buildTx({ feePayer: sponsor.address, instructions: ixs });
+    return { tx: inspectTransaction(b64), sponsor: sponsor.address };
+  }
+
+  it("is accepted when it funds exactly the verdict's own appraiser_ata", async () => {
+    const { tx, sponsor } = await build();
+    assert.doesNotThrow(() => assertSponsorNotUsedByInstructions(tx, sponsor));
+  });
+
+  it("is refused for any other ATA, owner, or mint", async () => {
+    for (const [what, mutate] of [
+      ["ata", (p: any) => { p.create.accounts[1] = { ...p.create.accounts[1], address: p.mint }; }],
+      ["owner", (p: any) => { p.create.accounts[2] = { ...p.create.accounts[2], address: p.mint }; }],
+      ["mint", (p: any) => { p.create.accounts[3] = { ...p.create.accounts[3], address: p.ata }; }],
+    ] as const) {
+      const { tx, sponsor } = await build(mutate);
+      assert.equal(await codeOf(() => assertSponsorNotUsedByInstructions(tx, sponsor)), "sponsor-in-instruction", `a create-ATA with a foreign ${what} must be refused`);
+    }
+  });
+
+  it("is refused without a verdict, with trailing data, with the wrong kind, or with the sponsor in a second slot", async () => {
+    const orphan = await build(undefined, { dropVerdict: true });
+    assert.equal(await codeOf(() => assertSponsorNotUsedByInstructions(orphan.tx, orphan.sponsor)), "sponsor-in-instruction", "no verdict, no rent");
+    const trailing = await build((p) => { p.create.data = new Uint8Array([1, 0]); });
+    assert.equal(await codeOf(() => assertSponsorNotUsedByInstructions(trailing.tx, trailing.sponsor)), "sponsor-in-instruction");
+    const plainCreate = await build((p) => { p.create.data = new Uint8Array([0]); });
+    assert.equal(await codeOf(() => assertSponsorNotUsedByInstructions(plainCreate.tx, plainCreate.sponsor)), "sponsor-in-instruction", "only CreateIdempotent");
+    const twice = await build((p) => { p.create.accounts[2] = { address: p.sponsor, role: R }; });
+    assert.equal(await codeOf(() => assertSponsorNotUsedByInstructions(twice.tx, twice.sponsor)), "sponsor-in-instruction", "the sponsor may be the payer only");
+    const two = await build(undefined, { twoCreates: true });
+    assert.equal(await codeOf(() => assertSponsorNotUsedByInstructions(two.tx, two.sponsor)), "sponsor-in-instruction", "at most one");
+  });
+
+  it("does not exempt the sponsor from a System transfer riding in the same transaction", async () => {
+    const { sponsor, user } = await twoKeys();
+    const tx = inspectTransaction(await buildTx({ feePayer: sponsor.address, instructions: [getTransferSolInstruction({ source: sponsor as never, destination: user.address, amount: 1n })] }));
+    assert.equal(await codeOf(() => assertSponsorNotUsedByInstructions(tx, sponsor.address)), "sponsor-in-instruction");
+  });
+});
