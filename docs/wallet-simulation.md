@@ -58,9 +58,9 @@ Worth recording, because each was a plausible suspect and each was checked:
   the context-state accounts the one before created — but `sponsoredSubmit` confirms each before
   building the next (`app/src/lib/confidential.ts`), so the accounts exist by the time the wallet
   sees the transaction that uses them.
-- **Compute budget.** No transaction here sets one, so the runtime default applies. A missing
-  compute-budget instruction does not fail a simulation, and adding one would change the input to
-  the sponsor's `worstCaseFeeLamports` cap for no benefit (`backend/src/txinspect.ts`).
+- **Compute budget.** A missing compute-budget instruction does not fail a simulation. The
+  sponsored Anchor flows now set one anyway, for a different reason: see
+  [Compute budget](#compute-budget-the-wallet-adds-one-if-the-app-does-not) below.
 
 ## The fix
 
@@ -105,6 +105,48 @@ The adapter wraps every signing failure — the user pressing Reject included �
 `WalletSignTransactionError` (and a vanished account as `WalletNotConnectedError`), and
 `chain.errorMessage` keys its wallet guidance ("set to the same network as this app…") on that
 `Wallet…` name. The chain-aware signer does the same wrapping, so that guidance still appears.
+
+## Compute budget: the wallet adds one if the app does not
+
+Phantom rewrites a transaction it is asked to sign when that transaction sets no compute budget: it
+prepends `SetComputeUnitLimit` and `SetComputeUnitPrice` of its own choosing. On the hosted devnet
+demo, a "publish listing" transaction the app built with one instruction came back from Phantom
+with three. The price it chose was 375,000 micro-lamports per unit, and two things followed:
+
+- **The sponsor refused it.** `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` defaults to 10,000, so the
+  request failed with `requested 375000 micro-lamports per unit, cap is 10000`
+  (`backend/src/txinspect.ts`, `assertComputeBudgetWithinPolicy`). Raising the cap let it through,
+  but it also let the wallet, not the app, decide what the sponsor pays.
+- **The prompt was slow.** Phantom took over 30 seconds to show the signature request; the app
+  measured 34.8 s from setting the blockhash to getting the signed transaction back, approval
+  included. That request then failed at the sponsor with `simulation failed: "BlockhashNotFound"`.
+  A blockhash normally stays valid for 60–90 seconds, so the wait alone does not obviously explain
+  the failure, and neither is it confirmed that Phantom spends that time on the budget. Both are
+  open; the console log below is how to tell once this change is deployed.
+
+So `sendSponsored` (`app/src/lib/chain.ts`) now prepends a budget before the wallet sees the
+transaction, through `withComputeBudget`, and leaves alone a transaction that already has one:
+
+| Instruction | Value | Why |
+| --- | --- | --- |
+| `SetComputeUnitLimit` | 200,000 per instruction, at most 400,000 | the runtime's own default for one or two instructions; 400,000 is the sponsor's default `SPONSOR_MAX_COMPUTE_UNITS`, and the sponsor already refused any simulation that consumed more |
+| `SetComputeUnitPrice` | 1,000 micro-lamports | inside the sponsor's default 10,000 cap; adds at most 400 lamports to the fee |
+
+The worst case, two signatures plus the priority fee, is 10,400 lamports, inside the default
+`SPONSOR_MAX_FEE_LAMPORTS` of 200,000, so a backend left at its defaults accepts every sponsored
+Anchor transaction. The test `withComputeBudget` in `app/src/lib/__tests__/chain.test.ts` pins these
+against the defaults. The two instructions add about 50 bytes; the largest listing, with every text
+field at its maximum, stays under 800 of the 1,232 allowed.
+
+`sendSponsored` also logs to the browser console: one `[sponsor]` line per transaction with its
+blockhash and how long the wallet took to sign, and a warning if the wallet still changed the
+blockhash or the instructions. If that warning appears, this section is incomplete.
+
+Not covered: the confidential-transfer transactions (`app/src/lib/confidential.ts`,
+`sponsoredSubmit`) go to the wallet through their own path and set no budget, so a wallet may
+still add one there. The treasury routes that co-sign them (account setup and rent payment,
+`backend/src/treasury.ts`) apply the same `SPONSOR_MAX_*` caps, so a wallet-chosen price above
+the cap is refused there too.
 
 ## The case that remains: a local validator
 
