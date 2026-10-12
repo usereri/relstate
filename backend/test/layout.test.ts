@@ -1,16 +1,16 @@
 import "./noenv.ts";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { getAddressEncoder, generateKeyPairSigner } from "@solana/kit";
-import { FALLBACK_LAYOUTS, IDL_PATH, accountLayout, computeLayout, fieldOffset, type Idl } from "../src/layout.ts";
+import { FALLBACK_LAYOUTS, accountLayout, computeLayout, fieldOffset, type Idl } from "../src/layout.ts";
 import { LEASE_DISCRIMINATOR, decodeLease } from "../src/lease.ts";
+import { IDL } from "./idlfixtures.ts";
 
 // The program's Lease and Profile are about to change before the first deploy. These tests are what
 // makes that a one-file update: the layout is computed from the IDL, the snapshot used when no IDL is
 // on disk is pinned to it, and the readers follow whatever the layout says.
 
-const idl: Idl | null = existsSync(IDL_PATH()) ? (JSON.parse(readFileSync(IDL_PATH(), "utf8")) as Idl) : null;
+const idl = IDL as Idl | null;
 
 describe("computeLayout", () => {
   const sample: Idl = {
@@ -39,7 +39,7 @@ describe("computeLayout", () => {
 describe("the fallback snapshot", () => {
   // The single place to update when the program's accounts change. Fails with the three names so the
   // fix is a copy-paste, not a hunt.
-  it("equals what the program's IDL says (skipped when no IDL has been built)", { skip: idl === null }, () => {
+  it("equals what the program's IDL says (skipped only when neither target/ nor app/idl/ has one)", { skip: idl === null }, () => {
     for (const name of Object.keys(FALLBACK_LAYOUTS)) {
       const live = computeLayout(idl!, name);
       assert.deepEqual(FALLBACK_LAYOUTS[name], live, `FALLBACK_LAYOUTS.${name} in backend/src/layout.ts is stale: the program's ${name} is now ${JSON.stringify(live)}`);
@@ -47,7 +47,9 @@ describe("the fallback snapshot", () => {
   });
 
   it("covers every account this backend reads or sizes", () => {
-    assert.deepEqual(Object.keys(FALLBACK_LAYOUTS).sort(), ["Application", "Lease", "Profile"]);
+    // Lease (rent amount, status, parties), Profile + Application (rent dust), and the two D2
+    // accounts appraiser-chain.ts reads to work out who is bound and what the fee would be.
+    assert.deepEqual(Object.keys(FALLBACK_LAYOUTS).sort(), ["Application", "Appraiser", "Dispute", "Lease", "Profile"]);
   });
 
   it("is what accountLayout returns when there is no IDL", () => {

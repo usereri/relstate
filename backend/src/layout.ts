@@ -84,6 +84,16 @@ export const FALLBACK_LAYOUTS: Readonly<Record<string, Layout>> = {
     },
   },
   Application: { size: 104, offsets: { listing: 8, landlord: 40, tenant: 72 } },
+  // The two D2 accounts (docs/contracts/dispute-mediation.md §3). Read by appraiser-chain.ts: the
+  // verdict console needs the bound appraiser off `Dispute` and the fee off `Appraiser`.
+  Dispute: {
+    size: 347,
+    offsets: {
+      lease: 8, landlord_candidates: 40, tenant_candidates: 136, landlord_count: 232, tenant_count: 233,
+      landlord_pick: 234, tenant_pick: 266, appraiser: 298, selection_deadline: 330, verdict_deadline: 338, bump: 346,
+    },
+  },
+  Appraiser: { size: 83, offsets: { wallet: 8, active: 40, is_default: 41, fee: 42, name_hash: 50, bump: 82 } },
 };
 
 export const IDL_PATH = (): string => process.env.RELSTATE_IDL?.trim() || resolve(import.meta.dirname, "../../target/idl/relstate.json");
