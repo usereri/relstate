@@ -46,7 +46,7 @@ Renting runs on trust that nobody can check.
 | | | |
 |---|---|---|
 | ![Landing: pick a role](docs/screenshots/landing.png) | ![Landlord: applicants with records, lease history](docs/screenshots/landlord-leases.png) | ![Tenant profile](docs/screenshots/tenant-profile.png) |
-| **Landing.** Each window picks a role. | **Landlord.** Applicants show their on-chain record before you propose a lease. | **Profile.** Your own record, plus your current and recent landlords. |
+| **Landing.** Proven tenants pay half the deposit. | **Landlord.** Applicants show their on-chain record before you propose a lease. | **Profile.** Your own record, plus your current and recent landlords. |
 
 ## How it works
 
