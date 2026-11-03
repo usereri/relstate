@@ -1,0 +1,27 @@
+// Registers the connected wallet's session with the sponsor client.
+//
+// Called once, from `useMe()` — the single place that knows which of the three wallet kinds is
+// active — so the extension, the built-in test wallet and the embedded wallet all authenticate the
+// same way. Without this, `POST /api/sponsor` answers 401 for everyone in sponsored mode.
+
+import { useEffect } from "react";
+import { SPONSORED, requestRentDust, setSessionTokenSource } from "@/lib/sponsor";
+import { obtainSession, registerSigner } from "./session";
+
+export function useSponsorSession(address: string | null, signMessage?: (message: Uint8Array) => Promise<Uint8Array>): void {
+  useEffect(() => {
+    if (!SPONSORED || !address) return;
+    registerSigner(address, signMessage);
+    // A source rather than a token: `postSponsored` calls it per request, so a session that
+    // expired mid-session is renewed instead of failing.
+    setSessionTokenSource(async () => (await obtainSession(address)).token);
+    // The platform provisions the rent a first lease application will cost, so nobody ever holds or
+    // acquires SOL. Best-effort and idempotent: a refusal (already granted, already funded, backend
+    // without a treasury) changes nothing the user can see.
+    void requestRentDust().catch(() => {});
+    return () => {
+      setSessionTokenSource(null);
+      registerSigner(address, undefined);
+    };
+  }, [address, signMessage]);
+}

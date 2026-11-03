@@ -1,0 +1,71 @@
+# Relstate backend on Fly.io. See docs/deploy.md for the full runbook.
+#
+# Build context is the repo root (backend/Dockerfile copies app/idl/ as well as backend/), so this
+# file lives at the repo root and every `fly` command below is run from there, not from backend/.
+#
+# SINGLE INSTANCE ONLY -- do not raise min_machines_running or scale this app past one machine.
+# The backend keeps per-user/global rate limits, the replay guard and session lookups in memory
+# (docs/contracts/pay.md, "Residual risks" #3: "Limiters are per process. Fine for one demo
+# backend; a second instance needs shared state."). A second machine would double every cap
+# silently and could let a request replay by landing on the other instance.
+app = "relstate-backend"          # pick your own app name; must be globally unique on Fly. `fly launch` will ask.
+primary_region = "fra"            # Warsaw. "fra" (Frankfurt) is the other low-latency pick from Poland.
+
+[build]
+  dockerfile = "backend/Dockerfile"
+
+# Non-secret config. Secrets (FEE_PAYER_KEYPAIR, TREASURY_KEYPAIR, ...) are never here -- see
+# `fly secrets set` in docs/deploy.md. CORS_ORIGIN and APP_URL depend on your custom domain, so fill
+# them in (or override with `fly secrets set` / the Fly dashboard if you'd rather not commit them).
+[env]
+  PORT = "8787"
+  UPLOADS_DIR = "/data/uploads"      # listing photos; needs the volume below
+  SOLANA_CLUSTER = "devnet"
+  BACKEND_MODE = "live"            # flip to "live" only once every secret in docs/env-checklist.md is set
+  BACKEND_URL = "https://relstate-backend.fly.dev"
+  AUTH_MODE = "wallet"               # live mode refuses AUTH_MODE=mock; see docs/env-checklist.md's known blocker
+  ONRAMP_PROVIDER = "stripe"         # set to "stripe" once STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET are set
+  KYC_PROVIDER = "mock"
+  CORS_ORIGIN = "https://relstate.casa"
+  APP_URL = "https://relstate.casa/app/"
+  RUSDC_MINT  = "EBMibFLTvr5GDpgxNqt5Gqp9B1xLMr32aNwGDJV2oGJ6"
+  ALLOW_MOCK_KYC = "devnet"
+  USDC_RESERVE_MINT = "Hob9KuPR5kx73bjkBV2JKRvJkaQMtziW2QNSWH27Tdgr"
+  USDC_RESERVE_TOKEN_ACCOUNT = "LsT3YVVTjRb4kHwyuiTU73ud1J7Tgnu8BZ7wMQEaoU6"
+  SPONSOR_MAX_TX_BYTES = "1232"
+  SPONSOR_MAX_INSTRUCTIONS = "16"
+  SPONSOR_MAX_COMPUTE_UNITS = "400000"
+  SPONSOR_MAX_CU_PRICE_MICROLAMPORTS = "400000"
+  SPONSOR_MAX_FEE_LAMPORTS = "200000"
+  SPONSOR_MAX_RENT_LAMPORTS = "50000000"
+  SPONSOR_MAX_PER_WALLET_PER_HOUR = "20"
+  SPONSOR_MAX_GLOBAL_PER_HOUR = "500"
+  SPONSOR_MAX_LAMPORTS_PER_WALLET_PER_DAY = "2000000"
+  SPONSOR_MAX_LAMPORTS_GLOBAL_PER_DAY = "50000000"
+
+ 
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = false       # always on: see the single-instance note above
+  auto_start_machines = true
+  min_machines_running = 1         # always on, never 0 -- a demo that naps between visitors is worse than a $2/month machine
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  # Smallest size that runs the backend. @solana/zk-sdk's wasm and the confidential-transfer proof
+  # plans need real headroom over the 256 MB default, so this starts at 512 MB. If `fly logs` shows
+  # the machine OOM-killed, resize with `fly scale memory 1024` (no code change needed).
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  min_machines_running = "0"
+
+[mounts]
+  source = "relstate_data"
+  destination = "/data"

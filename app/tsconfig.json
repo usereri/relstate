@@ -15,6 +15,8 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"],
+      "@target/idl/relstate.json": ["../target/idl/relstate.json", "./idl/relstate.json"],
+      "@target/types/relstate": ["../target/types/relstate", "./idl/relstate"],
       "@target/*": ["../target/*"]
     }
   },

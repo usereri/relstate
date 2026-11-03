@@ -1,6 +1,7 @@
 import { Card } from "@/components/ui/card";
 import { ListingView } from "@/lib/chain";
-import { duration, photoUrl, short, usdc } from "@/lib/utils";
+import { termLabel } from "@/lib/term";
+import { photoUrl, short, usdc } from "@/lib/utils";
 
 export function Listing({ l, children }: { l: ListingView; children?: React.ReactNode }) {
   return (
@@ -8,10 +9,10 @@ export function Listing({ l, children }: { l: ListingView; children?: React.Reac
       <div
         className="relative h-48 bg-cover bg-center"
         style={{
-          backgroundImage: `${l.photo ? `url("${photoUrl(l.photo)}"), ` : ""}linear-gradient(135deg, var(--accent) 0%, var(--primary) 55%, #1d1410 100%)`,
+          backgroundImage: `${l.photo ? `url("${photoUrl(l.photo)}"), ` : ""}linear-gradient(135deg, var(--accent) 0%, var(--primary) 55%, var(--ink) 100%)`,
         }}
       >
-        <div className="absolute inset-0 bg-gradient-to-t from-[#2e2016]/70 via-transparent to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
         <div className="absolute bottom-3 left-4 right-4 text-white">
           <p className="text-xs opacity-85">{[l.city, l.region].filter(Boolean).join(" · ")}</p>
           <h2 className="text-xl font-semibold leading-tight">{l.title}</h2>
@@ -43,18 +44,33 @@ export function Terms({ rows }: { rows: [string, string][] }) {
   );
 }
 
+/**
+ * The lease terms as rows.
+ *
+ * The apartment comes first and by name: a two-letter country code is not what either party calls
+ * the place they are signing for, and "Region: PL" was all these rows used to say about which
+ * apartment this is. `where` carries the city and the country under it, so nothing is lost.
+ */
 export const termRows = (o: {
   rent: number;
   deposit: number;
   term: number;
   periodSecs: number;
   hashHex?: string;
-  region?: string;
+  apartment?: string;
+  where?: string;
+  landlord?: string;
   discountPct?: number;
 }): [string, string][] => [
-  ...(o.region ? ([["Region", o.region]] as [string, string][]) : []),
+  ...(row("Apartment", o.apartment)),
+  ...(row("Where", o.where)),
   ["Rent", `${usdc(o.rent)} USDC / period`],
   ["Deposit", `${usdc(o.deposit)} USDC · held in vault${o.discountPct ? ` · −${o.discountPct}% good standing` : ""}`],
-  ["Term", `${o.term} periods of ${duration(o.periodSecs)}`],
-  ...(o.hashHex ? ([["Lease fingerprint", short(o.hashHex, 8)]] as [string, string][]) : []),
+  ["Term", termLabel(o.term, o.periodSecs)],
+  ...(row("Landlord", o.landlord && short(o.landlord, 5))),
+  ...(row("Lease fingerprint", o.hashHex && short(o.hashHex, 8))),
 ];
+
+/** One row, or none at all when there is nothing to put in it. Never a label with a blank beside it. */
+const row = (label: string, value: string | undefined | false): [string, string][] =>
+  value && value.trim() ? [[label, value]] : [];

@@ -1,13 +1,18 @@
 // Prepares a network for the app: the test-USDC mint, SOL + test USDC for the wallets you name
 // (the ones you connect in the browser windows) and, on a local network, for the app's built-in
-// landlord and tenant test wallets, plus four default listings so the tenant's view is not empty.
-// Safe to run again: existing accounts are left alone.
-//   RPC=https://api.devnet.solana.com npx ts-node --transpile-only scripts/setup-demo.ts [<wallet> ...]
+// landlord and tenant test wallets. It also initializes the program's Config allowlist and allows
+// the test-USDC mint (so a lease can use it), plus four default listings so the tenant's view is
+// not empty. Safe to run again: existing accounts are left alone and the allowlist step is a no-op.
+//   RPC=https://api.devnet.solana.com node scripts/setup-demo.ts [<wallet> ...]
 // The payer (ANCHOR_WALLET or ~/.config/solana/id.json) becomes the mint authority, pays account rent
 // and owns the default listings (import that keypair into a wallet to lease them yourself).
+// The mint's address is derived from the payer (createWithSeed), so no mint keypair file is needed
+// and every worktree and branch gets the same mint as long as it uses the same wallet.
 import * as anchor from "@anchor-lang/core";
 import {
-  createMint,
+  MINT_SIZE,
+  TOKEN_PROGRAM_ID,
+  createInitializeMint2Instruction,
   getAccount,
   getOrCreateAssociatedTokenAccount,
   mintTo,
@@ -16,12 +21,14 @@ import { createHash } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import type { Relstate } from "../target/types/relstate.ts";
 
-const { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } = anchor.web3;
+const { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction } = anchor.web3;
 
 const RPC = process.env.RPC ?? "http://localhost:8899";
 const USDC = 1_000_000; // 6 decimals
 const WALLET_USDC = 10_000 * USDC;
+const MINT_SEED = "relstate-test-usdc";
 
 const DEFAULT_LISTINGS = [
   { id: 1, title: "Sunlit 1-bedroom, Kazimierz", city: "Kraków", blurb: "Furnished · 42 m² · fibre internet · desk by the window", photo: "/listings/kazimierz.jpg", rent: 850 },
@@ -42,13 +49,28 @@ async function programReady(conn: anchor.web3.Connection, id: anchor.web3.Public
   }
 }
 
-async function seedListings(conn: anchor.web3.Connection, payer: anchor.web3.Keypair) {
-  const idl = JSON.parse(fs.readFileSync(path.join(__dirname, "../target/idl/relstate.json"), "utf8"));
+async function setupProgram(conn: anchor.web3.Connection, payer: anchor.web3.Keypair, mint: anchor.web3.PublicKey) {
+  const idl: Relstate = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "../target/idl/relstate.json"), "utf8"));
   if (!(await programReady(conn, new PublicKey(idl.address)))) {
-    console.warn(`program ${idl.address} is not deployed on ${RPC}: skipped the default listings. Deploy it, then run this again.`);
+    console.warn(`program ${idl.address} is not deployed on ${RPC}: skipped config + default listings. Deploy it, then run this again.`);
     return;
   }
-  const program = new anchor.Program(idl, new anchor.AnchorProvider(conn, new anchor.Wallet(payer), { commitment: "confirmed" }));
+  const program = new anchor.Program<Relstate>(idl, new anchor.AnchorProvider(conn, new anchor.Wallet(payer), { commitment: "confirmed" }));
+
+  // A lease can only use a mint the on-chain Config allows, and the Config must exist first.
+  // Whoever runs init_config first owns the allowlist (docs/contracts/program-interface.md §2),
+  // so this belongs in the same scripted sequence as the deploy, not as a manual step afterwards.
+  const [config] = PublicKey.findProgramAddressSync([Buffer.from("config")], program.programId);
+  if (await program.account.config.fetchNullable(config)) {
+    console.log(`config already initialized: ${config.toBase58()}`);
+  } else {
+    await program.methods.initConfig().accountsPartial({ admin: payer.publicKey, config }).rpc();
+    console.log(`initialized config; ${payer.publicKey.toBase58()} is the admin`);
+  }
+  // Idempotent: allows the test-USDC mint, and is a no-op if it is already on the list.
+  await program.methods.setMintAllowed(true).accountsPartial({ admin: payer.publicKey, config, mint }).rpc();
+  console.log(`allowed mint ${mint.toBase58()}`);
+
   let created = 0;
   for (const l of DEFAULT_LISTINGS) {
     const id = new anchor.BN(l.id);
@@ -75,7 +97,7 @@ async function main() {
 
   const conn = new Connection(RPC, "confirmed");
   const payer = load(process.env.ANCHOR_WALLET ?? path.join(os.homedir(), ".config/solana/id.json"));
-  const mintKp = load(path.join(__dirname, "../tests/test-usdc-mint.json"));
+  const mint = await PublicKey.createWithSeed(payer.publicKey, MINT_SEED, TOKEN_PROGRAM_ID);
 
   const topUp = async (key: anchor.web3.PublicKey, minSol: number) => {
     if ((await conn.getBalance(key)) >= minSol * LAMPORTS_PER_SOL) return;
@@ -88,20 +110,33 @@ async function main() {
   };
   await topUp(payer.publicKey, 1);
 
-  if (!(await conn.getAccountInfo(mintKp.publicKey))) {
-    await createMint(conn, payer, payer.publicKey, null, 6, mintKp);
-    console.log("created test-USDC mint", mintKp.publicKey.toBase58());
+  if (!(await conn.getAccountInfo(mint))) {
+    const tx = new Transaction().add(
+      SystemProgram.createAccountWithSeed({
+        fromPubkey: payer.publicKey,
+        basePubkey: payer.publicKey,
+        seed: MINT_SEED,
+        newAccountPubkey: mint,
+        lamports: await conn.getMinimumBalanceForRentExemption(MINT_SIZE),
+        space: MINT_SIZE,
+        programId: TOKEN_PROGRAM_ID,
+      }),
+      createInitializeMint2Instruction(mint, 6, payer.publicKey, null),
+    );
+    await sendAndConfirmTransaction(conn, tx, [payer]);
+    console.log("created test-USDC mint", mint.toBase58());
   }
+  console.log(`test-USDC mint ${mint.toBase58()} (MINT in app/src/lib/config.ts must match)`);
 
   for (const wallet of wallets) {
     await topUp(wallet, 1);
-    const ata = await getOrCreateAssociatedTokenAccount(conn, payer, mintKp.publicKey, wallet);
+    const ata = await getOrCreateAssociatedTokenAccount(conn, payer, mint, wallet);
     const have = Number((await getAccount(conn, ata.address)).amount);
-    if (have < WALLET_USDC) await mintTo(conn, payer, mintKp.publicKey, ata.address, payer, WALLET_USDC - have);
+    if (have < WALLET_USDC) await mintTo(conn, payer, mint, ata.address, payer, WALLET_USDC - have);
     console.log(`${wallet.toBase58()}  ${WALLET_USDC / USDC} test USDC`);
   }
 
-  await seedListings(conn, payer);
+  await setupProgram(conn, payer, mint);
 }
 
 main().catch((e) => {

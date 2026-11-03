@@ -1,50 +1,49 @@
 @import "tailwindcss";
 
-/* Warm brown + beige palette. Tokens keep the shadcn names so the ui/ components work. */
+/*
+  Relstate brand: "the vault". Cool porcelain ground, deep ink, a jade primary for tenants,
+  an indigo primary for landlords, brass reserved for verified on-chain records.
+  Tokens keep the shadcn names so the ui/ components work.
+*/
 :root {
-  --background: #f3eadb;
-  --foreground: #2e2016;
-  --card: #faf5ec;
-  --card-foreground: #2e2016;
-  --primary: #6b4226;
-  --primary-foreground: #faf5ec;
-  --secondary: #e7d9c3;
-  --secondary-foreground: #4a2f1c;
-  --muted: #ebdfcb;
-  --muted-foreground: #6f5b47;
-  --accent: #8f5a22;
-  --accent-foreground: #fff8ee;
-  --border: #d9c9ae;
-  --input: #d9c9ae;
-  --ring: #b7793a;
-  --destructive: #a23b2a;
-  --success: #4f6f3c;
-  --radius: 0.9rem;
-  --wash-a: #fbf4e6;
-  --wash-b: #ead9bd;
+  --ink: #0b1714;
+  --background: #f4f6f3;
+  --foreground: #0f1c19;
+  --card: #ffffff;
+  --card-foreground: #0f1c19;
+  --primary: #2b3a8f;
+  --primary-foreground: #f6f7ff;
+  --secondary: #e8ebf5;
+  --secondary-foreground: #1f2a66;
+  --muted: #eceee9;
+  --muted-foreground: #5b6762;
+  --accent: #3d4fc4;
+  --accent-foreground: #ffffff;
+  --border: #dfe3dd;
+  --input: #d5dad3;
+  --ring: #5567d6;
+  --brass: #b88a2e;
+  --brass-soft: #f6eedb;
+  --destructive: #b4372a;
+  --danger-soft: #fbe9e6;
+  --success: #17724f;
+  --success-soft: #e3f3ea;
+  --warning: #8a5a0c;
+  --warning-soft: #fbf0d9;
+  --radius: 0.75rem;
 }
 
 :root[data-role="tenant"] {
-  --background: #e8eff1;
-  --foreground: #14262c;
-  --card: #f5f9fa;
-  --card-foreground: #14262c;
-  --primary: #1d5f6c;
-  --primary-foreground: #f2fafb;
-  --secondary: #d3e3e7;
-  --secondary-foreground: #163c46;
-  --muted: #dbe8eb;
-  --muted-foreground: #46656e;
-  --accent: #14758f;
-  --accent-foreground: #f2fafc;
-  --border: #c1d5db;
-  --input: #c1d5db;
-  --ring: #3a93ab;
-  --wash-a: #f0f8fa;
-  --wash-b: #cde2e9;
+  --primary: #0f5d4a;
+  --primary-foreground: #f2fbf7;
+  --secondary: #e2efe9;
+  --secondary-foreground: #0d4537;
+  --accent: #128063;
+  --ring: #2a9a7a;
 }
 
 @theme inline {
+  --color-ink: var(--ink);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -60,10 +59,19 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-brass: var(--brass);
+  --color-brass-soft: var(--brass-soft);
   --color-destructive: var(--destructive);
+  --color-danger-soft: var(--danger-soft);
   --color-success: var(--success);
-  --font-serif: "Fraunces", Georgia, "Times New Roman", serif;
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --font-serif: "Bricolage Grotesque", "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Bricolage Grotesque", "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --shadow-card: 0 1px 2px rgba(11, 23, 20, 0.04), 0 12px 32px -18px rgba(11, 23, 20, 0.22);
 }
 
 @layer base {
@@ -78,12 +86,15 @@
   body {
     @apply bg-background text-foreground font-sans antialiased;
     min-height: 100dvh;
+    font-feature-settings: "ss01", "cv11";
   }
 
   h1,
   h2,
   h3 {
-    @apply font-serif tracking-tight;
+    @apply font-display;
+    letter-spacing: -0.025em;
+    text-wrap: balance;
   }
 
   button,
@@ -92,22 +103,30 @@
   label {
     touch-action: manipulation;
   }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
 }
 
-/* soft paper-like background wash behind the phone-width column */
-body {
+/* soft grid paper behind the app */
+.grid-paper {
   background-image:
-    radial-gradient(1200px 500px at 50% -10%, var(--wash-a) 0%, transparent 70%),
-    radial-gradient(800px 400px at 100% 100%, var(--wash-b) 0%, transparent 60%);
-  background-attachment: fixed;
+    linear-gradient(to right, rgba(11, 23, 20, 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(11, 23, 20, 0.045) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+.eyebrow {
+  @apply font-mono text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground;
 }
 
 @keyframes rise {
   from {
-    opacity: 0;
-    transform: translateY(8px);
+    opacity: 0.001;
+    transform: translateY(10px);
   }
-
   to {
     opacity: 1;
     transform: none;
@@ -115,11 +134,37 @@ body {
 }
 
 .rise {
-  animation: rise 0.35s ease-out both;
+  animation: rise 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@keyframes tick-in {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+.tick-in {
+  transform-origin: left;
+  animation: tick-in 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@keyframes marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.marquee {
+  animation: marquee 40s linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .rise {
+  .rise,
+  .tick-in,
+  .marquee {
     animation: none;
   }
 }

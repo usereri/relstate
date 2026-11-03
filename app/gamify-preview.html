@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <title>Relstate · gamification preview</title>
+  </head>
+  <body>
+    <!--
+      A developer page, not a screen. It renders the reputation levels, badges, the level-up moment
+      and the onboarding checklist against invented profiles, so each state can be seen without
+      playing out months of leases on a chain. Open it on the dev server:
+
+          npm run app   →   http://localhost:5173/gamify-preview.html
+
+      It is deliberately not an entry in vite.config.ts, so it never ships in the app bundle.
+      See app/src/gamify/preview.tsx.
+    -->
+    <div id="root"></div>
+    <script type="module" src="/src/gamify/preview.tsx"></script>
+  </body>
+</html>

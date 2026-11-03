@@ -27,3 +27,52 @@ export const photoUrl = (p: string) => {
   if (s.startsWith("/")) return import.meta.env.BASE_URL + s.slice(1); // works under a subpath like GitHub Pages
   return `${import.meta.env.BASE_URL}listings/${/\.[a-z0-9]{2,5}$/i.test(s) ? s : `${s}.jpg`}`;
 };
+
+/**
+ * A base58 transaction signature, and nothing else.
+ *
+ * Checked before a signature becomes an `href`: signatures reach the app from a backend response,
+ * and a value that is not one has no business being interpolated into a URL. Base58 excludes
+ * `0OIl`, so a signature cannot contain a slash, a quote or a colon even before the length check.
+ */
+export const isSignature = (s: string) => /^[1-9A-HJ-NP-Za-km-z]{43,88}$/.test(s);
+
+/** The invisible characters that let a display string lie about its own direction or contents. */
+const INVISIBLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+
+/**
+ * An untrusted string made safe to show next to money.
+ *
+ * Appraiser names come from an off-chain directory, so they are input, not content: bidi overrides
+ * (U+202E and friends) can make `Rzeczoznawca A` render as something else entirely next to an
+ * amount, and an unbounded name can push the amount off a card. Strips every control and format
+ * character, collapses whitespace and truncates.
+ *
+ * Note for callers that verify a name against the chain's `name_hash`: hash the RAW string. The
+ * commitment is to what was registered, so sanitising first would fail a legitimate name.
+ */
+export function safeName(raw: string, max = 48): string {
+  const clean = raw.replace(INVISIBLE, "").replace(/\s+/g, " ").trim();
+  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+}
+
+/** `JSON.stringify` that survives the bigints kit puts in transaction errors (instruction error codes). */
+export const jsonSafe = (v: unknown): string => JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x));
+
+/**
+ * Base units from a decimal amount somebody typed — a fee quote, a verdict.
+ *
+ * Deliberately not `Number(x) * 1e6`: that maps "", " ", "1e3" and "0x10" to numbers, and a
+ * seventh decimal place would be silently rounded into a different amount than the one on screen.
+ * Both callers put the result next to a deposit, so "nearly what you typed" is not good enough.
+ */
+export function parseAmountInput(text: string, whenEmpty = "Enter an amount."): { base: number } | { error: string } {
+  const s = text.trim();
+  if (s === "") return { error: whenEmpty };
+  if (s.startsWith("-")) return { error: "An amount cannot be negative." };
+  if (!/^\d+(\.\d{1,6})?$/.test(s)) return { error: "Use digits, with at most six decimal places, for example 12.5." };
+  const [whole, frac = ""] = s.split(".");
+  const base = Number(whole) * 1_000_000 + Number(frac.padEnd(6, "0"));
+  if (!Number.isSafeInteger(base)) return { error: "That amount is too large." };
+  return { base };
+}

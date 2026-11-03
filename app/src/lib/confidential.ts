@@ -1,0 +1,612 @@
+/**
+ * The confidential-balance island.
+ *
+ * Everything here is `@solana/kit` 8 + `@solana-program/token-2022` + the `@solana/zk-sdk` wasm,
+ * which is a different stack from the rest of the app (web3.js + Anchor). The rest of the app is
+ * deliberately NOT rewritten to kit: this module is loaded on demand, builds the instructions a
+ * confidential rent payment needs, and hands them back for the caller to compose and submit.
+ *
+ * Why plans rather than single instructions: a confidential transfer is a batch of ZK proofs
+ * (equality, ciphertext validity, batched range) staged in context-state accounts, which does not
+ * fit in one transaction. `@solana-program/token-2022` returns an `InstructionPlan`; the planner
+ * here turns it into an ordered list of transaction messages, the last of which carries the actual
+ * `ConfidentialTransfer` instruction. `pay_rent` belongs in that last transaction (see
+ * docs/contracts/program-interface.md), which is what `alsoInLastTransaction` is for.
+ *
+ * Every private operation needs the wallet's ElGamal + AES keys, derived once per session from
+ * the wallet's dedicated key-derivation capability (docs/privacy.md). No key ever leaves the
+ * browser; the auditor key that lets us decrypt for compliance lives only in backend secrets and
+ * is read off the mint by the transfer helper.
+ */
+import type {
+  Address,
+  Instruction,
+  Rpc,
+  SolanaRpcApi,
+  TransactionMessage,
+  TransactionMessageWithFeePayer,
+  TransactionSigner,
+} from "@solana/kit";
+import type { AeKey, ElGamalKeypair } from "@solana/zk-sdk/bundler";
+import type { ConfidentialTransferBalance } from "@solana-program/token-2022/confidential";
+import { RPC, RUSDC_MINT } from "./config";
+import { retryOn429 } from "./rpc";
+import { jsonSafe } from "./utils";
+import { backendInfo, postConfidentialAccountSetup, postRentPayment, postSponsoredDetailed, sponsorFeePayer, type Cosigned } from "./sponsor";
+import { CONFIDENTIAL_DERIVATION_MESSAGE, isConfidentialDerivationMessage, type WalletProvider } from "./wallet";
+
+/** The kit, token-2022 and zk-sdk modules, imported on first use so the wasm stays lazy. */
+const libs = async () => {
+  const [kit, token, confidential, zk] = await Promise.all([
+    import("@solana/kit"),
+    import("@solana-program/token-2022"),
+    import("@solana-program/token-2022/confidential"),
+    import("@solana/zk-sdk/bundler"),
+  ]);
+  return { kit, token, confidential, zk };
+};
+type Libs = Awaited<ReturnType<typeof libs>>;
+
+export type PlannedMessage = TransactionMessage & TransactionMessageWithFeePayer;
+export type { ConfidentialTransferBalance };
+
+/** A wallet's confidential-balance keys. One ElGamal keypair and one AES key per wallet. */
+export interface ConfidentialKeyPair {
+  elgamal: ElGamalKeypair;
+  ae: AeKey;
+}
+
+/**
+ * Derives the wallet's confidential-balance keys.
+ *
+ * The input key material is the wallet's signature over the constant `solana-conf-bal/v1`,
+ * obtained ONLY through the dedicated capability on {@link WalletProvider} — never through
+ * generic message signing, which refuses that message outright.
+ */
+// The derivation signature is deterministic, so asking the wallet again only produces another
+// pop-up. Held in memory for the life of the page (never stored), per wallet, and dropped if the
+// wallet refuses so a declined prompt can be retried.
+const derivation = new Map<string, Promise<Uint8Array>>();
+
+export async function deriveKeys(wallet: WalletProvider): Promise<ConfidentialKeyPair> {
+  if (!wallet.deriveConfidentialKeyMaterial)
+    throw new Error(
+      `This ${wallet.kind} wallet cannot derive confidential-balance keys: it exposes no key-derivation capability, ` +
+        "so private balances are unavailable for it.",
+    );
+  const { zk } = await libs();
+  // The constant is spelled out in wallet.ts to keep the wasm out of the main bundle; this is
+  // where the two are checked against each other, before any key material is produced.
+  const canonical = zk.ConfidentialKeys.signerMessage();
+  const ours = CONFIDENTIAL_DERIVATION_MESSAGE;
+  if (canonical.length !== ours.length || !canonical.every((b, i) => b === ours[i]))
+    throw new Error("The wallet contract's derivation message no longer matches ConfidentialKeys.signerMessage(). Refusing to derive keys.");
+  if (!isConfidentialDerivationMessage(canonical)) throw new Error("Internal: derivation message guard disagrees with itself.");
+
+  const cacheKey = wallet.publicKey.toString();
+  let pending = derivation.get(cacheKey);
+  if (!pending) {
+    pending = wallet.deriveConfidentialKeyMaterial();
+    derivation.set(cacheKey, pending);
+    pending.catch(() => derivation.delete(cacheKey));
+  }
+  const signature = await pending;
+  if (signature.length !== 64) throw new Error(`Expected a 64-byte ed25519 signature for key derivation, got ${signature.length} bytes.`);
+  const keys = zk.ConfidentialKeys.fromSignature(signature);
+  return { elgamal: keys.elgamal(), ae: keys.ae() };
+}
+
+/** How a planned transaction reaches the chain: sponsored by the backend, or paid for locally. */
+export type Submit = (message: PlannedMessage) => Promise<string>;
+
+export interface ConfidentialSession {
+  rpc: Rpc<SolanaRpcApi>;
+  mint: Address;
+  owner: Address;
+  /** The owner's Token-2022 associated token account for this mint. */
+  token: Address;
+  keys: ConfidentialKeyPair;
+  /** Pays fees AND the rent for the proof context-state accounts a transfer stages. */
+  payer: TransactionSigner;
+  /**
+   * Pays fee and rent for first-use account setup. A different key from {@link payer} in sponsored
+   * mode: `/api/sponsor` refuses any transaction that references the fee payer inside an
+   * instruction, and funding a new account's rent cannot satisfy that, so setup goes through the
+   * treasury instead (docs/contracts/treasury.md).
+   */
+  setupPayer: TransactionSigner;
+  /** The token account's owner, as the instructions' authority. */
+  authority: Address | TransactionSigner;
+  submit: Submit;
+  /** Submits a setup transaction, which a different backend route co-signs. */
+  submitSetup: Submit;
+  /**
+   * Submits a transaction of a confidential rent payment. Its proof plan funds context-state
+   * accounts from the payer, so it is co-signed by the treasury (`/api/treasury/rent-payment`) and
+   * must be PLANNED with {@link setupPayer} as the fee payer, not {@link payer}.
+   */
+  submitRentPayment: Submit;
+}
+
+const rpcFor = async (url: string, { kit }: Libs) =>
+  kit.createSolanaRpcFromTransport(retryOn429(kit.createDefaultRpcTransport({ url }))) as Rpc<SolanaRpcApi>;
+
+const ataFor = async (owner: Address, mint: Address, { token }: Libs) =>
+  (await token.findAssociatedTokenPda({ owner, mint, tokenProgram: token.TOKEN_2022_PROGRAM_ADDRESS }))[0];
+
+const requireMint = (mint?: string): string => {
+  const m = mint ?? RUSDC_MINT;
+  if (!m) throw new Error("No confidential mint configured: set VITE_RUSDC_MINT to the rUSDC mint address.");
+  return m;
+};
+
+/**
+ * Opens a session for the connected wallet, sponsored by the backend.
+ *
+ * The wallet signs as the token account's authority; the backend's fee payer is a noop signer, so
+ * kit leaves its signature slot empty and the backend fills it in. That is the same sponsorship
+ * shape `chain.sendSponsored` uses for the Anchor flows.
+ */
+export async function openSession(opts: { wallet: WalletProvider; mint?: string; rpcUrl?: string }): Promise<ConfidentialSession> {
+  const l = await libs();
+  const { kit } = l;
+  const [feePayer, backend, keys] = await Promise.all([sponsorFeePayer(), backendInfo(), deriveKeys(opts.wallet)]);
+  const mint = kit.address(requireMint(opts.mint ?? (backend.rusdcMint || undefined)));
+  const owner = kit.address(opts.wallet.publicKey.toBase58());
+  const rpc = await rpcFor(opts.rpcUrl ?? RPC, l);
+  return {
+    rpc,
+    mint,
+    owner,
+    token: await ataFor(owner, mint, l),
+    keys,
+    payer: kit.createNoopSigner(kit.address(feePayer)),
+    setupPayer: kit.createNoopSigner(kit.address(backend.treasury)),
+    // A signer, not a bare address: the token program only accepts the owner's instructions
+    // (configure, deposit, apply, transfer) if the owner is marked as signing. Noop because the
+    // wallet adds its signature afterwards, exactly like the sponsored fee payer.
+    authority: kit.createNoopSigner(owner),
+    submit: sponsoredSubmit(opts.wallet, l, postSponsoredDetailed),
+    submitSetup: sponsoredSubmit(opts.wallet, l, postConfidentialAccountSetup),
+    submitRentPayment: sponsoredSubmit(opts.wallet, l, postRentPayment),
+  };
+}
+
+/**
+ * Opens a session whose signer pays for itself: the local test wallet, scripts and tests. Nothing
+ * is posted to a backend, which is what keeps this module usable with no backend running.
+ */
+export async function openLocalSession(opts: {
+  signer: TransactionSigner;
+  keys: ConfidentialKeyPair;
+  mint: string;
+  rpcUrl?: string;
+}): Promise<ConfidentialSession> {
+  const l = await libs();
+  const { kit } = l;
+  const mint = kit.address(requireMint(opts.mint));
+  const owner = opts.signer.address;
+  const rpc = await rpcFor(opts.rpcUrl ?? RPC, l);
+  const submit = localSubmit(rpc, l);
+  return {
+    rpc,
+    mint,
+    owner,
+    token: await ataFor(owner, mint, l),
+    keys: opts.keys,
+    payer: opts.signer,
+    // Nothing to sponsor: the same signer pays for its own setup.
+    setupPayer: opts.signer,
+    authority: opts.signer,
+    submit,
+    submitSetup: submit,
+    submitRentPayment: submit,
+  };
+}
+
+// --- submission strategies -------------------------------------------------------------------
+
+const withLifetime = async (session: Pick<ConfidentialSession, "rpc">, message: PlannedMessage, { kit }: Libs) => {
+  const { value: blockhash } = await session.rpc.getLatestBlockhash({ commitment: "confirmed" }).send();
+  return { message: kit.setTransactionMessageLifetimeUsingBlockhash(blockhash, message), blockhash };
+};
+
+/** Signs locally with every signer the message carries and sends it directly. */
+function localSubmit(rpc: Rpc<SolanaRpcApi>, l: Libs): Submit {
+  const { kit } = l;
+  return async (message) => {
+    const { message: m, blockhash } = await withLifetime({ rpc }, message, l);
+    const tx = await kit.signTransactionMessageWithSigners(m);
+    const signature = kit.getSignatureFromTransaction(tx);
+    await rpc
+      .sendTransaction(kit.getBase64EncodedWireTransaction(tx), { encoding: "base64", preflightCommitment: "confirmed" })
+      .send();
+    await confirm(rpc, signature, blockhash.lastValidBlockHeight);
+    return signature;
+  };
+}
+
+/**
+ * Signs with the ephemeral proof-account signers, then hands the half-signed transaction to the
+ * wallet for the authority signature and posts it. The backend adds the fee payer's signature.
+ *
+ * `post` is which co-signing route takes it: the sponsor for ordinary operations, the treasury for
+ * first-use account setup, which is the only transaction whose fee payer is referenced inside an
+ * instruction.
+ *
+ * kit and web3.js disagree about types but agree about the wire format, so the bridge between
+ * them is the serialized transaction itself.
+ */
+function sponsoredSubmit(wallet: WalletProvider, l: Libs, post: (txBase64: string) => Promise<Cosigned>): Submit {
+  const { kit } = l;
+  return async (message) => {
+    const rpc = await rpcFor(RPC, l);
+    const { message: m, blockhash } = await withLifetime({ rpc }, message, l);
+    const partial = await kit.partiallySignTransactionMessageWithSigners(m);
+    const anchor = await import("@anchor-lang/core");
+    const wire = Buffer.from(kit.getBase64EncodedWireTransaction(partial), "base64");
+    const tx = anchor.web3.VersionedTransaction.deserialize(wire);
+    // Several transactions of a rent-payment plan (the proof context-state ones) have only the
+    // treasury and ephemeral keys as signers; web3.js throws "Cannot sign with non signer key" if
+    // the wallet is asked to sign one, so only ask when its signature is actually required.
+    const required = tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures);
+    // publicKey is typed non-null but an adapter reports null once disconnected mid-plan.
+    const walletKey = wallet.publicKey?.toBase58();
+    const signed = required.some((k) => k.toBase58() === walletKey) ? await wallet.signTransaction(tx) : tx;
+    const { signature, broadcast } = await post(Buffer.from(signed.serialize()).toString("base64"));
+    // The backend returns as soon as it has SENT the transaction. A proof plan is a chain of
+    // dependent transactions (each reads the context state the one before created), and so are
+    // deposit then apply-pending, so the next one cannot be co-signed until this one has landed:
+    // its simulation would fail on a missing account. Polled over HTTP, like every other wait here.
+    if (broadcast) await confirm(rpc, signature, blockhash.lastValidBlockHeight);
+    return signature;
+  };
+}
+
+/**
+ * Polls for confirmation over HTTP.
+ *
+ * Deliberately not kit's `sendAndConfirmTransactionFactory`, which confirms over a websocket:
+ * `api.devnet.solana.com` drops that socket partway through a multi-transaction proof plan and
+ * takes the rest of the plan with it. Polling goes through the same 429-retrying transport as
+ * every other read, so it degrades by waiting rather than by dying.
+ *
+ * Expiry is only checked every few polls: the whole point of this path is to be gentle with a
+ * rate-limited endpoint, and a blockhash outliving its slot by a couple of seconds costs nothing.
+ */
+const EXPIRY_CHECK_EVERY = 8;
+
+async function confirm(rpc: Rpc<SolanaRpcApi>, signature: string, lastValidBlockHeight: bigint) {
+  for (let poll = 0; ; poll++) {
+    const { value } = await rpc.getSignatureStatuses([signature as Parameters<typeof rpc.getSignatureStatuses>[0][0]]).send();
+    const status = value[0];
+    if (status?.err) throw new Error(`Transaction ${signature} failed: ${jsonSafe(status.err)}`);
+    if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") return;
+    if (poll % EXPIRY_CHECK_EVERY === EXPIRY_CHECK_EVERY - 1) {
+      const height = await rpc.getBlockHeight({ commitment: "confirmed" }).send();
+      if (height > lastValidBlockHeight) throw new Error(`Transaction ${signature} expired before it was confirmed.`);
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
+// --- reads -----------------------------------------------------------------------------------
+
+/**
+ * Decrypts the wallet's own confidential balance. Returns null when the token account does not
+ * exist yet, which is the normal state before {@link planCreateAccount} has run.
+ */
+export interface AccountState {
+  /** The Token-2022 account exists at all. The treasury creates it when it mints rUSDC. */
+  exists: boolean;
+  /** It exists AND carries initialised `ConfidentialTransferAccount` state, so it can receive privately. */
+  configured: boolean;
+  /** The plaintext balance, which is what `fund_deposit` spends and what a deposit moves. */
+  publicAmount: bigint;
+}
+
+/**
+ * The state of one wallet's rUSDC account, without decrypting anything.
+ *
+ * Needed for both halves of the private-balance step and for the receiving side of a payment:
+ * `configured` is the question "can this wallet be paid privately at all", and only the owner's
+ * own signature can turn it from false to true, so the answer decides whose problem a failure is.
+ */
+export async function accountState(session: ConfidentialSession, token: Address = session.token): Promise<AccountState> {
+  const { token: t22 } = await libs();
+  const account = await t22.fetchMaybeToken(session.rpc, token);
+  if (!account.exists) return { exists: false, configured: false, publicAmount: 0n };
+  const extensions = account.data.extensions;
+  const configured =
+    extensions.__option === "Some" && extensions.value.some((e) => e.__kind === "ConfidentialTransferAccount");
+  return { exists: true, configured, publicAmount: account.data.amount };
+}
+
+/** The mint's decimals, which `Deposit` and `Withdraw` carry for the same reason `transfer_checked` does. */
+export async function mintDecimals(session: ConfidentialSession): Promise<number> {
+  const { token: t22 } = await libs();
+  return (await t22.fetchMint(session.rpc, session.mint)).data.decimals;
+}
+
+export async function loadBalance(session: ConfidentialSession): Promise<ConfidentialTransferBalance | null> {
+  const { confidential } = await libs();
+  try {
+    return await confidential.fetchConfidentialTransferBalance({
+      token: session.token,
+      rpc: session.rpc,
+      elgamalSecretKey: session.keys.elgamal.secret(),
+      aesKey: session.keys.ae,
+    });
+  } catch (e) {
+    if (/not\s*found|does not exist|AccountNotFound/i.test(String((e as Error)?.message ?? ""))) return null;
+    throw e;
+  }
+}
+
+// --- plans -----------------------------------------------------------------------------------
+
+/** Walks the planner's tree in execution order. Running it sequentially is always safe. */
+const flatten = (plan: { kind: string; message?: PlannedMessage; plans?: unknown[] }): PlannedMessage[] =>
+  plan.kind === "single" ? [plan.message!] : (plan.plans as typeof plan[]).flatMap(flatten);
+
+export const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+/** `TokenInstruction::ConfidentialTransferExtension`, then `ConfidentialTransferInstruction::Transfer`. */
+const TRANSFER_DISCRIMINATOR = [27, 7];
+
+const isConfidentialTransfer = (ix: Instruction) =>
+  ix.programAddress === TOKEN_2022_PROGRAM &&
+  !!ix.data &&
+  ix.data[0] === TRANSFER_DISCRIMINATOR[0] &&
+  ix.data[1] === TRANSFER_DISCRIMINATOR[1];
+
+async function plan(
+  session: ConfidentialSession,
+  instructionPlan: unknown,
+  l: Libs,
+  payer: TransactionSigner = session.payer,
+): Promise<PlannedMessage[]> {
+  const { kit } = l;
+  const planner = kit.createTransactionPlanner({
+    createTransactionMessage: () =>
+      kit.pipe(kit.createTransactionMessage({ version: 0 }), (m) => kit.setTransactionMessageFeePayerSigner(payer, m)),
+  });
+  return flatten(await planner(instructionPlan as Parameters<typeof planner>[0]));
+}
+
+/** Appends to the last transaction of a plan, for callers with nothing to be adjacent to. */
+function appendToLast(messages: PlannedMessage[], extra: Instruction[], { kit }: Libs): PlannedMessage[] {
+  if (!extra.length) return messages;
+  const last = messages.length - 1;
+  messages[last] = kit.appendTransactionMessageInstructions(extra, messages[last]);
+  return messages;
+}
+
+/**
+ * Creates and configures the wallet's confidential token account: the ATA, the realloc for the
+ * extension, `ConfigureAccount`, and the PubkeyValidity proof the ZK ElGamal program verifies.
+ * Idempotent in effect — skip it when {@link loadBalance} already returns a balance.
+ */
+export async function planCreateAccount(session: ConfidentialSession, alsoInLastTransaction: Instruction[] = []): Promise<PlannedMessage[]> {
+  const l = await libs();
+  const messages = await plan(
+    session,
+    await l.confidential.getCreateConfidentialTransferAccountInstructionPlan({
+      // The treasury, not the sponsor: this is the one plan whose payer is referenced inside the
+      // instructions, because somebody has to fund the account's rent. Run it with `submitSetup`.
+      payer: session.setupPayer,
+      owner: session.authority,
+      mint: session.mint,
+      token: session.token,
+      rpc: session.rpc,
+      elgamalKeypair: session.keys.elgamal,
+      aesKey: session.keys.ae,
+    }),
+    l,
+    session.setupPayer,
+  );
+  return appendToLast(messages, alsoInLastTransaction, l);
+}
+
+/**
+ * Moves `amount` from the wallet's public balance into its confidential **pending** balance.
+ *
+ * Only half the job: a pending balance cannot be spent. {@link planApplyPending} finishes it, and
+ * has to be built afterwards — it reads the pending-balance ciphertext off the account and
+ * re-encrypts the new available balance locally, so a plan built before the deposit lands would
+ * carry the wrong figure and be rejected on chain.
+ */
+export async function planDeposit(
+  session: ConfidentialSession,
+  opts: { amount: bigint; decimals?: number },
+): Promise<PlannedMessage[]> {
+  const l = await libs();
+  if (opts.amount <= 0n) throw new Error(`A deposit must be positive, got ${opts.amount}.`);
+  const decimals = opts.decimals ?? (await mintDecimals(session));
+  return plan(
+    session,
+    l.kit.sequentialInstructionPlan([
+      l.token.getConfidentialDepositInstruction({
+        token: session.token,
+        mint: session.mint,
+        authority: session.authority,
+        amount: opts.amount,
+        decimals,
+      }),
+    ]),
+    l,
+  );
+}
+
+/**
+ * Moves everything credited to the pending balance into the available balance, re-encrypting it
+ * locally. Needed after anything is received — a deposit from the public balance, or an incoming
+ * confidential transfer — before it can be spent.
+ */
+export async function planApplyPending(session: ConfidentialSession, alsoInLastTransaction: Instruction[] = []): Promise<PlannedMessage[]> {
+  const l = await libs();
+  const { data } = await l.token.fetchToken(session.rpc, session.token);
+  const messages = await plan(
+    session,
+    l.kit.sequentialInstructionPlan([
+      l.confidential.getApplyConfidentialPendingBalanceInstructionFromToken({
+        token: session.token,
+        tokenAccount: data,
+        authority: session.authority,
+        elgamalSecretKey: session.keys.elgamal.secret(),
+        aesKey: session.keys.ae,
+      }),
+    ]),
+    l,
+  );
+  return appendToLast(messages, alsoInLastTransaction, l);
+}
+
+/**
+ * Builds a confidential transfer of `amount` base units to `destinationToken`.
+ *
+ * The amount is split into lo/hi halves and the three required proofs are staged in context-state
+ * accounts; the returned messages must run in order, and the last one carries the
+ * `ConfidentialTransfer` instruction itself.
+ *
+ * `rightAfterTransfer` is for `pay_rent`. The program matches the transfer by position, not by
+ * searching the transaction: it must be the instruction DIRECTLY before `pay_rent`
+ * (docs/contracts/program-interface.md §3), so these instructions are spliced in immediately
+ * after the transfer rather than appended to the end — the planner puts the context-state closes
+ * after the transfer, and anything between the two would fail as `MissingConfidentialTransfer`.
+ *
+ * The auditor ElGamal key is read off the mint by the helper, so every transfer stays decryptable
+ * by us for compliance without the app ever holding that key.
+ */
+export async function planTransfer(
+  session: ConfidentialSession,
+  opts: { destinationToken: Address; amount: bigint; rightAfterTransfer?: Instruction[] },
+): Promise<PlannedMessage[]> {
+  const l = await libs();
+  const [source, destination, mint] = await Promise.all([
+    l.token.fetchToken(session.rpc, session.token),
+    l.token.fetchToken(session.rpc, opts.destinationToken),
+    l.token.fetchMint(session.rpc, session.mint),
+  ]);
+  const messages = await plan(
+    session,
+    await l.confidential.getConfidentialTransferInstructionPlan({
+      payer: session.payer,
+      rpc: session.rpc,
+      sourceToken: session.token,
+      destinationToken: opts.destinationToken,
+      mint: session.mint,
+      authority: session.authority,
+      amount: opts.amount,
+      sourceTokenAccount: source.data,
+      destinationTokenAccount: destination.data,
+      mintAccount: mint.data,
+      sourceElgamalKeypair: session.keys.elgamal,
+      aesKey: session.keys.ae,
+    }),
+    l,
+  );
+  return opts.rightAfterTransfer?.length ? spliceAfterTransfer(messages, opts.rightAfterTransfer, l) : messages;
+}
+
+/**
+ * Where in a plan the `ConfidentialTransfer` instruction sits, as `[message, instruction]`.
+ *
+ * Searched from the back, because the planner puts the transfer in the last transaction it builds.
+ * Returns null rather than guessing: both callers treat "no transfer here" as a bug worth naming,
+ * since on chain it would only surface as `MissingConfidentialTransfer` several steps later.
+ */
+export function findTransfer(messages: PlannedMessage[]): [number, number] | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const at = (messages[i].instructions as readonly Instruction[]).findIndex(isConfidentialTransfer);
+    if (at >= 0) return [i, at];
+  }
+  return null;
+}
+
+const NO_TRANSFER = "No ConfidentialTransfer instruction in the plan, so there is nothing for pay_rent to sit behind.";
+
+/**
+ * Puts `extra` directly after the `ConfidentialTransfer` instruction, wherever the planner placed
+ * it. Throws rather than guessing if the plan has no such instruction, because a silently wrong
+ * position only shows up on chain as `MissingConfidentialTransfer`.
+ */
+export function spliceAfterTransfer(messages: PlannedMessage[], extra: Instruction[], { kit }: Libs): PlannedMessage[] {
+  const found = findTransfer(messages);
+  if (!found) throw new Error(NO_TRANSFER);
+  const [i, at] = found;
+  const instructions = messages[i].instructions as readonly Instruction[];
+  const reordered = [...instructions.slice(0, at + 1), ...extra, ...instructions.slice(at + 1)];
+  messages[i] = kit.appendTransactionMessageInstructions(
+    reordered,
+    // appendTransactionMessageInstructions only adds, so rebuild the instruction list from empty.
+    { ...messages[i], instructions: [] } as PlannedMessage,
+  );
+  return messages;
+}
+
+/** Which transaction of a plan carries the transfer — and so, for rent, `pay_rent` and its receipt. */
+export function transferMessageIndex(messages: PlannedMessage[]): number {
+  const found = findTransfer(messages);
+  if (!found) throw new Error(NO_TRANSFER);
+  return found[0];
+}
+
+/**
+ * Runs planned messages in order, returning one signature per transaction.
+ *
+ * Strictly sequential: later transactions in a proof plan reference context-state accounts earlier
+ * ones create. `onSubmitted` is called after each, so a multi-transaction plan can show progress
+ * instead of looking frozen for half a minute.
+ */
+export async function runPlan(
+  session: ConfidentialSession,
+  messages: PlannedMessage[],
+  onSubmitted?: (done: number, total: number, signature: string) => void,
+): Promise<string[]> {
+  const signatures: string[] = [];
+  for (const message of messages) {
+    const signature = await session.submit(message);
+    signatures.push(signature);
+    onSubmitted?.(signatures.length, messages.length, signature);
+  }
+  return signatures;
+}
+
+/**
+ * The Token-2022 associated token account a wallet receives confidential rUSDC into. Distinct
+ * from `chain.tokenAccountFor`, which is the lease mint's account on whichever token program
+ * owns that mint.
+ */
+export async function confidentialTokenAccount(owner: string, mint?: string): Promise<Address> {
+  const l = await libs();
+  return ataFor(l.kit.address(owner), l.kit.address(requireMint(mint)), l);
+}
+
+/**
+ * Converts a web3.js/Anchor instruction into a kit one, so an Anchor-built `pay_rent` can ride in
+ * the same transaction as the confidential transfer. Structural on purpose: this module does not
+ * depend on Anchor's types.
+ */
+export interface Web3Instruction {
+  programId: { toBase58(): string };
+  keys: { pubkey: { toBase58(): string }; isSigner: boolean; isWritable: boolean }[];
+  data: Uint8Array;
+}
+export async function fromWeb3Instruction(ix: Web3Instruction): Promise<Instruction> {
+  const { kit } = await libs();
+  const { AccountRole } = kit;
+  return {
+    programAddress: kit.address(ix.programId.toBase58()),
+    accounts: ix.keys.map((k) => ({
+      address: kit.address(k.pubkey.toBase58()),
+      role: k.isSigner
+        ? k.isWritable
+          ? AccountRole.WRITABLE_SIGNER
+          : AccountRole.READONLY_SIGNER
+        : k.isWritable
+          ? AccountRole.WRITABLE
+          : AccountRole.READONLY,
+    })),
+    data: new Uint8Array(ix.data),
+  };
+}

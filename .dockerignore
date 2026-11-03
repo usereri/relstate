@@ -1,0 +1,42 @@
+# Docker build context is the repo root (backend/Dockerfile needs app/idl/ alongside backend/).
+# Only backend/package*.json, backend/src and app/idl are ever COPYed in, but keeping the context
+# small still matters for build speed, and this keeps secrets and build output out of it either way.
+
+# Anchor / Rust build output -- large, git-ignored, never needed in the image (the tracked
+# app/idl/ copy is what the container uses).
+target
+.anchor
+**/*.rs.bk
+
+# Dependencies and build output for packages not used by the backend image.
+node_modules
+app/dist
+app/node_modules
+site/dist
+site/node_modules
+dist-pages
+dist
+*.tsbuildinfo
+
+# Local chain / test artifacts.
+test-ledger
+.surfpool
+tests/test-usdc-mint.json
+runbooks
+txtx.yml
+
+# Secrets and local env -- never in a build context.
+.env
+.env.*
+!.env.example
+.keys
+**/.keys
+
+# VCS and editor noise.
+.git
+.github
+.DS_Store
+*.log
+
+# Docs and screenshots: irrelevant to the backend image, and large.
+docs/screenshots

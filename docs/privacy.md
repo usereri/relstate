@@ -1,0 +1,43 @@
+# Privacy design (Phase 1, step 0)
+
+Settled decisions for the demo. Change only by agreement.
+
+## What is hidden, what is public
+
+| Data | Visibility | Why |
+|---|---|---|
+| Amount of every **rent payment** (rUSDC confidential transfer) | **Hidden** (encrypted) | the pitch: "what you pay each month is private" |
+| **Deposit** funding, release, claim, default payouts, and every **deduction** (proposed or settled) | **Public** | the vault is a PDA-owned token account; a PDA cannot hold ElGamal keys, so its balance cannot be confidential. A backend-held confidential escrow is post-demo. It is also deliberate: the landlord's public "returns X% of deposits" reputation is computed from these amounts, and cannot be both hidden and published |
+| Listing price, `Lease.rent_amount`, `deposit_amount`, term | **Public** | the program computes discounts and default arithmetic on them; moving to commitments is out of scope |
+| That a payment happened, who paid whom, when | Public | reputation counters need it |
+| Contract text | Never on chain; only SHA-256 (`lease_hash`) | already true |
+| KYC personal data | Never on chain or in our DB; stays with Sumsub. Chain holds `subject_hash` + level | |
+
+Pitch wording: "what you pay each month is between you and your landlord", NOT "lease terms are secret".
+
+## Deposit amounts and deductions are public, rent payments are confidential
+
+Stated plainly so nothing implies otherwise: the **deposit amount**, the **deduction** a landlord proposes, and the **settled split** are public on chain (`Lease.deposit_amount`, `Lease.proposed_deduction`, the vault transfers, `LeaseClosed`). The landlord return-rate reputation (`Profile.deposit_total`, `deducted_total`, `last_deposit_return_bps`, `deposit_events`) depends on that, because a deduction that is public can be judged by future tenants. That makes it a published record, not a guarantee: it is not an on-chain deterrent, and leases between wallets one person controls can inflate it, so it leans on the KYC issuer for sybil resistance (`docs/contracts/attestation.md`). The only confidential amount is the recurring **rent payment** on a confidential mint (`pay_rent`). Making the deposit vault confidential is a known limitation (B2), not a hidden property.
+
+## Keys
+
+- Each wallet derives ElGamal + AES keys from a wallet signature of `solana-conf-bal/v1` (`ConfidentialKeys.fromSignature`). Embedded wallet must expose `signMessage` via a dedicated key-derivation call, never generic signing.
+- Landlord decrypts own incoming balance with own key.
+- **Auditor key** (ElGamal) set on the rUSDC mint, held only in backend secrets. Lets us decrypt any transfer for compliance and to verify payments.
+
+## What `pay_rent` can and cannot enforce
+
+The program cannot see a hidden amount. `pay_rent` therefore:
+
+1. requires, via instruction introspection, a Token-2022 confidential `Transfer` instruction in the same transaction whose source is the tenant's token account and destination is the landlord's token account for the lease mint;
+2. records that a payment happened (counters, timing, on-time/late).
+
+It does NOT verify the amount equals `rent_amount`. Residual gap: a tenant could send a wrong amount and still get credit. For the demo the backend (auditor key) verifies amount = rent after the fact and can flag/revoke; this is stated openly. Post-demo options: backend co-signs the payment only after decrypting the proof inputs, or amount commitments checked on chain.
+
+## Out of scope for the demo
+
+Hiding the sender/receiver graph, hiding listing prices, trust-minimised wrapper (see treasury contract).
+
+## pay_rent transaction layout
+
+The confidential transfer instruction must be the instruction **immediately before** `pay_rent` (proof instructions ahead of it; a leading ComputeBudget ix is fine). Strict on purpose: it stops two `pay_rent` instructions matching one transfer. Full layout: `program-interface.md`.
