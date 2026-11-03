@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 96" width="720" height="192" role="img" aria-label="Relstate">
+  <rect width="360" height="96" fill="none"/>
+  <g transform="translate(12 16) scale(1)">
+    <rect width="64" height="64" rx="16" fill="#0F5D4A"/>
+    <path fill="#FAF5EC" fill-rule="evenodd" d="M32 11 55 31h-5v21H14V31H9z M32 29.5a5.2 5.2 0 0 1 2.4 9.8V47a2.4 2.4 0 0 1-4.8 0v-7.7a5.2 5.2 0 0 1 2.4-9.8z"/>
+  </g>
+  <text x="92" y="64" font-family="'Bricolage Grotesque','Geist',Inter,'Helvetica Neue',Arial,sans-serif" font-size="44" font-weight="600" letter-spacing="-1.4" fill="#0F1C19">relstate</text>
+</svg>
