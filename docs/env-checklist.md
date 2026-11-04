@@ -7,7 +7,9 @@ by file, since that's the question this checklist exists to answer. Read with
 [`docs/deploy.md`](deploy.md), which is the step-by-step procedure; this page is the reference you
 come back to when a route 500s with "invalid configuration" or a build ships the wrong default.
 
-**Live mode on the hosted demo:** `BACKEND_MODE=live` refuses `AUTH_MODE=mock`. Use
+**Live mode on the hosted demo:** `BACKEND_MODE=live` refuses `AUTH_MODE=mock`, and refuses to boot
+without `DATABASE_PATH` (see **Persistence** below — `:memory:` is the explicit way to say you want
+a live deployment that forgets everything on restart). Use
 `AUTH_MODE=wallet` (users sign a one-time challenge with their wallet; no third party) and set
 `APP_URL` (challenges are bound to its origin). `KYC_PROVIDER=mock` is refused in live mode unless
 **both** `ALLOW_MOCK_KYC=devnet` and `SOLANA_CLUSTER=devnet` are set, and the RPC's genesis hash
@@ -130,7 +132,7 @@ the hard reason this app never scales past one instance.
 
 | Variable | Where | Public? | Required | Example |
 |---|---|---|---|---|
-| `DATABASE_PATH` | Fly env | public (it's a path) | **set it on a hosted demo**; blank = in memory, so a restart or redeploy forgets everything below | `/data/relstate.db` |
+| `DATABASE_PATH` | Fly env | public (it's a path) | **required when `BACKEND_MODE=live`** — boot refuses a live deployment that never set it. `:memory:` is accepted as a deliberate "I want this one ephemeral". Blank is the local default (in memory) | `/data/relstate.db` |
 | `UPLOADS_DIR` | Fly env | public (it's a path) | **set it on a hosted demo**; blank keeps listing photos in memory | `/data/uploads` |
 
 `DATABASE_PATH` is a SQLite file holding everything the backend knows that is not on chain
@@ -139,8 +141,11 @@ idempotency keys, the once-per-wallet rent grant, payout receipts, and the spons
 rent-dust / mock-KYC budgets. Two consequences worth knowing:
 
 - **A webhook idempotency key is money.** With no `DATABASE_PATH`, a redeploy between Stripe's first
-  delivery and its retry lets one payment mint rUSDC twice. `GET /health` reports
-  `persistentStore: true` when the file is configured — check it after every deploy.
+  delivery and its retry lets one payment mint rUSDC twice. That failure is too quiet to leave to a
+  warning, so **live mode refuses to boot without the variable set** — `assertEnvConsistent` names
+  it, the way it already names a missing `SESSION_SECRET`. `GET /health` reports
+  `persistentStore: true` when the file is real; check it after every deploy, because `:memory:`
+  satisfies the boot check and still forgets everything.
 - **An invite link needs `SESSION_SECRET` too.** The invitation record survives on the volume, but
   its token is HMAC-signed with a key derived from `SESSION_SECRET`; a deployment that leaves that
   blank uses a random per-process one, so outstanding links still stop verifying on restart. Live
@@ -148,8 +153,7 @@ rent-dust / mock-KYC budgets. Two consequences worth knowing:
 
 Must be an absolute path if set (`assertEnvConsistent` refuses a relative one: it would resolve
 against the working directory, which differs between `npm run dev` and the container, and the same
-setting would silently name two different files). The literal `:memory:` is accepted as an explicit
-"keep it ephemeral".
+setting would silently name two different files), and must name a file rather than a directory.
 
 ### Local only — never deployed
 

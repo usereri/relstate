@@ -339,6 +339,9 @@ describe("assertEnvConsistent: identity rules", () => {
   const liveBase = {
     mode: "live",
     authMode: "privy",
+    // Part of a complete live config: live mode refuses a deployment that would keep its webhook
+    // idempotency keys in memory (backend/src/store.ts). boot-matrix.test.ts tests that rule itself.
+    databasePath: "/data/relstate.db",
     corsOrigin: "https://app.example",
     feePayerKeypair: "fp",
     treasuryKeypair: "tr",

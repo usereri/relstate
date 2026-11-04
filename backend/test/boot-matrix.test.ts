@@ -17,9 +17,12 @@ const STRONG_SECRET = "9f3a7c1e5b8d2f0a4c6e9b1d3f5a7c9e1b3d5f7a";
 
 // A complete, internally-consistent live config using wallet login and a real Sumsub KYC setup
 // (so KYC never needs its own mock-devnet carve-out for these wallet/auth-mode assertions).
+// `databasePath` is part of "complete": live mode refuses a deployment that would keep its webhook
+// idempotency keys in memory, and the DATABASE_PATH block below is what tests that on its own.
 const liveWallet = {
   mode: "live",
   authMode: "wallet",
+  databasePath: "/data/relstate.db",
   appUrlExplicit: true,
   appUrl: "https://app.example",
   corsOrigin: "https://app.example",
@@ -160,6 +163,50 @@ describe("assertEnvConsistent: secret strength in live mode", () => {
     assert.ok(msg.includes("SESSION_SECRET is required"), msg);
     assert.ok(msg.includes("ADMIN_TOKEN is required"), msg);
     assert.ok(!msg.includes("too weak"), msg);
+  });
+});
+
+// DATABASE_PATH decides whether a restart forgets the webhook idempotency keys, the outstanding
+// appraiser invitations and every spend budget (backend/src/store.ts). So the rules are: live mode
+// must have made a choice, and whatever is set must be openable.
+describe("assertEnvConsistent: DATABASE_PATH", () => {
+  it("refuses a live deployment that never set it", () => {
+    // The failure it prevents is quiet and expensive: a redeploy between a provider's first webhook
+    // delivery and its retry would mint rUSDC twice for one payment.
+    const msg = message(withEnv({ ...liveWallet, databasePath: "" }));
+    assert.ok(msg.includes("DATABASE_PATH is required when BACKEND_MODE=live"), msg);
+  });
+
+  it("accepts an explicit :memory: in live mode, because that is a choice rather than an oversight", () => {
+    assert.equal(message(withEnv({ ...liveWallet, databasePath: ":memory:" })), "");
+  });
+
+  it("accepts an absolute path in live mode", () => {
+    assert.equal(message(withEnv({ ...liveWallet, databasePath: "/data/relstate.db" })), "");
+  });
+
+  it("does not demand one outside live mode", () => {
+    // `npm run dev` and the tests run with it unset, and must stay bootable.
+    assert.equal(message(withEnv({ databasePath: "" })), "");
+  });
+
+  it("refuses a relative path in any mode", () => {
+    // It would resolve against `backend/` under `npm run dev` and `/app/backend` in the container,
+    // so one setting would name two files and a deployment would look like it had forgotten everything.
+    for (const databasePath of ["relstate.db", "./data/relstate.db", "../relstate.db"]) {
+      const msg = message(withEnv({ databasePath }));
+      assert.ok(msg.includes("DATABASE_PATH must be an absolute path"), `${databasePath}: ${msg}`);
+      assert.ok(msg.includes(databasePath), `${databasePath}: the message should name the offending value, got ${msg}`);
+    }
+  });
+
+  it("refuses a directory, since SQLite is about to open it as a file", () => {
+    const msg = message(withEnv({ databasePath: "/data/" }));
+    assert.ok(msg.includes("DATABASE_PATH must name the database file"), msg);
+  });
+
+  it("accepts an absolute path outside live mode", () => {
+    assert.equal(message(withEnv({ databasePath: "/tmp/relstate.db" })), "");
   });
 });
 

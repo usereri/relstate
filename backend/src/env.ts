@@ -354,12 +354,25 @@ export function assertEnvConsistent(e: Env = env): void {
     if (e.authMode === "wallet" && !e.appUrlExplicit) problems.push("APP_URL is required when AUTH_MODE=wallet (login challenges are bound to its origin)");
     if (e.sessionSecret === "") problems.push("SESSION_SECRET is required when BACKEND_MODE=live");
     if (e.adminToken === "") problems.push("ADMIN_TOKEN is required when BACKEND_MODE=live");
+    // A live deployment that forgot this one keeps its webhook idempotency keys in memory, so a
+    // redeploy between a provider's first delivery and its retry mints rUSDC twice for one payment
+    // (store.ts). That is too quiet a failure to leave to a warning, so boot refuses it — but the
+    // explicit `:memory:` is accepted, because "I know, and I want this one ephemeral" is a
+    // legitimate answer and is not the same as having forgotten.
+    if (e.databasePath === "") {
+      problems.push(
+        "DATABASE_PATH is required when BACKEND_MODE=live (a path on the volume, e.g. /data/relstate.db). " +
+          "Set it to :memory: to deliberately run without persistence, accepting that a restart loses the webhook " +
+          "idempotency keys, the outstanding invitations and every spend budget",
+      );
+    }
   }
-  // A relative DATABASE_PATH resolves against the working directory, which is `backend/` under
-  // `npm run dev` and `/app/backend` in the container — so the same setting would name two
-  // different files and a deployment would look like it had silently forgotten everything. Blank
-  // (in memory) and the literal `:memory:` are both fine; anything else must be absolute, and must
-  // name a file rather than a directory, because that is what SQLite is about to open.
+  // Shape, in every mode. A relative DATABASE_PATH resolves against the working directory, which is
+  // `backend/` under `npm run dev` and `/app/backend` in the container — so the same setting would
+  // name two different files and a deployment would look like it had silently forgotten everything.
+  // Blank (in memory, the local default) and the literal `:memory:` are both fine here; anything
+  // else must be absolute, and must name a file rather than a directory, because that is what
+  // SQLite is about to open.
   if (e.databasePath !== "" && e.databasePath !== ":memory:") {
     if (!isAbsolute(e.databasePath)) problems.push(`DATABASE_PATH must be an absolute path (or unset for in-memory), not "${e.databasePath}"`);
     else if (e.databasePath.endsWith("/")) problems.push(`DATABASE_PATH must name the database file, not a directory ("${e.databasePath}")`);

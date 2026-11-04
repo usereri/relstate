@@ -20,10 +20,12 @@ invitations, the Stripe and Sumsub webhook idempotency keys (one payment cannot 
 because a deploy landed between the first delivery and the retry), the once-per-wallet rent grant,
 the payout history, and today's budgets: the sponsor, rent-payment and rent-dust caps and the
 mock-KYC attestation budget (default 30/hour, 100/day). `GET /health` reports
-`persistentStore: true` when this is wired up; if it says `false`, `DATABASE_PATH` is unset and
-every one of those is back to per-process. **Leave `DATABASE_PATH` on the volume and keep one Fly
-machine** — the volume attaches to a single machine, so a second instance would see neither the
-database nor the photos, and would double every cap.
+`persistentStore: true` when this is wired up. **Live mode refuses to boot without
+`DATABASE_PATH` set at all**, so the way to get `false` here is to have set it to the literal
+`:memory:` (the explicit "I want this one ephemeral") or to be running `BACKEND_MODE=mock`.
+**Leave `DATABASE_PATH` on the volume and keep one Fly machine** — the volume attaches to a single
+machine, so a second instance would see neither the database nor the photos, and would double every
+cap.
 
 What a restart still drops, on purpose: the per-minute per-IP login and `/api/rpc` windows (a fresh
 minute, which costs nothing), unsigned login challenges (a few minutes old; the user signs in
@@ -369,6 +371,7 @@ config. Everything else in this runbook (Pages, DNS, Stripe, the smoke test) is 
 | Backend cold start / unresponsive | `min_machines_running = 1` + `auto_stop_machines = false` means it shouldn't sleep; if it's down, `fly status`, `fly logs`, then `fly machine restart <id>`. A crash loop usually means a missing/bad secret — `fly logs` prints `assertEnvConsistent`'s message naming exactly which one. |
 | Stripe webhook retries / shows pending | Stripe retries a failing webhook for up to 3 days; check the event log for the actual error first (signature mismatch is almost always a stale `STRIPE_WEBHOOK_SECRET` from before you rotated it in step 4). You can also manually resend an event from the dashboard. |
 | A bad Fly deploy broke the backend | `fly releases list` then `fly deploy --image <previous image digest>` — Fly keeps every build's image, so this is a straight rollback with no rebuild needed. The database on the volume is untouched by a rollback, so the state goes back with nothing lost. |
-| `/health` says `persistentStore: false` | `DATABASE_PATH` is not reaching the process, so every budget, invitation and webhook idempotency key is per-process again. Check `fly.toml`'s `[env]` still has `DATABASE_PATH = "/data/relstate.db"` and that `[mounts]` survived a `fly launch` rewrite, then `fly ssh console -C "ls -la /data"` — the `node` user (uid 1000) must be able to write there. |
+| Boot fails with `DATABASE_PATH is required when BACKEND_MODE=live` | Exactly what it says: a live deployment must have made a choice about persistence. Put `DATABASE_PATH = "/data/relstate.db"` back in `fly.toml`'s `[env]` (a `fly launch` rewrite can drop it, along with `[mounts]`), or set it to `:memory:` if you really do want a live demo that forgets on restart. |
+| `/health` says `persistentStore: false` on a live deployment | `DATABASE_PATH` is set to `:memory:`, so every budget, invitation and webhook idempotency key is per-process again. Point it at the volume instead, then `fly ssh console -C "ls -la /data"` — the `node` user (uid 1000) must be able to write there. |
 | A bad Pages deploy broke the front end | `git revert` the bad commit on the `deploy` branch and push — `pages.yml` rebuilds and republishes the reverted state. There is no "previous artifact" redeploy button; a revert + push is the rollback. |
 | Everything is on fire, five minutes to stage | Fall back to the Phase 1 scripted devnet run recording (`docs/demo-day-plan` cut line) and narrate live from there. |
