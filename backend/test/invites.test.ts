@@ -1,13 +1,18 @@
 import "./noenv.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { generateKeyPairSigner, getAddressEncoder, getBase64Decoder, type Address } from "@solana/kit";
 import { RELSTATE_PROGRAM } from "../src/contracts.ts";
+import { env } from "../src/env.ts";
 import { appraiserNameHash, disputePda } from "../src/dispute.ts";
 import { createInvites, inviteSecret } from "../src/invites.ts";
 import { accountLayout, type Layout } from "../src/layout.ts";
 import { LEASE_STATUS } from "../src/lease.ts";
+import { openStore } from "../src/store.ts";
 
 // A fake chain: one Lease and one Dispute, built byte-exactly from the layouts the IDL gives, so
 // these tests exercise the real decoders rather than a stub of them.
@@ -65,11 +70,11 @@ function encodeDispute(fields: DisputeFields, layout: Layout = accountLayout("Di
 
 const COMPANY = "Acme Wycena";
 
-async function fixture(options: { status?: string; agreed?: boolean; bound?: boolean; selectionIn?: number; now?: number } = {}) {
+async function fixture(options: { status?: string; agreed?: boolean; bound?: boolean; selectionIn?: number; now?: number; clock?: { t: number } } = {}) {
   const [landlord, tenant, appraiser, stranger] = (await Promise.all([0, 1, 2, 3].map(async () => (await generateKeyPairSigner()).address))) as [Address, Address, Address, Address];
   const lease = (await generateKeyPairSigner()).address;
   const nowMs = options.now ?? Date.UTC(2026, 0, 1);
-  const now = () => nowMs;
+  const now = () => options.clock?.t ?? nowMs;
   const selectionDeadline = Math.floor(nowMs / 1000) + (options.selectionIn ?? 3600);
   const dispute = await disputePda(lease);
   const accounts = new Map<string, { data: Uint8Array; owner: Address }>([
@@ -283,6 +288,151 @@ describe("GET /api/invites?lease=…", () => {
     const f = await fixture();
     assert.equal(await codeOf(() => f.invites.pending({ lease: f.lease, wallet: f.stranger })), "not-a-party");
     assert.deepEqual(await f.invites.pending({ lease: f.lease, wallet: f.tenant }), { lease: f.lease, invite: null });
+  });
+});
+
+describe("invites: TTL pruning", () => {
+  it("an expired invite is swept away (size drops) and is not readable, but one not yet expired survives the same sweep", async () => {
+    const clock = { t: Date.UTC(2026, 0, 1) };
+    // A short-lived invite (selectionIn small) alongside a long-lived one on a different lease, so
+    // one sweep call can prove it drops the first and keeps the second.
+    const shortLived = await fixture({ clock, selectionIn: 60 });
+    const longLived = await fixture({ clock, selectionIn: 10_000 });
+
+    const a = await shortLived.invites.issue({ lease: shortLived.lease, companyName: COMPANY, email: "a@b.example", wallet: shortLived.landlord });
+    const b = await longLived.invites.issue({ lease: longLived.lease, companyName: COMPANY, email: "a@b.example", wallet: longLived.landlord });
+    assert.equal(shortLived.invites.size(), 1);
+
+    clock.t += 59_000; // just before a's expiry: still there
+    assert.doesNotThrow(() => shortLived.invites.read(tokenOf(a.url)));
+
+    clock.t += 2000; // now past a's expiry
+    // Any entry point sweeps (invites.ts: "called on every entry point, as the map version was").
+    assert.equal(await codeOf(() => shortLived.invites.read(tokenOf(a.url))), "invite-expired");
+    assert.equal(shortLived.invites.size(), 0, "the expired row must actually be gone, not just unreadable");
+
+    // The long-lived invite, built against its own fixture/store, is unaffected by the other's sweep.
+    assert.doesNotThrow(() => longLived.invites.read(tokenOf(b.url)));
+    assert.equal(longLived.invites.size(), 1);
+  });
+});
+
+describe("an invite survives a restart", () => {
+  function tmpDir(): { dir: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "relstate-invites-test-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  it("still reads and still claims afterwards, with the same token", async () => {
+    const { dir, cleanup } = tmpDir();
+    const savedSecret = env.sessionSecret;
+    try {
+      // Without a fixed SESSION_SECRET the HMAC key is a per-process random one (auth.ts), so a
+      // token minted before a restart would never verify after one, whatever the database says.
+      (env as unknown as { sessionSecret: string }).sessionSecret = "restart-test-secret-32-chars-min!!";
+
+      const [landlord, tenant, appraiser] = (await Promise.all([0, 1, 2].map(async () => (await generateKeyPairSigner()).address))) as [Address, Address, Address];
+      const lease = (await generateKeyPairSigner()).address;
+      const nowMs = Date.now();
+      const selectionDeadline = Math.floor(nowMs / 1000) + 3600;
+      const dispute = await disputePda(lease);
+      const accounts = new Map<string, { data: Uint8Array; owner: Address }>([
+        [lease, { data: encodeLease({ landlord, tenant, mint: landlord, deposit: 10_000_000n, status: "mediation" }), owner: PROGRAM }],
+        [
+          dispute,
+          {
+            data: encodeDispute({ lease, agreedNameHash: appraiserNameHash(COMPANY), agreedFee: 500_000n, selectionDeadline, candidates: [{ name: COMPANY, fee: 500_000n }] }),
+            owner: PROGRAM,
+          },
+        ],
+      ]);
+      const rpc = {
+        getAccountInfo: (address: Address) => ({
+          send: async () => {
+            const account = accounts.get(address);
+            return { context: { slot: 1n }, value: account === undefined ? null : { owner: account.owner, data: [getBase64Decoder().decode(account.data), "base64"] } };
+          },
+        }),
+      };
+
+      const file = join(dir, "relstate.db");
+      const store1 = openStore(file);
+      const invites1 = createInvites({ rpc: () => rpc as never, now: () => nowMs, program: PROGRAM, store: store1 });
+      const issued = await invites1.issue({ lease, companyName: COMPANY, email: "a@b.example", wallet: landlord });
+      const token = tokenOf(issued.url);
+      store1.close();
+
+      const store2 = openStore(file);
+      const invites2 = createInvites({ rpc: () => rpc as never, now: () => nowMs, program: PROGRAM, store: store2 });
+      const view = invites2.read(token);
+      assert.equal(view.status, "pending");
+      assert.equal(view.companyName, COMPANY);
+      const claimed = invites2.claim(token, appraiser);
+      assert.equal(claimed.wallet, appraiser);
+      store2.close();
+    } finally {
+      (env as unknown as { sessionSecret: string }).sessionSecret = savedSecret;
+      cleanup();
+    }
+  });
+
+  // NOT WRITTEN: "without SESSION_SECRET set, a restart invalidates outstanding tokens because the
+  // fallback key is per-process". auth.ts caches that fallback key in a module-level variable
+  // (`ephemeralSecret`), so two `createInvites()` calls inside one test process — which is the only
+  // kind of "restart" these tests can simulate — always share the same fallback key regardless of
+  // the database. Proving the per-process claim needs two real OS processes, which this suite does
+  // not spawn. `inviteSecret()` deriving from `env.sessionSecret` is covered above and in "the
+  // invite token is not a session token"; the per-process half of the claim is only asserted in the
+  // module-level doc comment in auth.ts, not by a test.
+
+  it("a claim made before the restart is still visible to both parties afterwards", async () => {
+    const { dir, cleanup } = tmpDir();
+    const savedSecret = env.sessionSecret;
+    try {
+      (env as unknown as { sessionSecret: string }).sessionSecret = "restart-test-secret-32-chars-min!!";
+
+      const [landlord, tenant, appraiser] = (await Promise.all([0, 1, 2].map(async () => (await generateKeyPairSigner()).address))) as [Address, Address, Address];
+      const lease = (await generateKeyPairSigner()).address;
+      const nowMs = Date.now();
+      const selectionDeadline = Math.floor(nowMs / 1000) + 3600;
+      const dispute = await disputePda(lease);
+      const accounts = new Map<string, { data: Uint8Array; owner: Address }>([
+        [lease, { data: encodeLease({ landlord, tenant, mint: landlord, deposit: 10_000_000n, status: "mediation" }), owner: PROGRAM }],
+        [
+          dispute,
+          {
+            data: encodeDispute({ lease, agreedNameHash: appraiserNameHash(COMPANY), agreedFee: 500_000n, selectionDeadline, candidates: [{ name: COMPANY, fee: 500_000n }] }),
+            owner: PROGRAM,
+          },
+        ],
+      ]);
+      const rpc = {
+        getAccountInfo: (address: Address) => ({
+          send: async () => {
+            const account = accounts.get(address);
+            return { context: { slot: 1n }, value: account === undefined ? null : { owner: account.owner, data: [getBase64Decoder().decode(account.data), "base64"] } };
+          },
+        }),
+      };
+
+      const file = join(dir, "relstate.db");
+      const store1 = openStore(file);
+      const invites1 = createInvites({ rpc: () => rpc as never, now: () => nowMs, program: PROGRAM, store: store1 });
+      const issued = await invites1.issue({ lease, companyName: COMPANY, email: "a@b.example", wallet: landlord });
+      invites1.claim(tokenOf(issued.url), appraiser);
+      store1.close();
+
+      const store2 = openStore(file);
+      const invites2 = createInvites({ rpc: () => rpc as never, now: () => nowMs, program: PROGRAM, store: store2 });
+      const asLandlord = await invites2.pending({ lease, wallet: landlord });
+      const asTenant = await invites2.pending({ lease, wallet: tenant });
+      assert.deepEqual(asLandlord, asTenant);
+      assert.equal(asLandlord.invite?.wallet, appraiser);
+      store2.close();
+    } finally {
+      (env as unknown as { sessionSecret: string }).sessionSecret = savedSecret;
+      cleanup();
+    }
   });
 });
 

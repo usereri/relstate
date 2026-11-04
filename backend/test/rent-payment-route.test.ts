@@ -1,11 +1,15 @@
 import "./noenv.ts";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { generateKeyPairSigner, type Address, type Instruction } from "@solana/kit";
 import { associatedTokenAddress } from "../src/confidential.ts";
 import { ASSOCIATED_TOKEN_PROGRAM } from "../src/contracts.ts";
 import { env } from "../src/env.ts";
 import { createRateLimiter, type RateLimiter } from "../src/limits.ts";
+import { openStore, type Store } from "../src/store.ts";
 import { RejectedTransaction, inspectTransaction } from "../src/txinspect.ts";
 import { createTreasury } from "../src/treasury.ts";
 import type { TreasuryRpc } from "../src/treasury.ts";
@@ -20,8 +24,8 @@ const code = (c: string) => (e: unknown) => e instanceof RejectedTransaction && 
 const generous = () => createRateLimiter({ maxPerWalletPerHour: 100, maxGlobalPerHour: 100, maxLamportsPerWalletPerDay: 10n ** 12n, maxLamportsGlobalPerDay: 10n ** 12n });
 
 /** `prepare` (default true) runs the four real preparation transactions first, so the wallet's contexts are registered and a tx5 can be admitted; the send log is cleared afterwards. */
-async function fixture(options: { limiter?: RateLimiter; mode?: "mock" | "live"; prepare?: boolean; ipRate?: number } = {}) {
-  const c0 = await cast();
+async function fixture(options: { limiter?: RateLimiter; mode?: "mock" | "live"; prepare?: boolean; ipRate?: number; store?: Store; cast?: Cast } = {}) {
+  const c0 = options.cast ?? (await cast());
   const mint = c0.mint;
   // The route derives the wallet's token account itself, so the cast has to agree with it.
   const c: Cast = { ...c0, walletToken: await associatedTokenAddress(c0.wallet.address, mint), rules: { ...c0.rules, walletToken: await associatedTokenAddress(c0.wallet.address, mint) } };
@@ -71,6 +75,7 @@ async function fixture(options: { limiter?: RateLimiter; mode?: "mock" | "live";
     decimals: 6,
     mode: options.mode ?? "live",
     rentPaymentLimiter: options.limiter ?? generous(),
+    ...(options.store ? { store: options.store } : {}),
   });
   const services = { treasury: async () => treasury, sponsor: async () => ({ feePayer: "fp" }) } as unknown as Services;
   const savedIpRate = env.treasuryRatePerMinute;
@@ -658,5 +663,40 @@ describe("treasury routes: per-IP limiter", () => {
     assert.notEqual((await status(wrap())).status, 429);
     assert.notEqual((await status(credit())).status, 429);
   });
+});
+
+describe("sponsorRentPayment: the replay guard survives a restart", () => {
+  function tmpDir(): { dir: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "relstate-rentpay-test-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  it("refuses the identical message a second time, co-signed by a freshly booted instance reading the same file", async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const file = join(dir, "relstate.db");
+
+      // Instance 1: prepare the wallet's contexts and co-sign the real plan's last transaction
+      // (transfer + pay_rent + the three closes), the thing that is actually replay-sensitive.
+      const store1 = openStore(file);
+      const f1 = await fixture({ store: store1 });
+      const txBase64 = await build(f1.c, valid(f1));
+      const first = await f1.treasury.sponsorRentPayment({ txBase64, wallet: f1.c.wallet.address });
+      assert.equal(first.broadcast, true);
+      store1.close();
+
+      // Instance 2 ("restart"): same database file, brand new in-process rent-plan registry (which
+      // is deliberately NOT persisted — see store.ts). The message-hash replay guard does not need
+      // it: it is checked before the plan registry is ever consulted, so the replay is caught first.
+      const store2 = openStore(file);
+      const f2 = await fixture({ store: store2, cast: f1.c, prepare: false });
+      await assert.rejects(f2.treasury.sponsorRentPayment({ txBase64, wallet: f1.c.wallet.address }), code("replay"));
+      assert.equal(f2.state.sent.length, 0);
+      store2.close();
+    } finally {
+      cleanup();
+    }
+  });
+
 });
 

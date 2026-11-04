@@ -1,9 +1,13 @@
 import "./noenv.ts";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { OnrampError } from "../src/providers/onramp.ts";
-import { createOfframp, type OfframpTreasury } from "../src/providers/offramp.ts";
+import { RECEIPT_TTL_MS, createOfframp, type OfframpTreasury } from "../src/providers/offramp.ts";
 import { parseRate, parseUsdc } from "../src/providers/money.ts";
+import { openStore } from "../src/store.ts";
 
 const WALLET = "EBMibFLTvr5GDpgxNqt5Gqp9B1xLMr32aNwGDJV2oGJ6";
 const OTHER = "11111111111111111111111111111111";
@@ -146,5 +150,61 @@ describe("offramp.history", () => {
     assert.deepEqual(off.history(WALLET).map((r) => r.reference), [a2.reference, a1.reference]);
     assert.equal(off.history(OTHER).length, 1);
     assert.deepEqual(off.history("nobody"), []);
+  });
+});
+
+describe("offramp: TTL pruning", () => {
+  it("a receipt older than RECEIPT_TTL_MS is swept on the next payout, but a fresh one is not", async () => {
+    let clock = 1_000_000;
+    const off = createOfframp({ config: config(), now: () => clock });
+    const old = await off.payout({ wallet: WALLET, amountUsdc: 1_000_000n });
+    assert.ok(off.receipt(old.reference));
+
+    clock += RECEIPT_TTL_MS - 1;
+    await off.payout({ wallet: OTHER, amountUsdc: 1_000_000n }); // payout() prunes on every call
+    assert.ok(off.receipt(old.reference), "not yet expired");
+
+    clock += 2;
+    const fresh = await off.payout({ wallet: WALLET, amountUsdc: 1_000_000n });
+    assert.equal(off.receipt(old.reference), undefined, "swept once its TTL has actually passed");
+    assert.ok(off.receipt(fresh.reference));
+  });
+});
+
+describe("offramp survives a restart", () => {
+  function tmpDir(): { dir: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "relstate-offramp-test-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+  // openStore(file) prunes against the real wall clock on open, unlike the fixed/incrementing
+  // clocks the rest of this file uses.
+  const REAL_NOW = Date.now();
+
+  it("the payout history and the daily cap survive", async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const file = join(dir, "relstate.db");
+
+      const store1 = openStore(file);
+      const off1 = createOfframp({ config: config("100"), now: () => REAL_NOW, store: store1 });
+      const receipt = await off1.payout({ wallet: WALLET, amountUsdc: parseUsdc("60") });
+      store1.close();
+
+      const store2 = openStore(file);
+      const off2 = createOfframp({ config: config("100"), now: () => REAL_NOW, store: store2 });
+      // The history screen reads the same receipt back out of the store.
+      assert.deepEqual(off2.receipt(receipt.reference), receipt);
+      assert.deepEqual(off2.history(WALLET).map((r) => r.reference), [receipt.reference]);
+      // Only 40 of the 100 cap are left; a payout past it is still refused.
+      assert.equal(off2.remainingToday(WALLET), parseUsdc("40"));
+      await assert.rejects(
+        () => off2.payout({ wallet: WALLET, amountUsdc: parseUsdc("41") }),
+        (e: unknown) => e instanceof OnrampError && e.code === "wallet-cap" && e.status === 429,
+      );
+      await assert.doesNotReject(() => off2.payout({ wallet: WALLET, amountUsdc: parseUsdc("40") }));
+      store2.close();
+    } finally {
+      cleanup();
+    }
   });
 });

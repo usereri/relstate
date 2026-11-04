@@ -1,11 +1,13 @@
 import "./noenv.ts";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve, join } from "node:path";
 import { describe, it } from "node:test";
 import { generateKeyPairSigner } from "@solana/kit";
 import { accountLayout, type Layout } from "../src/layout.ts";
 import { createRateLimiter, type RateLimiter } from "../src/limits.ts";
+import { openStore } from "../src/store.ts";
 import { createTreasury, type TreasuryRpc } from "../src/treasury.ts";
 import { RejectedTransaction } from "../src/txinspect.ts";
 import type { Services } from "../src/services.ts";
@@ -269,5 +271,118 @@ describe("POST /api/treasury/rent-dust", () => {
     const f = await fixture();
     const res = await f.post(f.wallet, "{nope");
     assert.equal(res.status, 200);
+  });
+});
+
+describe("grantRentDust survives a restart", () => {
+  function tmpDir(): { dir: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "relstate-rentdust-test-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  /** A treasury wired to a given store, with the same RPC fakes as `fixture()` but a fixed signer
+   * and mint so the two "lifetimes" of a restart test are talking about the same wallet. */
+  async function treasuryOn(store: Parameters<typeof createTreasury>[0]["store"], treasurySigner: Awaited<ReturnType<typeof generateKeyPairSigner>>, mint: string, balances: Record<string, bigint> = {}) {
+    const state = { runs: [] as Planned[] };
+    const rpc = {
+      getMinimumBalanceForRentExemption: (size: bigint) => ({
+        send: async () => (size === 104n ? APPLICATION : size === 94n ? PROFILE : size === BigInt(LISTING_MAX_SIZE) ? LISTING : size === DISPUTE_SIZE ? DISPUTE : 999n),
+      }),
+      getBalance: (address: string) => ({ send: async () => ({ context: { slot: 1n }, value: balances[address] ?? 0n }) }),
+    } as unknown as TreasuryRpc;
+    const treasury = createTreasury({
+      rpc,
+      run: (async (_payer: unknown, plan: Planned) => {
+        state.runs.push(plan);
+        return ["sig-dust"];
+      }) as never,
+      treasury: treasurySigner,
+      mint: mint as never,
+      decimals: 6,
+      mode: "live",
+      store,
+    });
+    return { treasury, state };
+  }
+
+  it("grants once per wallet across a restart: the second lifetime reports already-granted and runs nothing", async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const file = join(dir, "relstate.db");
+      const treasurySigner = await generateKeyPairSigner();
+      const mint = (await generateKeyPairSigner()).address;
+      const wallet = (await generateKeyPairSigner()).address;
+
+      const store1 = openStore(file);
+      const t1 = await treasuryOn(store1, treasurySigner, mint);
+      const first = await t1.treasury.grantRentDust({ wallet });
+      assert.equal(first.granted, true);
+      assert.equal(t1.state.runs.length, 1);
+      store1.close();
+
+      const store2 = openStore(file);
+      const t2 = await treasuryOn(store2, treasurySigner, mint);
+      const second = await t2.treasury.grantRentDust({ wallet });
+      assert.deepEqual(second, { granted: false, lamports: "0", reason: "already-granted" });
+      assert.equal(t2.state.runs.length, 0);
+      store2.close();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("an in-flight claim (a crash before it completed) still blocks a retry within the TTL, and the TTL is 5 minutes", async () => {
+    const DUST_CLAIM_TTL_MS = 5 * 60_000; // pinned here because treasury.ts does not export it
+    const { dir, cleanup } = tmpDir();
+    try {
+      const file = join(dir, "relstate.db");
+      const treasurySigner = await generateKeyPairSigner();
+      const mint = (await generateKeyPairSigner()).address;
+      const wallet = (await generateKeyPairSigner()).address;
+      const nowMs = Date.now();
+
+      // Simulates a machine killed between "mark the claim" and "the grant completed": the row
+      // exists with `granted: false`, as grantRentDust writes it before the first await.
+      const store1 = openStore(file);
+      store1.collection<{ at: number; granted: boolean }>("rent_dust_granted").set(wallet, { at: nowMs, granted: false }, nowMs + DUST_CLAIM_TTL_MS);
+      store1.close();
+
+      // Restarted well within the 5-minute window: the dangling claim still blocks a retry, exactly
+      // as it would block a second concurrent request, so the wallet never gets paid twice for one
+      // in-flight crash.
+      const store2 = openStore(file);
+      const t2 = await treasuryOn(store2, treasurySigner, mint);
+      const blocked = await t2.treasury.grantRentDust({ wallet });
+      assert.deepEqual(blocked, { granted: false, lamports: "0", reason: "already-granted" });
+      assert.equal(t2.state.runs.length, 0);
+      store2.close();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("an in-flight claim expires once its TTL has passed, so the wallet can retry and be granted", async () => {
+    const DUST_CLAIM_TTL_MS = 5 * 60_000;
+    const { dir, cleanup } = tmpDir();
+    try {
+      const file = join(dir, "relstate.db");
+      const treasurySigner = await generateKeyPairSigner();
+      const mint = (await generateKeyPairSigner()).address;
+      const wallet = (await generateKeyPairSigner()).address;
+      const longAgo = Date.now() - DUST_CLAIM_TTL_MS - 1000;
+
+      const store1 = openStore(file);
+      store1.collection<{ at: number; granted: boolean }>("rent_dust_granted").set(wallet, { at: longAgo, granted: false }, longAgo + DUST_CLAIM_TTL_MS);
+      store1.close();
+
+      const store2 = openStore(file);
+      const t2 = await treasuryOn(store2, treasurySigner, mint);
+      const result = await t2.treasury.grantRentDust({ wallet });
+      assert.equal(result.granted, true, "the stale in-flight row must be pruned, not treated as a permanent grant");
+      assert.equal(t2.state.runs.length, 1);
+      store2.close();
+    } finally {
+      cleanup();
+    }
   });
 });
