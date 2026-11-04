@@ -84,8 +84,13 @@ export type Store = {
   /**
    * Runs `fn` with every write in one transaction, so a crash cannot leave two rows that only make
    * sense together half-written. Nested calls run inline on the outermost transaction.
+   *
+   * **`fn` must be synchronous.** An `async fn` would return at its first `await`, the transaction
+   * would commit there, and the rest of the writes would land outside it — a transaction that
+   * silently is not one. The return type rejects a promise-returning callback at compile time, and
+   * `transaction` rolls back and throws if one reaches it anyway.
    */
-  transaction<T>(fn: () => T): T;
+  transaction<T>(fn: () => T extends PromiseLike<unknown> ? never : T): T;
   close(): void;
   /** `:memory:` or the file. */
   readonly path: string;
@@ -209,11 +214,20 @@ export function openStore(path: string = MEMORY): Store {
     },
 
     transaction<T>(fn: () => T): T {
-      if (depth > 0) return fn();
+      // An async callback hands back a promise at its first `await`, so a COMMIT here would close
+      // the transaction while the writes it was meant to hold were still to come. Refusing it is
+      // the whole point: a transaction that is silently not one is worse than no transaction.
+      const refuseAsync = (result: T): T => {
+        if (result === null || typeof result !== "object" || typeof (result as { then?: unknown }).then !== "function") return result;
+        throw new TypeError("store.transaction needs a synchronous callback: an async one would commit at its first await, outside the transaction");
+      };
+      // Nested: the outer transaction owns BEGIN/COMMIT, so this just runs inline — but an async
+      // callback is just as wrong here, and throwing rolls the outer one back.
+      if (depth > 0) return refuseAsync(fn());
       db.exec("BEGIN");
       depth++;
       try {
-        const result = fn();
+        const result = refuseAsync(fn());
         db.exec("COMMIT");
         return result;
       } catch (error) {

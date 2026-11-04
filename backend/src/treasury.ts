@@ -813,6 +813,13 @@ export function createTreasury(deps: TreasuryDeps) {
     // every path that does not end in a grant.
     dustGranted.set(wallet, { at: now, granted: false }, now + DUST_CLAIM_TTL_MS);
     let reservation: ReturnType<typeof dustLimiter.reserve> | undefined;
+    /**
+     * Flipped the moment the transfer is known to have landed. Past that point **nothing may be
+     * un-booked**: the lamports have left the treasury, so a wallet that was paid has to stay
+     * marked and the spend has to stay counted — even when what fails next is the bookkeeping
+     * itself, which is now a SQLite write and can fail on a busy database or a full volume.
+     */
+    let paid = false;
     try {
       const amount = await rentDustAmount();
       const balance = (await deps.rpc.getBalance(wallet as Address, { commitment: "confirmed" }).send()).value;
@@ -831,13 +838,40 @@ export function createTreasury(deps: TreasuryDeps) {
         sequentialInstructionPlan([getTransferSolInstruction({ source: deps.treasury, destination: wallet as Address, amount })]),
         `rent dust ${amount} lamports to ${wallet}`,
       );
-      reservation.commit(amount);
-      // The claim becomes the permanent record only now that the lamports really moved.
-      dustGranted.set(wallet, { at: Date.now(), granted: true });
+      paid = true;
+
+      // Permanent mark first, budget second, and each booked independently rather than one guarding
+      // the other: the once-per-wallet record is what stops a second grant, so it matters more than
+      // a budget line, and the budget must still be counted even when that record could not be
+      // written. The claim becomes the permanent record only now that the lamports really moved.
+      const unrecorded: string[] = [];
+      try {
+        dustGranted.set(wallet, { at: Date.now(), granted: true });
+      } catch (e) {
+        unrecorded.push(`the permanent grant record (${e instanceof Error ? e.message : String(e)})`);
+      }
+      try {
+        reservation.commit(amount);
+      } catch (e) {
+        unrecorded.push(`the ${amount} lamports against the daily cap (${e instanceof Error ? e.message : String(e)})`);
+      }
+      if (unrecorded.length > 0) {
+        // The grant itself succeeded, so the caller is told so; this is the operator's problem, and
+        // it is the kind that goes unnoticed until the treasury is unexpectedly empty.
+        log(
+          `treasury: rent dust ${amount} lamports to ${wallet} LANDED (${signatures[0]}) but the database would not record ${unrecorded.join(" or ")}. ` +
+            `The claim's ${DUST_CLAIM_TTL_MS / 60_000}-minute expiry is now the only thing stopping a second grant to this wallet — check the database and the volume's free space.`,
+        );
+      }
       return { granted: true, lamports: amount.toString(), signature: signatures[0] };
     } catch (e) {
-      dustGranted.delete(wallet);
-      reservation?.cancel();
+      // Only an attempt that never paid gives its claim and its budget back. After the transfer has
+      // landed both are kept: the claim then expires on its own TTL and nothing before that can
+      // grant again, which is the only direction that cannot pay one wallet twice.
+      if (!paid) {
+        dustGranted.delete(wallet);
+        reservation?.cancel();
+      }
       throw e;
     }
   }

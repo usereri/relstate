@@ -243,6 +243,47 @@ describe("Store.transaction", () => {
     );
   });
 
+  it("refuses an async callback instead of committing at its first await", () => {
+    // The type signature rejects this at compile time, so reaching it needs a cast — but an
+    // untyped caller, or a callback that only becomes async later, would otherwise get a
+    // transaction that silently is not one: `fn()` returns a promise at the first `await`, COMMIT
+    // runs there, and every write after it lands outside the transaction.
+    const store = openStore();
+    const c = store.collection<number>("t");
+    const asyncTransaction = store.transaction as unknown as (fn: () => Promise<void>) => unknown;
+
+    assert.throws(
+      () =>
+        asyncTransaction(async () => {
+          c.set("written-before-the-await", 1);
+        }),
+      (e: unknown) => e instanceof TypeError && /synchronous callback/.test(e.message),
+    );
+    // And it rolled back rather than keeping the writes the callback managed before returning.
+    assert.equal(c.has("written-before-the-await"), false);
+
+    // The database is still usable afterwards: the refusal left no transaction open.
+    c.set("after", 2);
+    assert.equal(c.get("after"), 2);
+  });
+
+  it("refuses an async callback nested inside a synchronous transaction, rolling the outer one back", () => {
+    const store = openStore();
+    const c = store.collection<number>("t");
+    const asyncTransaction = store.transaction as unknown as (fn: () => Promise<void>) => unknown;
+
+    assert.throws(() => {
+      store.transaction(() => {
+        c.set("outer", 1);
+        asyncTransaction(async () => {
+          c.set("inner", 2);
+        });
+      });
+    }, TypeError);
+    assert.equal(c.has("outer"), false, "the outer transaction rolls back, so neither write survives");
+    assert.equal(c.has("inner"), false);
+  });
+
   it("nests inline: an inner transaction commits or rolls back with the outer one", () => {
     const store = openStore();
     const c = store.collection<number>("t");
