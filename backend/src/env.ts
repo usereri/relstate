@@ -261,7 +261,11 @@ export const env = {
     resendApiKey: str("RESEND_API_KEY"),
     emailFrom: str("INVITE_EMAIL_FROM"),
     resendApiBase: str("RESEND_API_BASE", "https://api.resend.com"),
-    /** `POST /api/invites` is synchronous, so the provider gets a hard ceiling rather than retries. */
+    /**
+     * Budget for the whole send, one retry included — `POST /api/invites` is synchronous, so the
+     * provider gets a hard ceiling rather than open-ended backoff. Bounded at boot to what
+     * `AbortSignal.timeout` can actually honour; see `assertEnvConsistent`.
+     */
     emailTimeoutMs: num("INVITE_EMAIL_TIMEOUT_MS", 10_000),
   },
 
@@ -389,7 +393,24 @@ export function assertEnvConsistent(e: Env = env): void {
     } else if (!/^(?:[^<>@]*<[^\s@,;:<>"]+@[^\s@,;:<>"]+\.[^\s@,;:<>".]+>|[^\s@,;:<>"]+@[^\s@,;:<>"]+\.[^\s@,;:<>".]+)$/.test(e.invites.emailFrom)) {
       problems.push(`INVITE_EMAIL_FROM must be an e-mail address, optionally as "Name <addr@host>", not "${e.invites.emailFrom}"`);
     }
-    if (!(e.invites.emailTimeoutMs > 0)) problems.push("INVITE_EMAIL_TIMEOUT_MS must be greater than zero");
+    // `AbortSignal.timeout` takes a 32-bit signed millisecond count. A fraction is a RangeError, and
+    // — worse, because it is silent — anything above 2^31-1 is *accepted* and then collapses to a
+    // 1 ms timeout with only a `TimeoutOverflowWarning`, so every send would fail instantly and look
+    // like the network. Both are refused here rather than at the first invitation.
+    if (!(Number.isInteger(e.invites.emailTimeoutMs) && e.invites.emailTimeoutMs > 0 && e.invites.emailTimeoutMs <= 2_147_483_647)) {
+      problems.push(`INVITE_EMAIL_TIMEOUT_MS must be a whole number of milliseconds between 1 and 2147483647, not "${e.invites.emailTimeoutMs}"`);
+    }
+    // The base carries the bearer key and a live invite token, so it is https or nothing. Checked
+    // here only (Stripe's and Sumsub's bases are left as they are) because this one is new.
+    const base = ((): URL | null => {
+      try {
+        return new URL(e.invites.resendApiBase);
+      } catch {
+        return null;
+      }
+    })();
+    if (base === null) problems.push(`RESEND_API_BASE must be a URL, not "${e.invites.resendApiBase}"`);
+    else if (base.protocol !== "https:") problems.push(`RESEND_API_BASE must be https, not "${e.invites.resendApiBase}" (it carries the API key and the invite token)`);
   }
   if (e.invites.ttlSeconds !== "" && !(/^\d+$/.test(e.invites.ttlSeconds) && Number(e.invites.ttlSeconds) > 0)) {
     problems.push("INVITE_TTL_SECONDS must be a positive whole number of seconds, or unset to follow the program's SELECTION_WINDOW_SECS");

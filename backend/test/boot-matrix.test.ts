@@ -226,14 +226,50 @@ describe("assertEnvConsistent: INVITE_EMAIL_SENDER", () => {
     assert.equal(message(withEnv({ invites: { emailSender: "resend", resendApiKey: "re_test_0123456789abcdef", emailFrom: "Relstate <invites@relstate.casa>" } })), "");
   });
 
-  it("resend with INVITE_EMAIL_TIMEOUT_MS=0 is refused", () => {
-    const msg = message(withEnv({ invites: { emailSender: "resend", resendApiKey: "re_test_0123456789abcdef", emailFrom: "invites@relstate.casa", emailTimeoutMs: 0 } }));
-    assert.ok(msg.includes("INVITE_EMAIL_TIMEOUT_MS must be greater than zero"), msg);
-  });
+  // INVITE_EMAIL_TIMEOUT_MS and RESEND_API_BASE have their own describe below, which covers the
+  // whole range of bad values rather than one of them.
 
   it("none of the resend requirements fire when the sender is not resend", () => {
-    assert.equal(message(withEnv({ invites: { emailSender: "console", resendApiKey: "", emailFrom: "", emailTimeoutMs: 0 } })), "");
-    assert.equal(message(withEnv({ invites: { emailSender: "", resendApiKey: "", emailFrom: "", emailTimeoutMs: 0 } })), "");
+    assert.equal(message(withEnv({ invites: { emailSender: "console", resendApiKey: "", emailFrom: "", emailTimeoutMs: 0, resendApiBase: "not a url" } })), "");
+    assert.equal(message(withEnv({ invites: { emailSender: "", resendApiKey: "", emailFrom: "", emailTimeoutMs: 0.5, resendApiBase: "http://x" } })), "");
+  });
+});
+
+describe("assertEnvConsistent: resend transport settings", () => {
+  const resend = { emailSender: "resend", resendApiKey: "re_test_0123456789abcdef", emailFrom: "invites@relstate.casa" } as const;
+  const problem = (patch: Partial<Env["invites"]>): string => message(withEnv({ invites: { ...resend, ...patch } }));
+
+  it("accepts a whole number of milliseconds up to the 32-bit signed maximum", () => {
+    for (const emailTimeoutMs of [1, 10_000, 2_147_483_647]) {
+      assert.equal(problem({ emailTimeoutMs }), "", `INVITE_EMAIL_TIMEOUT_MS=${emailTimeoutMs} should be accepted`);
+    }
+  });
+
+  /**
+   * `AbortSignal.timeout` rejects a fraction outright, but **accepts** anything above 2^31-1 and
+   * then collapses the timer to 1 ms with only a `TimeoutOverflowWarning`. So 4294967295 — the
+   * unsigned maximum, and the obvious bound to reach for — would boot cleanly and make every single
+   * send time out instantly, which the operator would read as the network being down. It is in this
+   * list for exactly that reason.
+   */
+  it("refuses a fraction, zero, a negative, NaN, and anything above the 32-bit signed maximum", () => {
+    for (const emailTimeoutMs of [0, -1, 500.5, 5e9, NaN, 2_147_483_648, 4_294_967_295]) {
+      assert.match(problem({ emailTimeoutMs }), /INVITE_EMAIL_TIMEOUT_MS must be a whole number of milliseconds between 1 and 2147483647/, `INVITE_EMAIL_TIMEOUT_MS=${emailTimeoutMs} should be refused`);
+    }
+  });
+
+  it("accepts an https RESEND_API_BASE", () => {
+    for (const resendApiBase of ["https://api.resend.com", "https://resend.internal/v1"]) {
+      assert.equal(problem({ resendApiBase }), "", `RESEND_API_BASE=${resendApiBase} should be accepted`);
+    }
+  });
+
+  // The base carries the bearer key and a live invite token, so plain http is refused rather than
+  // merely discouraged — and a value that is not a URL at all would otherwise fail at the first send.
+  it("refuses a plain-http or unparseable RESEND_API_BASE", () => {
+    assert.match(problem({ resendApiBase: "http://api.resend.com" }), /RESEND_API_BASE must be https/);
+    assert.match(problem({ resendApiBase: "not a url" }), /RESEND_API_BASE must be a URL/);
+    assert.match(problem({ resendApiBase: "" }), /RESEND_API_BASE must be a URL/);
   });
 });
 

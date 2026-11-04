@@ -306,7 +306,9 @@ parties; `POST /api/invites` then answers `"delivery": {"sender": "resend", "sen
 mail arrives. Resend's dashboard shows the message under Emails, by the id the backend logs
 (`resend: accepted <id>`). A failure is reported as `"sent": false` with the invite still valid, and
 the backend log names the HTTP status and Resend's error code — never the invite link, the token, the
-recipient's full address, or Resend's response body.
+recipient's full address, or Resend's response body. A 401, or a 403 that is not about the domain,
+adds a line naming `RESEND_API_KEY`; a 403 `validation_error` one naming `INVITE_EMAIL_FROM`, which
+is the "domain not verified yet" case. A 429 or a transient 500/503 is retried once automatically.
 
 ## 6. Smoke test checklist
 
