@@ -132,6 +132,23 @@ describe("Collection: bigint codec", () => {
     c.set("a", { $bigint: "123" });
     assert.equal(c.get("a"), 123n);
   });
+
+  it("a tag-shaped object whose value is not a canonical integer is left alone, and does not break the read", () => {
+    // Before the digits check this threw `SyntaxError: Cannot convert not-a-number to a BigInt`
+    // from inside `get`, so one lookalike value made the whole record unreadable rather than
+    // simply coming back as the object it was.
+    const store = openStore();
+    const c = store.collection<unknown>("t");
+    // `"-0"` is deliberately absent: it is a well-formed integer string, so it decodes to 0n, which
+    // is harmless and is not a shape the encoder can produce ((0n).toString() is "0").
+    for (const value of ["not-a-number", "", "1.5", "0x10", " 12", "1e3", "007"]) {
+      c.set("k", { $bigint: value });
+      assert.deepEqual(c.get("k"), { $bigint: value }, value);
+    }
+    // A non-string under the tag is not a tag either.
+    c.set("k", { $bigint: 123 });
+    assert.deepEqual(c.get("k"), { $bigint: 123 });
+  });
 });
 
 describe("Collection: undefined fields", () => {

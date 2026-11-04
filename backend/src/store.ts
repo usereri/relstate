@@ -97,10 +97,18 @@ export type Store = {
  *
  * Half of these records are amounts — `agreedFee`, `amountUsdc`, `lamports` — and `JSON.stringify`
  * throws on a bigint rather than guessing. So a bigint is written as `{"$bigint":"123"}` and read
- * back as a bigint. Nothing a user types can be mistaken for the tag: it is an object with exactly
- * one key, and every user-supplied field in every record here is a string.
+ * back as a bigint.
+ *
+ * The decode is as narrow as it can be made without a per-collection schema: an object with exactly
+ * one key, that key being the tag, and its value a **canonical integer string**. Today no record
+ * nests a user-controlled object at all, so nothing a user types can reach this shape — but that is
+ * an invariant spread across every module that writes here, not something this codec could enforce,
+ * so the digits check is what keeps a future record from turning a lookalike into a number. It also
+ * closes a crash: `BigInt("not-a-number")` throws, and before the check a value of that shape made
+ * the *read* fail rather than coming back as the object it was.
  */
 const BIGINT_TAG = "$bigint";
+const CANONICAL_INTEGER = /^-?(?:0|[1-9][0-9]*)$/;
 
 function encode(value: unknown): string {
   return JSON.stringify(value, (_key, v: unknown) => (typeof v === "bigint" ? { [BIGINT_TAG]: v.toString() } : v));
@@ -112,6 +120,7 @@ function decode<T>(text: string): T {
     const keys = Object.keys(v);
     const tagged = (v as Record<string, unknown>)[BIGINT_TAG];
     if (keys.length !== 1 || keys[0] !== BIGINT_TAG || typeof tagged !== "string") return v;
+    if (!CANONICAL_INTEGER.test(tagged)) return v;
     return BigInt(tagged);
   }) as T;
 }

@@ -8,7 +8,7 @@ import { generateKeyPairSigner } from "@solana/kit";
 import { accountLayout, type Layout } from "../src/layout.ts";
 import { createRateLimiter, type RateLimiter } from "../src/limits.ts";
 import { openStore } from "../src/store.ts";
-import { createTreasury, type TreasuryRpc } from "../src/treasury.ts";
+import { DUST_CLAIM_TTL_MS, createTreasury, type TreasuryRpc } from "../src/treasury.ts";
 import { RejectedTransaction } from "../src/txinspect.ts";
 import type { Services } from "../src/services.ts";
 
@@ -332,7 +332,6 @@ describe("grantRentDust survives a restart", () => {
   });
 
   it("an in-flight claim (a crash before it completed) still blocks a retry within the TTL, and the TTL is 5 minutes", async () => {
-    const DUST_CLAIM_TTL_MS = 5 * 60_000; // pinned here because treasury.ts does not export it
     const { dir, cleanup } = tmpDir();
     try {
       const file = join(dir, "relstate.db");
@@ -362,7 +361,6 @@ describe("grantRentDust survives a restart", () => {
   });
 
   it("an in-flight claim expires once its TTL has passed, so the wallet can retry and be granted", async () => {
-    const DUST_CLAIM_TTL_MS = 5 * 60_000;
     const { dir, cleanup } = tmpDir();
     try {
       const file = join(dir, "relstate.db");

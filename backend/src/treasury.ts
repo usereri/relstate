@@ -201,6 +201,14 @@ export type TreasuryDeps = {
 };
 
 /**
+ * How long an unfinished rent-dust claim blocks a wallet (see `dustGranted` below). Exported so the
+ * test that pins this tradeoff reads the real figure instead of a copy of it: a copy would keep
+ * passing against the old value if this one ever changed, which is the opposite of what that test
+ * is for.
+ */
+export const DUST_CLAIM_TTL_MS = 5 * 60_000;
+
+/**
  * How much of a wrapped amount may go confidential, given how much must stay
  * public for `fund_deposit`. Separate and pure because getting it wrong leaves a
  * tenant unable to accept a lease, with an "insufficient funds" error several
@@ -745,7 +753,6 @@ export function createTreasury(deps: TreasuryDeps) {
    * holds), rather than a user who can never get the rent their first `apply` charges them.
    */
   const dustGranted: Collection<{ at: number; granted: boolean }> = store.collection("rent_dust_granted");
-  const DUST_CLAIM_TTL_MS = 5 * 60_000;
   const dustLimiter = deps.rentDustLimiter ?? createRateLimiter(
     {
       maxPerWalletPerHour: 1,
