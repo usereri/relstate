@@ -12,6 +12,7 @@ const { createOfframp } = await import("../src/providers/offramp.ts");
 const { parsePln, parseRate, parseUsdc } = await import("../src/providers/money.ts");
 import type { OnrampConfig, OnrampTreasury } from "../src/providers/onramp.ts";
 import type { Services } from "../src/services.ts";
+import { openStore } from "../src/store.ts";
 
 const WALLET = "EBMibFLTvr5GDpgxNqt5Gqp9B1xLMr32aNwGDJV2oGJ6";
 const OTHER = "11111111111111111111111111111111";
@@ -68,6 +69,8 @@ function build(patch: Partial<OnrampConfig> = {}, offrampCap = "2000") {
     client: () => {
       throw new Error("unused");
     },
+    // `/health` reports whether this deployment's state survives a restart (store.ts).
+    store: openStore(),
   } as unknown as Services;
   return { app: createApp(services), onramp, offramp, ...t };
 }

@@ -17,6 +17,7 @@
 import { isAddress, type Address } from "@solana/kit";
 import { randomUUID } from "node:crypto";
 import type { Provider, ProviderEvent, TreasuryInvariantView } from "../contracts.ts";
+import { defaultStore, type Collection, type Store } from "../store.ts";
 import { confidentialMoveAmount, reportForLog, type Treasury } from "../treasury.ts";
 import { RATE_DECIMALS, formatPln, formatScaled, formatUsdc, plnToUsdc, usdcToPln } from "./money.ts";
 import { WebhookError, createStripeOnramp, type CheckoutMetadata, type StripeConfig } from "./stripe.ts";
@@ -123,17 +124,35 @@ export type OnrampDeps = {
   } | null>;
   log?: (...args: unknown[]) => void;
   now?: () => number;
+  /**
+   * Where the intents, the credits and the daily caps live. Defaults to the process's store; tests
+   * get their own, so each one starts with nothing credited.
+   */
+  store?: Store;
 };
 
 const DAY_MS = 86_400_000;
 
-/** Rolling-window total per wallet, in base units. Same shape as limits.ts, different unit. */
-export function createDailyCap(limit: bigint, windowMs = DAY_MS) {
-  const byWallet = new Map<string, Array<{ at: number; amount: bigint }>>();
+/**
+ * Rolling-window total per wallet, in base units. Same shape as limits.ts, different unit.
+ *
+ * One row per wallet, expiring a window after its newest entry: the cap is a real cap across a
+ * redeploy, and a wallet that never comes back is pruned rather than kept forever.
+ */
+export function createDailyCap(limit: bigint, windowMs = DAY_MS, deps: { store?: Store; namespace?: string } = {}) {
+  const byWallet: Collection<Array<{ at: number; amount: bigint }>> = (deps.store ?? defaultStore()).collection(
+    `daily_cap:${deps.namespace ?? "onramp"}`,
+  );
+  const expiry = (entries: Array<{ at: number }>) => Math.max(...entries.map((e) => e.at)) + windowMs;
   const live = (wallet: string, now: number) => {
-    const kept = (byWallet.get(wallet) ?? []).filter((e) => now - e.at <= windowMs);
-    if (kept.length === 0) byWallet.delete(wallet);
-    else byWallet.set(wallet, kept);
+    const stored = byWallet.get(wallet) ?? [];
+    const kept = stored.filter((e) => now - e.at <= windowMs);
+    // Only rewritten when something actually aged out: `used` and `remaining` are read paths, and
+    // one of them is a plain GET.
+    if (kept.length !== stored.length) {
+      if (kept.length === 0) byWallet.delete(wallet);
+      else byWallet.set(wallet, kept, expiry(kept));
+    }
     return kept;
   };
   return {
@@ -154,8 +173,11 @@ export function createDailyCap(limit: bigint, windowMs = DAY_MS) {
       }
     },
     record(wallet: string, amount: bigint, now = Date.now()): void {
-      byWallet.set(wallet, [...live(wallet, now), { at: now, amount }]);
+      const entries = [...live(wallet, now), { at: now, amount }];
+      byWallet.set(wallet, entries, expiry(entries));
     },
+    /** Drops the wallets whose whole window has passed. */
+    prune: (now = Date.now()): number => byWallet.prune(now),
     limit,
   };
 }
@@ -191,16 +213,39 @@ export function createMockOnramp(deps: { intent: (id: string) => OnrampIntent | 
   };
 }
 
+/**
+ * An intent is dead once the hosted page it priced can no longer be paid: a Stripe Checkout Session
+ * expires in 24 h and Stripe retries a webhook for 3 days, so a week is comfortably longer than any
+ * event that could still arrive for one.
+ */
+export const INTENT_TTL_MS = 7 * DAY_MS;
+
+/**
+ * A credit is the idempotency key for money that has already been taken, and the app polls it after
+ * the hosted page sends the user back. Kept far longer than any provider would retry.
+ */
+export const CREDIT_TTL_MS = 30 * DAY_MS;
+
 export function createOnramp(deps: OnrampDeps) {
   const { config } = deps;
   const log = deps.log ?? (() => {});
   const now = deps.now ?? Date.now;
-  const cap = createDailyCap(config.maxUsdcPerWalletPerDay);
+  const store = deps.store ?? defaultStore();
+  const cap = createDailyCap(config.maxUsdcPerWalletPerDay, DAY_MS, { store, namespace: "onramp" });
 
-  const intents = new Map<string, OnrampIntent>();
-  const credits = new Map<string, OnrampCredit>();
-  const creditsByIntent = new Map<string, string>();
-  /** In flight by ref: a provider that retries before we answer must not credit twice. */
+  const intents: Collection<OnrampIntent> = store.collection("onramp_intents");
+  /**
+   * **The one row that stops one payment minting rUSDC twice.** Keyed on the provider's own event
+   * id: in memory, a redeploy between Stripe's first delivery and its retry lost the key, and the
+   * retry minted again against the reserve. Now it does not.
+   */
+  const credits: Collection<OnrampCredit> = store.collection("onramp_credits");
+  const creditsByIntent: Collection<string> = store.collection("onramp_credit_by_intent");
+  /**
+   * In flight by ref: a provider that retries before we answer must not credit twice. Stays in
+   * memory — it holds a promise of work happening inside *this* process, and the row above is what
+   * covers the same event arriving after a restart.
+   */
   const inFlight = new Map<string, Promise<OnrampCredit>>();
 
   const provider: Provider =
@@ -264,7 +309,8 @@ export function createOnramp(deps: OnrampDeps) {
     });
     if (url === undefined || url === "") throw new OnrampError("the on-ramp provider returned no checkout URL", "provider-no-url", 502);
 
-    intents.set(intent.id, intent);
+    intents.set(intent.id, intent, intent.createdAt + INTENT_TTL_MS);
+    intents.prune(now());
     log(`onramp: intent ${intent.id} for ${wallet}: ${formatPln(amountPln)} PLN -> ${formatUsdc(amountUsdc)} rUSDC (${config.provider})`);
     return {
       url,
@@ -290,6 +336,11 @@ export function createOnramp(deps: OnrampDeps) {
     const event: OnrampProviderEvent = await provider.webhook(headers, rawBody);
     if (event.kind !== "onramp.completed") throw new WebhookError(`ignoring ${event.kind}`, "event-ignored");
     if (event.ref === "") throw new WebhookError("provider event has no reference; cannot make the credit idempotent", "ref-missing");
+
+    // The one place that prunes the money rows: a webhook is the only write-heavy path here.
+    credits.prune(now());
+    creditsByIntent.prune(now());
+    cap.prune(now());
 
     const existing = credits.get(event.ref);
     if (existing !== undefined) {
@@ -326,8 +377,12 @@ export function createOnramp(deps: OnrampDeps) {
         at: now(),
         ...patch,
       };
-      credits.set(credit.ref, credit);
-      if (intentId !== null) creditsByIntent.set(intentId, credit.ref);
+      // One transaction: a crash between the two must not leave a credit the app cannot find by
+      // the intent it is polling, nor an intent pointing at a credit that is not there.
+      store.transaction(() => {
+        credits.set(credit.ref, credit, credit.at + CREDIT_TTL_MS);
+        if (intentId !== null) creditsByIntent.set(intentId, credit.ref, credit.at + CREDIT_TTL_MS);
+      });
       return credit;
     };
 

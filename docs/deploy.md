@@ -13,7 +13,24 @@ no-keys demo, but **never share `SESSION_SECRET` between a mock and a live deplo
 that follows (3.4) and `fly.toml` currently ship `BACKEND_MODE=mock`; switch them to live only after
 the live variables in the checklist are set.
 
-**Budgets reset on restart.** The mock-KYC attestation budget (default 30/hour, 100/day) and the login and sponsor rate limits are in memory, so a machine restart or redeploy resets them. Run a single Fly machine and treat the daily cap as per-process.
+**A restart keeps its state.** Everything the backend knows that is not on chain lives in a SQLite
+database on the Fly volume — `DATABASE_PATH = "/data/relstate.db"` in `fly.toml`, next to the
+listing photos at `UPLOADS_DIR`. So a machine restart or a redeploy keeps the outstanding appraiser
+invitations, the Stripe and Sumsub webhook idempotency keys (one payment cannot mint rUSDC twice
+because a deploy landed between the first delivery and the retry), the once-per-wallet rent grant,
+the payout history, and today's budgets: the sponsor, rent-payment and rent-dust caps and the
+mock-KYC attestation budget (default 30/hour, 100/day). `GET /health` reports
+`persistentStore: true` when this is wired up; if it says `false`, `DATABASE_PATH` is unset and
+every one of those is back to per-process. **Leave `DATABASE_PATH` on the volume and keep one Fly
+machine** — the volume attaches to a single machine, so a second instance would see neither the
+database nor the photos, and would double every cap.
+
+What a restart still drops, on purpose: the per-minute per-IP login and `/api/rpc` windows (a fresh
+minute, which costs nothing), unsigned login challenges (a few minutes old; the user signs in
+again), and an in-progress confidential rent payment's context registry, which fails closed and
+makes the client replan (`backend/src/rentplan.ts`). Sessions are stateless HMAC tokens and survive
+as long as `SESSION_SECRET` is set — which also decides whether an outstanding *invite link* still
+verifies, since its token is signed with a key derived from it.
 
 ## 0. Prerequisites and accounts
 
@@ -142,7 +159,21 @@ fly launch --no-deploy   # picks up fly.toml; say no to a new Postgres/Redis, th
 ```
 
 Check the generated/merged `fly.toml` still has `min_machines_running = 1`, `auto_stop_machines =
-false` and `dockerfile = "backend/Dockerfile"` — `fly launch` sometimes rewrites fields.
+false`, `dockerfile = "backend/Dockerfile"` and the `[mounts]` block — `fly launch` sometimes
+rewrites fields.
+
+Create the volume the `[mounts]` block expects, in the same region as the machine, before the first
+deploy (`fly deploy` offers to do it for you; doing it by hand is clearer about the size and the
+region):
+
+```bash
+fly volumes create relstate_data --region fra --size 1   # 1 GB is far more than this needs
+fly volumes list                                         # confirm: one volume, attached to one machine
+```
+
+It is mounted at `/data` and holds both the listing photos (`UPLOADS_DIR=/data/uploads`) and the
+SQLite database (`DATABASE_PATH=/data/relstate.db`). A volume attaches to exactly **one** machine,
+which is the hard reason this app stays at one instance.
 
 Set every secret from `docs/env-checklist.md`'s "Keys" section (this is one command; fill in your
 own values — **never paste these into chat, a PR, or a committed file**):
@@ -249,6 +280,12 @@ Run through this once the Pages deploy and the Fly deploy are both up, **before*
 - [ ] `curl https://<your-fly-app>.fly.dev/health` → `"ok": true`, `"mode": "mock"`, and
       `feePayer`/`attestationIssuer`/`treasury` are the addresses you expect (not `ephemeralKeys`
       including ones you meant to configure — an ephemeral key there means a secret didn't take).
+- [ ] The same `/health` says `"persistentStore": true`. If it says `false`, the volume or
+      `DATABASE_PATH` is not wired up and a redeploy will forget the invitations, the webhook
+      idempotency keys and today's budgets (see the headline note at the top of this page).
+- [ ] After the top-up below, `fly machine restart <id>` and reload the app: the balance, the payout
+      history and the identity status are all still there, and the Stripe event log shows no second
+      delivery being credited. This is the one check that proves the volume is actually attached.
 - [ ] Open `https://<your domain>/` — the site loads, dark/light theme toggle works, footer shows
       the devnet disclaimer.
 - [ ] Open `https://<your domain>/app/` directly (not just by clicking through from the site) —
@@ -272,6 +309,7 @@ flat):
 |---|---|
 | GitHub Pages | free for a public repo |
 | Fly.io, one `shared-cpu-1x` / 512 MB machine, always on | a few dollars a month at Fly's current usage pricing; stopping it the moment the demo ends is what keeps this small |
+| Fly volume, 1 GB (`relstate_data`) | cents a month, and it is what makes a restart keep its state |
 | Helius devnet key | free tier is normally enough for a few days of demo traffic |
 | Stripe test mode | free — no real money moves |
 | Custom domain | whatever your registrar charges annually; unrelated to this demo's hosting cost |
@@ -279,7 +317,7 @@ flat):
 **Teardown, right after the demo:**
 
 ```bash
-fly apps destroy <your-app-name>      # stops billing for the backend immediately
+fly apps destroy <your-app-name>      # stops billing for the backend immediately, volume included
 ```
 
 - Remove the DNS records from step 2 (or just the `A`/`AAAA`/`CNAME` for the demo subdomain, if the
@@ -301,6 +339,8 @@ docker build -f backend/Dockerfile -t relstate-backend .
 docker run -d --name relstate-backend \
   --restart unless-stopped \
   -p 127.0.0.1:8787:8787 \
+  -v /srv/relstate:/data \
+  -e DATABASE_PATH=/data/relstate.db -e UPLOADS_DIR=/data/uploads \
   -e BACKEND_MODE=mock -e AUTH_MODE=mock \
   -e CORS_ORIGIN=https://relstate.example -e APP_URL=https://relstate.example/app/ \
   -e HELIUS_API_KEY=... -e FEE_PAYER_KEYPAIR=... -e ATTESTATION_ISSUER_KEYPAIR=... \
@@ -328,6 +368,7 @@ config. Everything else in this runbook (Pages, DNS, Stripe, the smoke test) is 
 | Devnet RPC 429s on stage | Switch `HELIUS_API_KEY` to a fresh key (dashboards sometimes rate-limit a key, not just the account), or increase `RPC_MAX_RETRIES`/`RPC_RETRY_MAX_MS` and redeploy. The app and backend already retry with backoff (Phase 0 result) — a 429 should self-heal in a few seconds, not hang. |
 | Backend cold start / unresponsive | `min_machines_running = 1` + `auto_stop_machines = false` means it shouldn't sleep; if it's down, `fly status`, `fly logs`, then `fly machine restart <id>`. A crash loop usually means a missing/bad secret — `fly logs` prints `assertEnvConsistent`'s message naming exactly which one. |
 | Stripe webhook retries / shows pending | Stripe retries a failing webhook for up to 3 days; check the event log for the actual error first (signature mismatch is almost always a stale `STRIPE_WEBHOOK_SECRET` from before you rotated it in step 4). You can also manually resend an event from the dashboard. |
-| A bad Fly deploy broke the backend | `fly releases list` then `fly deploy --image <previous image digest>` — Fly keeps every build's image, so this is a straight rollback with no rebuild needed. |
+| A bad Fly deploy broke the backend | `fly releases list` then `fly deploy --image <previous image digest>` — Fly keeps every build's image, so this is a straight rollback with no rebuild needed. The database on the volume is untouched by a rollback, so the state goes back with nothing lost. |
+| `/health` says `persistentStore: false` | `DATABASE_PATH` is not reaching the process, so every budget, invitation and webhook idempotency key is per-process again. Check `fly.toml`'s `[env]` still has `DATABASE_PATH = "/data/relstate.db"` and that `[mounts]` survived a `fly launch` rewrite, then `fly ssh console -C "ls -la /data"` — the `node` user (uid 1000) must be able to write there. |
 | A bad Pages deploy broke the front end | `git revert` the bad commit on the `deploy` branch and push — `pages.yml` rebuilds and republishes the reverted state. There is no "previous artifact" redeploy button; a revert + push is the rollback. |
 | Everything is on fire, five minutes to stage | Fall back to the Phase 1 scripted devnet run recording (`docs/demo-day-plan` cut line) and narrate live from there. |

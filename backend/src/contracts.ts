@@ -226,6 +226,13 @@ export interface HealthResponse {
   ephemeralKeys: string[];
   rusdcMint: string | null;
   auditorConfigured: boolean;
+  /**
+   * True when the off-chain state (invitations, webhook idempotency keys, spend budgets) is on
+   * disk and survives a restart; false when it is in memory for the length of this process. The
+   * path itself is not reported — the question an operator has from outside is only which of the
+   * two this deployment is.
+   */
+  persistentStore: boolean;
   /** Workstream E. `mock` means the checkout is a local page and no card is involved. */
   onrampProvider: "mock" | "stripe";
   offrampProvider: "mock";

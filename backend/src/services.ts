@@ -14,6 +14,7 @@ import type { Offramp } from "./providers/offramp.ts";
 import type { Onramp } from "./providers/onramp.ts";
 import { createPlanRunner, getSolanaClient, type SolanaClient } from "./rpc.ts";
 import { createSponsorService, defaultSponsorPolicy, type SponsorService } from "./sponsor.ts";
+import { defaultStore, type Store } from "./store.ts";
 import { createTreasury, type Treasury, type TreasuryRpc } from "./treasury.ts";
 
 export class ServiceUnavailable extends Error {}
@@ -36,12 +37,19 @@ export type Services = {
   auditor(): Auditor;
   /** Appraiser invitations: the off-chain carrier between an agreed company name and a wallet. */
   invites(): Invites;
+  /** The one store every service above writes to, for `/health` and for a test that wants its own. */
+  store: Store;
   /** For /health: which keys are throwaways generated for this process. */
   keyReport(): Promise<{ feePayer: string; attestationIssuer: string; treasury: string; ephemeral: string[] }>;
 };
 
-export function createServices(log: (...args: unknown[]) => void = console.log): Services {
-  const limiter = createRateLimiter();
+/**
+ * One store for the whole process, passed to every service that keeps state. Opened here rather
+ * than looked up inside each service so that there is exactly one connection to the database file,
+ * and so a test can hand the whole set of services a store of its own.
+ */
+export function createServices(log: (...args: unknown[]) => void = console.log, store: Store = defaultStore()): Services {
+  const limiter = createRateLimiter(undefined, { store, namespace: "sponsor" });
   let client: SolanaClient | undefined;
   let sponsor: Promise<SponsorService> | undefined;
   let treasury: Promise<Treasury> | undefined;
@@ -56,6 +64,7 @@ export function createServices(log: (...args: unknown[]) => void = console.log):
 
   return {
     client: getClient,
+    store,
 
     sponsor() {
       return (sponsor ??= (async () => {
@@ -90,6 +99,7 @@ export function createServices(log: (...args: unknown[]) => void = console.log):
           decimals: env.rusdcDecimals,
           mode: env.mode,
           reserveTokenAccount: env.usdcReserveTokenAccount === "" ? undefined : (env.usdcReserveTokenAccount as Address),
+          store,
           log,
         });
       })());
@@ -101,11 +111,11 @@ export function createServices(log: (...args: unknown[]) => void = console.log):
      * webhook — which mints — actually needs the treasury to exist.
      */
     onramp() {
-      return (onramp ??= createOnrampService({ treasury: () => this.treasury(), log }));
+      return (onramp ??= createOnrampService({ treasury: () => this.treasury(), store, log }));
     },
 
     offramp() {
-      return (offramp ??= createOfframpService({ treasury: () => this.treasury(), log }));
+      return (offramp ??= createOfframpService({ treasury: () => this.treasury(), store, log }));
     },
 
     /**
@@ -144,7 +154,7 @@ export function createServices(log: (...args: unknown[]) => void = console.log):
     },
 
     kyc() {
-      return (kyc ??= createKycService({ chain: () => this.attestationChain(), log }));
+      return (kyc ??= createKycService({ chain: () => this.attestationChain(), store, log }));
     },
 
     /**
@@ -163,7 +173,7 @@ export function createServices(log: (...args: unknown[]) => void = console.log):
     },
 
     invites() {
-      return (invites ??= createInvites({ rpc: () => getClient().rpc, log }));
+      return (invites ??= createInvites({ rpc: () => getClient().rpc, store, log }));
     },
 
     async keyReport() {

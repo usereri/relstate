@@ -159,7 +159,9 @@ describe("idempotency", () => {
     const second = await hook(kyc, approve(session));
     assert.equal(calls.attest.length, 1);
     assert.equal(second.replay, true);
-    assert.equal(second.record, first.record);
+    // The same record, not the same object: it is read back out of the store now, which is what
+    // makes the answer survive a restart between the two deliveries.
+    assert.deepEqual(second.record, first.record);
   });
 
   it("two concurrent deliveries of one event attest once", async () => {
@@ -267,7 +269,7 @@ describe("KycUnavailable", () => {
 
     const second = await hook(kyc, approve(session));
     assert.equal(second.replay, true);
-    assert.equal(second.record, first.record);
+    assert.deepEqual(second.record, first.record);
     assert.equal(asked, 1);
   });
 

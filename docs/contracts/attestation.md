@@ -100,7 +100,7 @@ Env: `KYC_PROVIDER=mock|sumsub`, `KYC_LEVEL`, `KYC_VALIDITY_DAYS`, `KYC_SUBJECT_
 `SUMSUB_WEBHOOK_DIGEST_ALG`. `KYC_PROVIDER=sumsub` with any key missing fails at boot, and `BACKEND_MODE=live` refuses `KYC_PROVIDER=mock` (the mock verifier is unsigned, and live mode has a real issuer key). `SUMSUB_WEBHOOK_MAX_AGE_SECONDS` (default 600) rejects deliveries whose own `createdAtMs` is further than that from now. `KYC_MAX_STARTS_PER_WALLET_PER_HOUR` (default 10) bounds `/api/kyc/start`.
 
 Privacy: the applicant id is hashed with the secret salt before it is stored; it and the applicant's
-documents are never logged or persisted. Records kept in memory hold the wallet, decision, level,
+documents are never logged or persisted. Records kept in the store hold the wallet, decision, level,
 expiry, the hash and signatures.
 
 ## Sumsub mapping
@@ -116,7 +116,7 @@ expiry, the hash and signatures.
 | `applicantReviewed`, `reviewAnswer: RED` (`FINAL` or `RETRY`) | applicant failed | `kyc.rejected` → `revoke` if an attestation exists, else nothing |
 | `applicantCreated` / `Pending` / `OnHold` / non-final | informational | acknowledged with 200, no chain write |
 | Idempotency | no timestamp in the signature, so replays are possible | key = `correlationId` + answer, else applicant + answer + `createdAtMs`; one event attests once |
-| Freshness | `createdAtMs` is a UTC string (`2020-02-21 13:23:19.321`) | refused when more than `SUMSUB_WEBHOOK_MAX_AGE_SECONDS` from now, or unreadable, so a captured GREEN cannot re-attest a revoked wallet after a restart empties the dedupe store |
+| Freshness | `createdAtMs` is a UTC string (`2020-02-21 13:23:19.321`) | refused when more than `SUMSUB_WEBHOOK_MAX_AGE_SECONDS` from now, or unreadable, so a captured GREEN cannot re-attest a revoked wallet even if it outlives the dedupe row (which is kept 90 days in the store, and was lost on every restart before Phase 2) |
 
 Two secrets, not to be confused: `SUMSUB_SECRET_KEY` signs our requests; `SUMSUB_WEBHOOK_SECRET`
 verifies theirs and is set separately in the dashboard.

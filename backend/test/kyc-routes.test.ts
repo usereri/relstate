@@ -16,6 +16,7 @@ import type { Env } from "../src/env.ts";
 import type { KycConfig } from "../src/providers/kyc.ts";
 import type { AttestationChain } from "../src/providers/kyc-chain.ts";
 import type { Services } from "../src/services.ts";
+import { openStore } from "../src/store.ts";
 
 const WALLET = "EBMibFLTvr5GDpgxNqt5Gqp9B1xLMr32aNwGDJV2oGJ6";
 const OTHER = "11111111111111111111111111111112";
@@ -89,6 +90,8 @@ function build(opts: { sumsub?: boolean; maxStarts?: number; mockBudget?: KycCon
     kyc: () => kyc,
     onramp: () => ({ rateScaled: 4_300_000n }),
     keyReport: async () => ({ feePayer: "fp", attestationIssuer: "ai", treasury: "tr", ephemeral: [] }),
+    // `/health` reports whether this deployment's state survives a restart (store.ts).
+    store: openStore(),
   } as unknown as Services;
   return { app: createApp(services), kyc, calls };
 }

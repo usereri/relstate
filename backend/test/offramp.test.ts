@@ -39,7 +39,9 @@ describe("offramp.payout", () => {
     assert.equal(receipt.plnPerUsdc, "4.30");
     assert.equal(receipt.method, "bank-transfer");
     assert.equal(receipt.at, 1000);
-    assert.equal(off.receipt(receipt.reference), receipt);
+    // Equal, not identical: the receipt comes back out of the store, so the history screen still
+    // has it after a redeploy.
+    assert.deepEqual(off.receipt(receipt.reference), receipt);
   });
 
   it("burns nothing and says why when no owner signer is available", async () => {

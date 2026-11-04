@@ -11,6 +11,12 @@ FROM node:22-slim
 
 # Native TS, no build step: Node 22.18+ strips `backend/src/*.ts` at load time (package.json
 # `engines`), so there is nothing to compile here -- only production dependencies to install.
+#
+# The same goes for the database: `backend/src/store.ts` uses the runtime's own `node:sqlite`, which
+# needs no flag from Node 22.13 on (verified on 22.18 and 26), so there is nothing to add to CMD and
+# no native module to build. The database file itself lives on the mounted volume, named by
+# DATABASE_PATH -- `/data/relstate.db` on Fly -- which the `node` user below has to be able to
+# write, exactly as it already writes UPLOADS_DIR.
 WORKDIR /app
 
 COPY backend/package.json backend/package-lock.json ./backend/

@@ -4,10 +4,14 @@
 # file lives at the repo root and every `fly` command below is run from there, not from backend/.
 #
 # SINGLE INSTANCE ONLY -- do not raise min_machines_running or scale this app past one machine.
-# The backend keeps per-user/global rate limits, the replay guard and session lookups in memory
-# (docs/contracts/pay.md, "Residual risks" #3: "Limiters are per process. Fine for one demo
-# backend; a second instance needs shared state."). A second machine would double every cap
-# silently and could let a request replay by landing on the other instance.
+# Two reasons, and the first one is physical: the `relstate_data` volume below attaches to exactly
+# one machine, and it holds both the listing photos (UPLOADS_DIR) and the SQLite database
+# (DATABASE_PATH) -- a second machine could not see either. The rate limits, the replay guard and
+# the webhook idempotency keys now live in that database, so they survive a restart or a redeploy,
+# but they are still visible to one machine only: a second instance would double every cap
+# silently and could let a request replay by landing on the other one (docs/contracts/pay.md,
+# "Residual risks" #3). Sharing them across instances means Postgres or Redis behind the same
+# interface (backend/src/store.ts), not another machine on this volume.
 app = "relstate-backend"          # pick your own app name; must be globally unique on Fly. `fly launch` will ask.
 primary_region = "fra"            # Warsaw. "fra" (Frankfurt) is the other low-latency pick from Poland.
 
@@ -20,6 +24,7 @@ primary_region = "fra"            # Warsaw. "fra" (Frankfurt) is the other low-l
 [env]
   PORT = "8787"
   UPLOADS_DIR = "/data/uploads"      # listing photos; needs the volume below
+  DATABASE_PATH = "/data/relstate.db"  # off-chain state that must survive a restart; needs the volume below
   SOLANA_CLUSTER = "devnet"
   BACKEND_MODE = "live"            # flip to "live" only once every secret in docs/env-checklist.md is set
   BACKEND_URL = "https://relstate-backend.fly.dev"

@@ -191,7 +191,9 @@ describe("onramp credit (mock provider)", () => {
     const second = await svc.handleWebhook({}, mockBody(out.intent));
     assert.equal(first.replay, false);
     assert.equal(second.replay, true);
-    assert.equal(second.credit, first.credit);
+    // The same credit, not the same object: it is read back out of the store now, which is what
+    // makes the answer survive a restart between the two deliveries.
+    assert.deepEqual(second.credit, first.credit);
     assert.equal(calls.wrap.length, 1);
     assert.equal(calls.creditReserve.length, 1);
   });
