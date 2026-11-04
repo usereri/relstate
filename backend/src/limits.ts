@@ -1,12 +1,14 @@
-// Spend caps for the sponsor. In-memory and per-process, which is the right
-// shape for a single demo backend; a multi-instance deployment would move the
-// windows into Redis behind this same interface.
+// Spend caps for the sponsor. Per deployment rather than per process since Phase 2: the windows
+// live in the store (store.ts), so a redeploy no longer hands everyone a fresh daily budget. Still
+// one machine — a multi-instance deployment would move them into Redis behind this same interface.
 //
 // Reservations are two-phase on purpose. A request reserves its *worst case*
 // cost before the transaction is signed, so two concurrent requests cannot both
 // read a below-cap total and then both spend. The reservation is rewritten to
 // the real cost on commit, or dropped on cancel.
+import { randomUUID } from "node:crypto";
 import { env } from "./env.ts";
+import { defaultStore, type Collection, type Store } from "./store.ts";
 
 export class LimitError extends Error {
   readonly scope: "wallet" | "global";
@@ -33,7 +35,11 @@ export const defaultLimitConfig: LimitConfig = {
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 
-type Entry = { at: number; lamports: bigint; open: boolean };
+/**
+ * One booked spend. `id` is what a reservation holds on to: the entry is a row in a store now, not
+ * an object two arrays share, so `commit` and `cancel` find it by id instead of by identity.
+ */
+type Entry = { id: string; at: number; lamports: bigint; open: boolean };
 
 export type Reservation = {
   commit(actualLamports: bigint): void;
@@ -47,30 +53,48 @@ export type UsageSnapshot = {
   globalLamportsLastDay: bigint;
 };
 
-export function createRateLimiter(config: LimitConfig = defaultLimitConfig) {
-  const byWallet = new Map<string, Entry[]>();
-  const global: Entry[] = [];
+export type RateLimiterDeps = {
+  store?: Store;
+  /**
+   * Which limiter this is. Four of them share one database — the sponsor's, and the treasury's
+   * confidential-setup, rent-payment and rent-dust budgets — so each needs its own collection or
+   * they would spend each other's.
+   */
+  namespace?: string;
+};
 
-  const prune = (entries: Entry[], now: number): Entry[] => {
-    // A day is the longest window we read, so anything older is dead weight.
-    let i = 0;
-    while (i < entries.length && now - (entries[i] as Entry).at > DAY_MS) i++;
-    if (i > 0) entries.splice(0, i);
-    return entries;
+export function createRateLimiter(config: LimitConfig = defaultLimitConfig, deps: RateLimiterDeps = {}) {
+  const store = deps.store ?? defaultStore();
+  // One row per wallet holding that wallet's entries, keyed by the wallet. The global totals are a
+  // fold over those rows rather than a second array of the same objects: nothing can be in one and
+  // not the other, which is the bug the old shared-entry splice existed to avoid.
+  const byWallet: Collection<Entry[]> = store.collection(`limits:${deps.namespace ?? "sponsor"}`);
+
+  /** A day is the longest window we read, so anything older is dead weight. */
+  const live = (entries: Entry[], now: number): Entry[] => entries.filter((e) => now - e.at <= DAY_MS);
+
+  const write = (wallet: string, entries: Entry[]): void => {
+    if (entries.length === 0) byWallet.delete(wallet);
+    // The row dies a day after its newest entry, so a wallet that never comes back is pruned
+    // rather than kept forever.
+    else byWallet.set(wallet, entries, Math.max(...entries.map((e) => e.at)) + DAY_MS);
   };
-  const countSince = (entries: Entry[], now: number, windowMs: number): number =>
-    entries.reduce((n, e) => (now - e.at <= windowMs ? n + 1 : n), 0);
-  const lamportsSince = (entries: Entry[], now: number, windowMs: number): bigint =>
-    entries.reduce((n, e) => (now - e.at <= windowMs ? n + e.lamports : n), 0n);
 
   function snapshot(wallet: string, now = Date.now()): UsageSnapshot {
-    const walletEntries = prune(byWallet.get(wallet) ?? [], now);
-    prune(global, now);
+    const mine = live(byWallet.get(wallet) ?? [], now);
+    let globalLastHour = 0;
+    let globalLamportsLastDay = 0n;
+    for (const [, entries] of byWallet.entries()) {
+      for (const e of entries) {
+        if (now - e.at <= HOUR_MS) globalLastHour++;
+        if (now - e.at <= DAY_MS) globalLamportsLastDay += e.lamports;
+      }
+    }
     return {
-      walletLastHour: countSince(walletEntries, now, HOUR_MS),
-      walletLamportsLastDay: lamportsSince(walletEntries, now, DAY_MS),
-      globalLastHour: countSince(global, now, HOUR_MS),
-      globalLamportsLastDay: lamportsSince(global, now, DAY_MS),
+      walletLastHour: mine.reduce((n, e) => (now - e.at <= HOUR_MS ? n + 1 : n), 0),
+      walletLamportsLastDay: mine.reduce((n, e) => (now - e.at <= DAY_MS ? n + e.lamports : n), 0n),
+      globalLastHour,
+      globalLamportsLastDay,
     };
   }
 
@@ -93,31 +117,24 @@ export function createRateLimiter(config: LimitConfig = defaultLimitConfig) {
       throw new LimitError(`global daily lamport cap ${config.maxLamportsGlobalPerDay} would be exceeded`, "global");
     }
 
-    const entry: Entry = { at: now, lamports: worstCaseLamports, open: true };
-    const walletEntries = byWallet.get(wallet) ?? [];
-    walletEntries.push(entry);
-    byWallet.set(wallet, walletEntries);
-    global.push(entry);
+    const id = randomUUID();
+    // Dead rows go now, not on a timer: this is the one path that is always hit before a spend.
+    byWallet.prune(now);
+    write(wallet, [...live(byWallet.get(wallet) ?? [], now), { id, at: now, lamports: worstCaseLamports, open: true }]);
 
-    const close = () => {
-      entry.open = false;
+    /** Re-read, change this one entry, write back: a concurrent request's entries survive. */
+    const close = (change: (entries: Entry[], mine: Entry) => Entry[]): void => {
+      const entries = byWallet.get(wallet) ?? [];
+      const mine = entries.find((e) => e.id === id);
+      if (mine === undefined || !mine.open) return;
+      write(wallet, change(entries, mine));
     };
     return {
       commit(actualLamports: bigint) {
-        if (!entry.open) return;
-        entry.lamports = actualLamports;
-        close();
+        close((entries, mine) => entries.map((e) => (e.id === id ? { ...mine, lamports: actualLamports, open: false } : e)));
       },
       cancel() {
-        if (!entry.open) return;
-        const removeFrom = (entries: Entry[]) => {
-          const index = entries.indexOf(entry);
-          if (index >= 0) entries.splice(index, 1);
-        };
-        removeFrom(byWallet.get(wallet) ?? []);
-        removeFrom(global);
-        if ((byWallet.get(wallet) ?? []).length === 0) byWallet.delete(wallet);
-        close();
+        close((entries) => entries.filter((e) => e.id !== id));
       },
     };
   }

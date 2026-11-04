@@ -15,6 +15,7 @@
 import { isAddress } from "@solana/kit";
 import { randomUUID } from "node:crypto";
 import type { TreasuryInvariantView } from "../contracts.ts";
+import { defaultStore, type Collection, type Store } from "../store.ts";
 import { reportForLog, type Treasury } from "../treasury.ts";
 import { formatPln, formatUsdc, usdcToPln } from "./money.ts";
 import { OnrampError, createDailyCap, formatRate } from "./onramp.ts";
@@ -64,7 +65,12 @@ export type OfframpDeps = {
   resolveOwner?: (wallet: string) => Promise<Parameters<Treasury["unwrap"]>[0]["owner"] | null>;
   log?: (...args: unknown[]) => void;
   now?: () => number;
+  /** Where the receipts and the daily cap live. Defaults to the process's store. */
+  store?: Store;
 };
+
+/** A payout receipt is the landlord's own history screen, so it outlives any demo window. */
+export const RECEIPT_TTL_MS = 90 * 86_400_000;
 
 const NO_KEY_NOTE =
   "No burn: rUSDC is burnt with the landlord's own signature, which this backend does not hold. " +
@@ -74,8 +80,11 @@ export function createOfframp(deps: OfframpDeps) {
   const { config } = deps;
   const log = deps.log ?? (() => {});
   const now = deps.now ?? Date.now;
-  const cap = createDailyCap(config.maxUsdcPerWalletPerDay);
-  const receipts = new Map<string, PayoutReceipt>();
+  const store = deps.store ?? defaultStore();
+  const cap = createDailyCap(config.maxUsdcPerWalletPerDay, undefined, { store, namespace: "offramp" });
+  // `GET /api/offramp/history` is a user-facing list, so a redeploy used to empty it in front of
+  // whoever was looking at it.
+  const receipts: Collection<PayoutReceipt> = store.collection("offramp_receipts");
 
   /**
    * `wallet` comes from the session token. The amount is the landlord's to
@@ -127,7 +136,9 @@ export function createOfframp(deps: OfframpDeps) {
       unwrap,
       at: now(),
     };
-    receipts.set(receipt.reference, receipt);
+    receipts.set(receipt.reference, receipt, receipt.at + RECEIPT_TTL_MS);
+    receipts.prune(now());
+    cap.prune(now());
     log(
       `offramp: SIMULATED payout ${receipt.reference} of ${formatUsdc(amountUsdc)} rUSDC ` +
         `(~${formatPln(BigInt(receipt.amountPln))} PLN) for ${wallet}; burned=${unwrap.burned}`,
@@ -138,7 +149,7 @@ export function createOfframp(deps: OfframpDeps) {
   return {
     payout,
     receipt: (reference: string): PayoutReceipt | undefined => receipts.get(reference),
-    history: (wallet: string): PayoutReceipt[] => [...receipts.values()].filter((r) => r.wallet === wallet).sort((a, b) => b.at - a.at),
+    history: (wallet: string): PayoutReceipt[] => receipts.values().filter((r) => r.wallet === wallet).sort((a, b) => b.at - a.at),
     remainingToday: (wallet: string): bigint => cap.remaining(wallet, now()),
     cap: config.maxUsdcPerWalletPerDay,
     rateScaled: config.rateScaled,

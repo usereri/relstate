@@ -179,6 +179,7 @@ export function createApp(
       ephemeralKeys: keys.ephemeral,
       rusdcMint: env.rusdcMint === "" ? null : env.rusdcMint,
       auditorConfigured: env.rusdcAuditorIkm !== "",
+      persistentStore: services.store.persistent,
       onrampProvider: env.onramp.provider,
       offrampProvider: env.offramp.provider,
       kycProvider: env.kyc.provider,

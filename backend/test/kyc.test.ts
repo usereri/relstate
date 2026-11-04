@@ -1,8 +1,12 @@
 import "./noenv.ts";
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { Address, Signature } from "@solana/kit";
+import { openStore } from "../src/store.ts";
 
 const { KycError, KycUnavailable, createKyc, mockVerificationPage } = await import("../src/providers/kyc.ts");
 const { NO_ISSUER } = await import("../src/providers/kyc-chain.ts");
@@ -159,7 +163,9 @@ describe("idempotency", () => {
     const second = await hook(kyc, approve(session));
     assert.equal(calls.attest.length, 1);
     assert.equal(second.replay, true);
-    assert.equal(second.record, first.record);
+    // The same record, not the same object: it is read back out of the store now, which is what
+    // makes the answer survive a restart between the two deliveries.
+    assert.deepEqual(second.record, first.record);
   });
 
   it("two concurrent deliveries of one event attest once", async () => {
@@ -267,7 +273,7 @@ describe("KycUnavailable", () => {
 
     const second = await hook(kyc, approve(session));
     assert.equal(second.replay, true);
-    assert.equal(second.record, first.record);
+    assert.deepEqual(second.record, first.record);
     assert.equal(asked, 1);
   });
 
@@ -689,5 +695,99 @@ describe("replay of a captured Sumsub delivery after a restart", () => {
     const again = await kyc.handleWebhook(green.headers, green.raw);
     assert.equal(again.replay, true);
     assert.equal(fake.calls.attest.length, 1);
+  });
+});
+
+describe("kyc survives a restart", () => {
+  function tmpDir(): { dir: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "relstate-kyc-test-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+  // openStore(file) prunes against the real wall clock on open, so the restart tests need a `now()`
+  // close to the real clock — the fixed `NOW` the rest of this file uses is June 2025 and would be
+  // pruned away the moment the second instance opens the file.
+  const REAL_NOW = Date.now();
+
+  it("a replayed vendor event after the restart returns replay: true and does not attest again", async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const file = join(dir, "relstate.db");
+      const store1 = openStore(file);
+      const chain1 = fakeChain();
+      const kyc1 = createKyc({ config: config(), chain: async () => chain1.chain, now: () => REAL_NOW, log: () => {}, store: store1 });
+      const { session } = await kyc1.start({ wallet: WALLET });
+      const first = await hook(kyc1, approve(session));
+      assert.equal(first.record.status, "attested");
+      assert.equal(chain1.calls.attest.length, 1);
+      store1.close();
+
+      const store2 = openStore(file);
+      const chain2 = fakeChain();
+      const kyc2 = createKyc({ config: config(), chain: async () => chain2.chain, now: () => REAL_NOW, log: () => {}, store: store2 });
+      const replayed = await hook(kyc2, approve(session));
+      assert.equal(replayed.replay, true);
+      assert.deepEqual(replayed.record, first.record);
+      assert.equal(chain2.calls.attest.length, 0, "the on-chain write must not happen again");
+      store2.close();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("status()'s last record and pending flag survive a restart", async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const file = join(dir, "relstate.db");
+      const store1 = openStore(file);
+      const chain1 = fakeChain();
+      const kyc1 = createKyc({ config: config(), chain: async () => chain1.chain, now: () => REAL_NOW, log: () => {}, store: store1 });
+      const pending = await kyc1.start({ wallet: OTHER }); // no webhook yet: pending stays open
+      await hook(kyc1, approve((await kyc1.start({ wallet: WALLET })).session));
+      store1.close();
+
+      const store2 = openStore(file);
+      const chain2 = fakeChain();
+      const kyc2 = createKyc({ config: config(), chain: async () => chain2.chain, now: () => REAL_NOW, log: () => {}, store: store2 });
+      const verified = await kyc2.status(WALLET);
+      assert.equal(verified.last?.status, "attested");
+      assert.equal(verified.pending, false);
+      const stillPending = await kyc2.status(OTHER);
+      assert.equal(stillPending.last, null);
+      assert.equal(stillPending.pending, true);
+      assert.ok(kyc2.session(pending.session), "the open session itself must also still be readable");
+      store2.close();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("the mock attestation budget is not handed back by a restart", async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const file = join(dir, "relstate.db");
+      const mockBudget = { maxPerHour: 1, maxLamportsPerDay: 1_000_000_000n, lamportsPerAttest: 1n };
+
+      const store1 = openStore(file);
+      const chain1 = fakeChain();
+      const kyc1 = createKyc({ config: config({ mockBudget }), chain: async () => chain1.chain, now: () => REAL_NOW, log: () => {}, store: store1 });
+      const s1 = await kyc1.start({ wallet: WALLET });
+      await hook(kyc1, approve(s1.session)); // spends the hour's one attest
+      assert.equal(chain1.calls.attest.length, 1);
+      store1.close();
+
+      const store2 = openStore(file);
+      const chain2 = fakeChain();
+      const kyc2 = createKyc({ config: config({ mockBudget }), chain: async () => chain2.chain, now: () => REAL_NOW, log: () => {}, store: store2 });
+      const s2 = await kyc2.start({ wallet: OTHER });
+      await assert.rejects(
+        () => hook(kyc2, approve(s2.session)),
+        (e: unknown) => e instanceof KycError && e.code === "attest-budget",
+        "a redeploy must not hand the fee payer's hourly budget back",
+      );
+      assert.equal(chain2.calls.attest.length, 0);
+      store2.close();
+    } finally {
+      cleanup();
+    }
   });
 });

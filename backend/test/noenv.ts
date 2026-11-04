@@ -18,6 +18,9 @@ for (const key of [
   "USDC_RESERVE_TOKEN_ACCOUNT",
   "HELIUS_API_KEY",
   "RPC_URL",
+  // So a developer with a real DATABASE_PATH does not have these tests writing to it, and every
+  // service built here gets its own in-memory store (store.ts).
+  "DATABASE_PATH",
 ]) {
   process.env[key] = "";
 }

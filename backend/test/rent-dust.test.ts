@@ -1,12 +1,14 @@
 import "./noenv.ts";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve, join } from "node:path";
 import { describe, it } from "node:test";
 import { generateKeyPairSigner } from "@solana/kit";
 import { accountLayout, type Layout } from "../src/layout.ts";
 import { createRateLimiter, type RateLimiter } from "../src/limits.ts";
-import { createTreasury, type TreasuryRpc } from "../src/treasury.ts";
+import { openStore, type Collection, type Store } from "../src/store.ts";
+import { DUST_CLAIM_TTL_MS, createTreasury, type TreasuryRpc } from "../src/treasury.ts";
 import { RejectedTransaction } from "../src/txinspect.ts";
 import type { Services } from "../src/services.ts";
 
@@ -269,5 +271,278 @@ describe("POST /api/treasury/rent-dust", () => {
     const f = await fixture();
     const res = await f.post(f.wallet, "{nope");
     assert.equal(res.status, 200);
+  });
+});
+
+describe("grantRentDust survives a restart", () => {
+  function tmpDir(): { dir: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "relstate-rentdust-test-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  /** A treasury wired to a given store, with the same RPC fakes as `fixture()` but a fixed signer
+   * and mint so the two "lifetimes" of a restart test are talking about the same wallet. */
+  async function treasuryOn(store: Parameters<typeof createTreasury>[0]["store"], treasurySigner: Awaited<ReturnType<typeof generateKeyPairSigner>>, mint: string, balances: Record<string, bigint> = {}) {
+    const state = { runs: [] as Planned[] };
+    const rpc = {
+      getMinimumBalanceForRentExemption: (size: bigint) => ({
+        send: async () => (size === 104n ? APPLICATION : size === 94n ? PROFILE : size === BigInt(LISTING_MAX_SIZE) ? LISTING : size === DISPUTE_SIZE ? DISPUTE : 999n),
+      }),
+      getBalance: (address: string) => ({ send: async () => ({ context: { slot: 1n }, value: balances[address] ?? 0n }) }),
+    } as unknown as TreasuryRpc;
+    const treasury = createTreasury({
+      rpc,
+      run: (async (_payer: unknown, plan: Planned) => {
+        state.runs.push(plan);
+        return ["sig-dust"];
+      }) as never,
+      treasury: treasurySigner,
+      mint: mint as never,
+      decimals: 6,
+      mode: "live",
+      store,
+    });
+    return { treasury, state };
+  }
+
+  it("grants once per wallet across a restart: the second lifetime reports already-granted and runs nothing", async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const file = join(dir, "relstate.db");
+      const treasurySigner = await generateKeyPairSigner();
+      const mint = (await generateKeyPairSigner()).address;
+      const wallet = (await generateKeyPairSigner()).address;
+
+      const store1 = openStore(file);
+      const t1 = await treasuryOn(store1, treasurySigner, mint);
+      const first = await t1.treasury.grantRentDust({ wallet });
+      assert.equal(first.granted, true);
+      assert.equal(t1.state.runs.length, 1);
+      store1.close();
+
+      const store2 = openStore(file);
+      const t2 = await treasuryOn(store2, treasurySigner, mint);
+      const second = await t2.treasury.grantRentDust({ wallet });
+      assert.deepEqual(second, { granted: false, lamports: "0", reason: "already-granted" });
+      assert.equal(t2.state.runs.length, 0);
+      store2.close();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("an in-flight claim (a crash before it completed) still blocks a retry within the TTL, and the TTL is 5 minutes", async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const file = join(dir, "relstate.db");
+      const treasurySigner = await generateKeyPairSigner();
+      const mint = (await generateKeyPairSigner()).address;
+      const wallet = (await generateKeyPairSigner()).address;
+      const nowMs = Date.now();
+
+      // Simulates a machine killed between "mark the claim" and "the grant completed": the row
+      // exists with `granted: false`, as grantRentDust writes it before the first await.
+      const store1 = openStore(file);
+      store1.collection<{ at: number; granted: boolean }>("rent_dust_granted").set(wallet, { at: nowMs, granted: false }, nowMs + DUST_CLAIM_TTL_MS);
+      store1.close();
+
+      // Restarted well within the 5-minute window: the dangling claim still blocks a retry, exactly
+      // as it would block a second concurrent request, so the wallet never gets paid twice for one
+      // in-flight crash.
+      const store2 = openStore(file);
+      const t2 = await treasuryOn(store2, treasurySigner, mint);
+      const blocked = await t2.treasury.grantRentDust({ wallet });
+      assert.deepEqual(blocked, { granted: false, lamports: "0", reason: "already-granted" });
+      assert.equal(t2.state.runs.length, 0);
+      store2.close();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("an in-flight claim expires once its TTL has passed, so the wallet can retry and be granted", async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const file = join(dir, "relstate.db");
+      const treasurySigner = await generateKeyPairSigner();
+      const mint = (await generateKeyPairSigner()).address;
+      const wallet = (await generateKeyPairSigner()).address;
+      const longAgo = Date.now() - DUST_CLAIM_TTL_MS - 1000;
+
+      const store1 = openStore(file);
+      store1.collection<{ at: number; granted: boolean }>("rent_dust_granted").set(wallet, { at: longAgo, granted: false }, longAgo + DUST_CLAIM_TTL_MS);
+      store1.close();
+
+      const store2 = openStore(file);
+      const t2 = await treasuryOn(store2, treasurySigner, mint);
+      const result = await t2.treasury.grantRentDust({ wallet });
+      assert.equal(result.granted, true, "the stale in-flight row must be pruned, not treated as a permanent grant");
+      assert.equal(t2.state.runs.length, 1);
+      store2.close();
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("grantRentDust when the database fails after the transfer landed", () => {
+  function tmpDir(): { dir: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "relstate-rentdust-fail-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  /**
+   * A store that refuses one particular write. Stands in for the two ways the real one fails on a
+   * single machine: SQLITE_BUSY past `busy_timeout` (a `scripts/` run holding the same file) and
+   * SQLITE_FULL (the 1 GB volume it shares with the listing photos).
+   */
+  function storeRefusing(inner: Store, refuse: (collection: string, key: string, value: unknown) => boolean): Store {
+    return {
+      ...inner,
+      collection<T>(name: string): Collection<T> {
+        const c = inner.collection<T>(name);
+        return {
+          ...c,
+          set(key: string, value: T, expiresAt?: number | null) {
+            if (refuse(name, key, value)) throw new Error("SQLITE_FULL: database or disk is full");
+            c.set(key, value, expiresAt);
+          },
+        };
+      },
+    };
+  }
+
+  /** A treasury whose transfer always lands, with the rent-dust limiter injected so a test can read it back. */
+  async function treasuryWith(store: Store, limiter: RateLimiter, treasurySigner: Awaited<ReturnType<typeof generateKeyPairSigner>>, mint: string) {
+    const state = { runs: [] as Planned[] };
+    const rpc = {
+      getMinimumBalanceForRentExemption: (size: bigint) => ({
+        send: async () => (size === 104n ? APPLICATION : size === 94n ? PROFILE : size === BigInt(LISTING_MAX_SIZE) ? LISTING : size === DISPUTE_SIZE ? DISPUTE : 999n),
+      }),
+      getBalance: () => ({ send: async () => ({ context: { slot: 1n }, value: 0n }) }),
+    } as unknown as TreasuryRpc;
+    const treasury = createTreasury({
+      rpc,
+      run: (async (_payer: unknown, plan: Planned) => {
+        state.runs.push(plan);
+        return ["sig-dust"];
+      }) as never,
+      treasury: treasurySigner,
+      mint: mint as never,
+      decimals: 6,
+      mode: "live",
+      store,
+      rentDustLimiter: limiter,
+    });
+    return { treasury, state };
+  }
+
+  const generous = () => ({ maxPerWalletPerHour: 1, maxGlobalPerHour: 10, maxLamportsPerWalletPerDay: 10n ** 12n, maxLamportsGlobalPerDay: 10n ** 12n });
+  const claimOf = (store: Store, wallet: string) => store.collection<{ at: number; granted: boolean }>("rent_dust_granted").get(wallet);
+
+  it("the lamports moved, so a failed permanent-mark write still leaves the claim in place and the spend booked", async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const file = join(dir, "relstate.db");
+      const treasurySigner = await generateKeyPairSigner();
+      const mint = (await generateKeyPairSigner()).address;
+      const wallet = (await generateKeyPairSigner()).address;
+
+      const real = openStore(file);
+      // Only the `granted: true` write fails: the claim that precedes the transfer goes in fine, and
+      // the limiter keeps a working store so the test can still read what was booked.
+      const failing = storeRefusing(real, (collection, _key, value) => collection === "rent_dust_granted" && (value as { granted: boolean }).granted === true);
+      const limiter = createRateLimiter(generous(), { store: real, namespace: "rent-dust" });
+      const t = await treasuryWith(failing, limiter, treasurySigner, mint);
+
+      // The grant is reported as what it was: successful. The transfer really happened.
+      const result = await t.treasury.grantRentDust({ wallet });
+      assert.equal(result.granted, true);
+      assert.equal(t.state.runs.length, 1, "the transfer landed");
+
+      // The old code's catch deleted the claim here, so the treasury had paid and nothing said so.
+      const claim = claimOf(real, wallet);
+      assert.ok(claim !== undefined, "a wallet that was paid must stay marked, even unrecorded");
+      assert.equal(claim.granted, false, "the mark could not be upgraded, so the claim's TTL is the only guard left");
+
+      // An immediate retry is still refused by that surviving claim.
+      const retry = await t.treasury.grantRentDust({ wallet });
+      assert.deepEqual(retry, { granted: false, lamports: "0", reason: "already-granted" });
+      assert.equal(t.state.runs.length, 1, "and nothing was transferred a second time");
+
+      // And the spend is still counted against the cap, which the old catch also gave back.
+      assert.ok(limiter.snapshot(wallet).walletLamportsLastDay > 0n, "the booked spend must survive a failed mark");
+      real.close();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("a failed budget write does not cost the permanent mark: the wallet stays granted for good", async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const file = join(dir, "relstate.db");
+      const treasurySigner = await generateKeyPairSigner();
+      const mint = (await generateKeyPairSigner()).address;
+      const wallet = (await generateKeyPairSigner()).address;
+
+      const real = openStore(file);
+      // The mirror case: the mark is written, and the limiter's commit is the write that fails.
+      // `reserve` and `commit` are both a `set` on the same row, and only the second may fail here —
+      // refusing both would break the reservation *before* the transfer and never reach the window
+      // this test is about. `commit` is the write that closes the entry, so that is the one to refuse.
+      const closesAnEntry = (value: unknown) => Array.isArray(value) && value.some((e) => (e as { open?: boolean }).open === false);
+      const failing = storeRefusing(real, (collection, _key, value) => collection.startsWith("limits:") && closesAnEntry(value));
+      const limiter = createRateLimiter(generous(), { store: failing, namespace: "rent-dust" });
+      const t = await treasuryWith(failing, limiter, treasurySigner, mint);
+
+      const result = await t.treasury.grantRentDust({ wallet });
+      assert.equal(result.granted, true);
+      assert.equal(t.state.runs.length, 1);
+      assert.equal(claimOf(real, wallet)?.granted, true, "the permanent mark is written before the budget line, so it survives the budget's failure");
+
+      const retry = await t.treasury.grantRentDust({ wallet });
+      assert.equal(retry.reason, "already-granted");
+      assert.equal(t.state.runs.length, 1);
+      real.close();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("an attempt that never paid still gives its claim back, so a transient failure does not strand the wallet", async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const file = join(dir, "relstate.db");
+      const treasurySigner = await generateKeyPairSigner();
+      const mint = (await generateKeyPairSigner()).address;
+      const wallet = (await generateKeyPairSigner()).address;
+
+      const store = openStore(file);
+      const rpc = {
+        getMinimumBalanceForRentExemption: (size: bigint) => ({
+          send: async () => (size === 104n ? APPLICATION : size === 94n ? PROFILE : size === BigInt(LISTING_MAX_SIZE) ? LISTING : size === DISPUTE_SIZE ? DISPUTE : 999n),
+        }),
+        getBalance: () => ({ send: async () => ({ context: { slot: 1n }, value: 0n }) }),
+      } as unknown as TreasuryRpc;
+      const treasury = createTreasury({
+        rpc,
+        run: (async () => {
+          throw new Error("rpc exploded before anything was sent");
+        }) as never,
+        treasury: treasurySigner,
+        mint: mint as never,
+        decimals: 6,
+        mode: "live",
+        store,
+        rentDustLimiter: createRateLimiter(generous(), { store, namespace: "rent-dust" }),
+      });
+
+      await assert.rejects(() => treasury.grantRentDust({ wallet }), /rpc exploded/);
+      assert.equal(claimOf(store, wallet), undefined, "nothing was paid, so the claim is released rather than held for five minutes");
+      store.close();
+    } finally {
+      cleanup();
+    }
   });
 });

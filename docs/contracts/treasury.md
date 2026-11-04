@@ -86,7 +86,7 @@ Residual (stated in `rentshape.ts`): tx 3 creates a funded, unverified range con
 
 ### Restart orphans
 
-The registry is in memory, so a restart (or the 5 minute TTL) between tx 1 and tx 5 forgets the contexts: tx 5's closes are then refused (`foreign-context`) and up to about 6.2M lamports (1,468,120 + 2,606,040 + 2,159,000) stay in context accounts. Contexts that were verified have the treasury as authority and can be closed with the treasury key: `node scripts/reclaim-contexts.ts` lists them (dry run), `--execute` closes accounts older than 10 minutes with the rent returned to the treasury, and `--accounts A,B` names candidates on RPC tiers without `getProgramAccounts`. Never run automatically. A context created but never verified has no authority yet and cannot be closed by anyone.
+The registry is in memory on purpose (it describes a plan that is only live for minutes, and losing it fails closed), so a restart (or the 5 minute TTL) between tx 1 and tx 5 forgets the contexts: tx 5's closes are then refused (`foreign-context`) and up to about 6.2M lamports (1,468,120 + 2,606,040 + 2,159,000) stay in context accounts. Contexts that were verified have the treasury as authority and can be closed with the treasury key: `node scripts/reclaim-contexts.ts` lists them (dry run), `--execute` closes accounts older than 10 minutes with the rent returned to the treasury, and `--accounts A,B` names candidates on RPC tiers without `getProgramAccounts`. Never run automatically. A context created but never verified has no authority yet and cannot be closed by anyone.
 
 ## Auditing a rent payment
 

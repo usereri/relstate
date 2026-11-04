@@ -19,6 +19,7 @@
 import { isAddress, type Address } from "@solana/kit";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { AttestationView, Provider, ProviderEvent } from "../contracts.ts";
+import { defaultStore, type Collection, type Store } from "../store.ts";
 import type { AttestationAccount, AttestationChain, KycPolicy } from "./kyc-chain.ts";
 import { isValid } from "./kyc-chain.ts";
 import { jsonForScript } from "./onramp.ts";
@@ -152,9 +153,27 @@ export type KycDeps = {
   provider?: Provider;
   log?: (...args: unknown[]) => void;
   now?: () => number;
+  /**
+   * Where the sessions, the webhook records and the budgets live. Defaults to the process's store;
+   * tests get their own, so each one starts with nothing attested.
+   */
+  store?: Store;
 };
 
 export const DAY_SECONDS = 86_400;
+const HOUR_MS = 3_600_000;
+
+/** A session is only useful while a check is in flight; the vendor's own links expire far sooner. */
+export const SESSION_TTL_MS = 24 * HOUR_MS;
+
+/**
+ * A record is the vendor-event idempotency key and the last decision the identity screen shows.
+ * Long, because re-attesting on a replayed event is the thing it exists to prevent; bounded,
+ * because the database should not grow forever. Sumsub deliveries are additionally refused on age
+ * (`SUMSUB_WEBHOOK_MAX_AGE_SECONDS`) and a mock ref is per-session, so nothing can be replayed into
+ * the gap this leaves.
+ */
+export const RECORD_TTL_MS = 90 * 24 * HOUR_MS;
 
 /**
  * The no-secrets provider. `start` points at a page this backend serves; that page posts the
@@ -198,13 +217,18 @@ export function createKyc(deps: KycDeps) {
   const log = deps.log ?? (() => {});
   const now = deps.now ?? Date.now;
 
-  const sessions = new Map<string, KycSession>();
-  const records = new Map<string, KycRecord>();
-  const lastByWallet = new Map<string, string>();
-  const openSessionByWallet = new Map<string, string>();
-  const startsByWallet = new Map<string, number[]>();
-  const HOUR_MS = 3_600_000;
-  /** In flight by ref: a provider that retries before we answer must not attest twice. */
+  const store = deps.store ?? defaultStore();
+  const sessions: Collection<KycSession> = store.collection("kyc_sessions");
+  /** Keyed on the vendor's event id: the row that stops one decision being written twice. */
+  const records: Collection<KycRecord> = store.collection("kyc_records");
+  const lastByWallet: Collection<string> = store.collection("kyc_last_by_wallet");
+  const openSessionByWallet: Collection<string> = store.collection("kyc_open_session");
+  const startsByWallet: Collection<number[]> = store.collection("kyc_starts");
+  /**
+   * In flight by ref: a provider that retries before we answer must not attest twice. Stays in
+   * memory — it holds a promise of work happening inside *this* process, and `records` is what
+   * covers the same event arriving after a restart.
+   */
   const inFlight = new Map<string, Promise<KycRecord>>();
 
   /**
@@ -251,17 +275,28 @@ export function createKyc(deps: KycDeps) {
     const limit = config.maxStartsPerWalletPerHour ?? 10;
     const recent = (startsByWallet.get(wallet) ?? []).filter((t) => now() - t < HOUR_MS);
     if (recent.length >= limit) {
-      startsByWallet.set(wallet, recent);
+      // Write back what is still inside the window, which also re-dates the row's expiry. Nothing
+      // to write when the window is empty, which a limit of zero would otherwise reach.
+      if (recent.length > 0) startsByWallet.set(wallet, recent, Math.max(...recent) + HOUR_MS);
       throw new KycError(`at most ${limit} verification starts per hour for one wallet`, "rate-limited", 429);
     }
-    // Sessions are only useful while a check is in flight; drop the stale ones.
-    for (const [id, s] of sessions) if (now() - s.createdAt > 24 * HOUR_MS) sessions.delete(id);
+    // Sessions are only useful while a check is in flight; drop the stale ones. One delete, since
+    // each row carries its own expiry — and the same sweep for everything else with a window.
+    sessions.prune(now());
+    startsByWallet.prune(now());
+    openSessionByWallet.prune(now());
+    records.prune(now());
 
     // Book the slot before any await so concurrent starts cannot all pass the check; it is given
     // back below if the provider fails to issue a link.
     const slot = now();
-    startsByWallet.set(wallet, [...recent, slot]);
-    const release = () => startsByWallet.set(wallet, (startsByWallet.get(wallet) ?? []).filter((t) => t !== slot));
+    const booked = [...recent, slot];
+    startsByWallet.set(wallet, booked, Math.max(...booked) + HOUR_MS);
+    const release = () => {
+      const left = (startsByWallet.get(wallet) ?? []).filter((t) => t !== slot);
+      if (left.length === 0) startsByWallet.delete(wallet);
+      else startsByWallet.set(wallet, left, Math.max(...left) + HOUR_MS);
+    };
 
     const session: KycSession = { id: randomUUID(), wallet, provider: config.provider, createdAt: now() };
     // The app is a hash router, so the return path lives inside the fragment.
@@ -283,8 +318,11 @@ export function createKyc(deps: KycDeps) {
       throw new KycError("the KYC provider returned no verification URL", "provider-no-url", 503);
     }
 
-    sessions.set(session.id, session);
-    openSessionByWallet.set(wallet, session.id);
+    // Both expire with the session: "a check is pending" must not outlive the check itself.
+    store.transaction(() => {
+      sessions.set(session.id, session, session.createdAt + SESSION_TTL_MS);
+      openSessionByWallet.set(wallet, session.id, session.createdAt + SESSION_TTL_MS);
+    });
     log(`kyc: session ${session.id} started for ${wallet} (${config.provider})`);
     return {
       url,
@@ -329,9 +367,13 @@ export function createKyc(deps: KycDeps) {
     const at = now();
     const base = { ref: event.ref, wallet: event.wallet, signatures: [] as string[], at };
     const keep = (record: KycRecord): KycRecord => {
-      records.set(record.ref, record);
-      lastByWallet.set(record.wallet, record.ref);
-      if (openSessionByWallet.get(record.wallet) !== undefined) openSessionByWallet.delete(record.wallet);
+      // One transaction: the record, the wallet's pointer at it and the end of the pending state
+      // are one decision, and a crash between them would show a user a check that never finished.
+      store.transaction(() => {
+        records.set(record.ref, record, record.at + RECORD_TTL_MS);
+        lastByWallet.set(record.wallet, record.ref, record.at + RECORD_TTL_MS);
+        if (openSessionByWallet.get(record.wallet) !== undefined) openSessionByWallet.delete(record.wallet);
+      });
       return record;
     };
     const decision = event.kind === "kyc.approved" ? "approved" : "rejected";
@@ -387,18 +429,26 @@ export function createKyc(deps: KycDeps) {
     });
   }
 
-  const mockAttests: number[] = [];
+  /**
+   * The mock verifier's global budget, in one row rather than a process-lifetime array: the fee
+   * payer pays for every attestation it writes, so a redeploy used to hand the whole daily
+   * allowance back. The row expires a day after its newest attestation, which is the window.
+   */
+  const mockAttestsRow: Collection<number[]> = store.collection("kyc_mock_attests");
+  const MOCK_ATTESTS_KEY = "global";
+
   function bookMockAttest(b: NonNullable<KycConfig["mockBudget"]>): void {
     const t = now();
-    while (mockAttests.length > 0 && t - (mockAttests[0] as number) > 24 * HOUR_MS) mockAttests.shift();
-    const lastHour = mockAttests.filter((x) => t - x <= HOUR_MS).length;
+    const within = (mockAttestsRow.get(MOCK_ATTESTS_KEY) ?? []).filter((x) => t - x <= 24 * HOUR_MS);
+    const lastHour = within.filter((x) => t - x <= HOUR_MS).length;
     if (lastHour >= b.maxPerHour) {
       throw new KycError(`mock KYC attestation budget exhausted (${b.maxPerHour} per hour); try again later`, "attest-budget", 429);
     }
-    if (BigInt(mockAttests.length + 1) * b.lamportsPerAttest > b.maxLamportsPerDay) {
+    if (BigInt(within.length + 1) * b.lamportsPerAttest > b.maxLamportsPerDay) {
       throw new KycError("mock KYC daily attestation budget exhausted; try again tomorrow", "attest-budget", 429);
     }
-    mockAttests.push(t);
+    const booked = [...within, t];
+    mockAttestsRow.set(MOCK_ATTESTS_KEY, booked, Math.max(...booked) + 24 * HOUR_MS);
   }
 
   /** Reads the chain, which is the only source of truth for "verified". */

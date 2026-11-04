@@ -1,5 +1,5 @@
 // Contract 5: every tunable in one place, with mock defaults so the backend boots with no secrets.
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { parsePln, parseRate, parseUsdc } from "./providers/money.ts";
 
 /** Repo root, independent of cwd, so scripts and the server resolve the same .env. */
@@ -126,6 +126,17 @@ export const env = {
   sessionTtlSeconds: num("SESSION_TTL_SECONDS", 3600),
   adminToken: str("ADMIN_TOKEN"),
   corsOrigin: str("CORS_ORIGIN", "*"),
+
+  /**
+   * SQLite file for everything this backend knows that is not on chain (store.ts): the appraiser
+   * invitations, the webhook idempotency keys, the once-per-wallet rent grant, the spend budgets.
+   * On Fly it is a path on the volume (`/data/relstate.db`), so a restart or a redeploy loses
+   * nothing a user would notice.
+   *
+   * Blank is the no-config default and means `:memory:`, which is what `npm run dev` and the tests
+   * get: a process-lifetime store, exactly the behaviour every one of those stores used to have.
+   */
+  databasePath: str("DATABASE_PATH"),
 
   // Three distinct keys on purpose; see docs/contracts/treasury.md.
   //   fee payer  pays transaction fees for user-built transactions and nothing else
@@ -343,6 +354,28 @@ export function assertEnvConsistent(e: Env = env): void {
     if (e.authMode === "wallet" && !e.appUrlExplicit) problems.push("APP_URL is required when AUTH_MODE=wallet (login challenges are bound to its origin)");
     if (e.sessionSecret === "") problems.push("SESSION_SECRET is required when BACKEND_MODE=live");
     if (e.adminToken === "") problems.push("ADMIN_TOKEN is required when BACKEND_MODE=live");
+    // A live deployment that forgot this one keeps its webhook idempotency keys in memory, so a
+    // redeploy between a provider's first delivery and its retry mints rUSDC twice for one payment
+    // (store.ts). That is too quiet a failure to leave to a warning, so boot refuses it — but the
+    // explicit `:memory:` is accepted, because "I know, and I want this one ephemeral" is a
+    // legitimate answer and is not the same as having forgotten.
+    if (e.databasePath === "") {
+      problems.push(
+        "DATABASE_PATH is required when BACKEND_MODE=live (a path on the volume, e.g. /data/relstate.db). " +
+          "Set it to :memory: to deliberately run without persistence, accepting that a restart loses the webhook " +
+          "idempotency keys, the outstanding invitations and every spend budget",
+      );
+    }
+  }
+  // Shape, in every mode. A relative DATABASE_PATH resolves against the working directory, which is
+  // `backend/` under `npm run dev` and `/app/backend` in the container — so the same setting would
+  // name two different files and a deployment would look like it had silently forgotten everything.
+  // Blank (in memory, the local default) and the literal `:memory:` are both fine here; anything
+  // else must be absolute, and must name a file rather than a directory, because that is what
+  // SQLite is about to open.
+  if (e.databasePath !== "" && e.databasePath !== ":memory:") {
+    if (!isAbsolute(e.databasePath)) problems.push(`DATABASE_PATH must be an absolute path (or unset for in-memory), not "${e.databasePath}"`);
+    else if (e.databasePath.endsWith("/")) problems.push(`DATABASE_PATH must name the database file, not a directory ("${e.databasePath}")`);
   }
   // The fee payer signs anything a user submits; the issuer vouches for identity.
   // One key doing both would let a crafted sponsored transaction speak as the issuer.

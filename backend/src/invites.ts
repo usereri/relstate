@@ -35,9 +35,12 @@
 //   4. **A lease party cannot be the appraiser**, refused here because the program refuses it at
 //      propose, confirm and verdict — failing early beats an on-chain `NotMediationParty`.
 //
-// Stored in memory with a TTL sweep, like the KYC sessions and records, so a restart invalidates
-// outstanding invites. That is the fail-closed direction and it is already true of sessions, whose
-// HMAC secret is per-process unless `SESSION_SECRET` is set.
+// Stored with a TTL in the store (store.ts), so an invitation survives a restart or a redeploy: a
+// mediation has a selection window measured in days, and losing the link in the middle of it meant
+// re-inviting the appraiser and having them claim again. **Two things have to survive for that to
+// hold** — the record here, and the token's signature, which is HMAC'd with a key derived from
+// `SESSION_SECRET`. A deployment with no `SESSION_SECRET` uses a per-process random one, so its
+// outstanding links still die on restart, whatever is in the database. Live mode requires it.
 import { isAddress, type Address, type GetAccountInfoApi, type Rpc } from "@solana/kit";
 import { randomUUID } from "node:crypto";
 import { createHmacToken, hmacSecret, verifyHmacToken } from "./auth.ts";
@@ -47,6 +50,7 @@ import { createEmailSender, looksLikeEmail, maskEmail, type EmailSender } from "
 import { env } from "./env.ts";
 import { idlConstant } from "./layout.ts";
 import { fetchLease, type DecodedLease } from "./lease.ts";
+import { defaultStore, type Collection, type Store } from "./store.ts";
 
 /** Everything this module refuses, with the code the route returns. */
 export class InviteError extends Error {
@@ -145,6 +149,8 @@ export type InviteDeps = {
   now?: () => number;
   /** Test seam: the program id a lease and a dispute must be owned by. */
   program?: Address;
+  /** Where the invitations live. Defaults to the process's store; tests get their own. */
+  store?: Store;
 };
 
 /**
@@ -171,17 +177,20 @@ export function createInvites(deps: InviteDeps) {
   const program = deps.program ?? (RELSTATE_PROGRAM as Address);
   const sender = deps.sender ?? createEmailSender({ log });
 
-  const byId = new Map<string, InviteRecord>();
+  const store = deps.store ?? defaultStore();
+  const byId: Collection<InviteRecord> = store.collection("invites");
   /** One live invite per lease: issuing a new one replaces it, so invites cannot accumulate. */
-  const idByLease = new Map<string, string>();
+  const idByLease: Collection<string> = store.collection("invites_by_lease");
 
+  /**
+   * Both rows carry the invite's own `expiresAt` as their TTL, so they expire together and the
+   * sweep is a delete rather than a scan. Still called on every entry point, as the map version
+   * was: an expired invite must never be readable, and nothing else is scheduled to prune it.
+   */
   const sweep = (): void => {
-    const cutoff = Math.floor(now() / 1000);
-    for (const [id, invite] of byId) {
-      if (invite.expiresAt > cutoff) continue;
-      byId.delete(id);
-      if (idByLease.get(invite.lease) === id) idByLease.delete(invite.lease);
-    }
+    const cutoff = now();
+    byId.prune(cutoff);
+    idByLease.prune(cutoff);
   };
 
   const partyOf = (lease: DecodedLease, wallet: string): Party => {
@@ -233,9 +242,9 @@ export function createInvites(deps: InviteDeps) {
    *
    * Both halves are required. The HMAC alone proves the token was minted here and has not expired;
    * the record is what makes it single-use and claimable. An unknown id is refused rather than
-   * trusted — after a restart there is no record, so every outstanding invite is dead, which is the
-   * safe direction. The token's own `lease`/`nameHash` claims are re-checked against the record, so
-   * the binding holds even if the store were somehow re-keyed.
+   * trusted — an invite that was replaced, expired or pruned is dead even though its token still
+   * verifies, which is the safe direction. The token's own `lease`/`nameHash` claims are re-checked
+   * against the record, so the binding holds even if the store were somehow re-keyed.
    */
   function resolve(token: unknown): InviteRecord {
     if (typeof token !== "string" || token === "") throw new InviteError("an invite token is required", "invite-invalid", 404);
@@ -326,11 +335,14 @@ export function createInvites(deps: InviteDeps) {
       };
 
       // Replacing drops the previous token: a party who mistyped the address, or whose appraiser
-      // claimed with the wrong wallet, re-issues and the old link stops working.
-      const previous = idByLease.get(leaseAddress);
-      if (previous !== undefined) byId.delete(previous);
-      byId.set(id, invite);
-      idByLease.set(leaseAddress, id);
+      // claimed with the wrong wallet, re-issues and the old link stops working. One transaction,
+      // so a crash here cannot leave the lease pointing at an invite that is not there.
+      store.transaction(() => {
+        const previous = idByLease.get(leaseAddress);
+        if (previous !== undefined) byId.delete(previous);
+        byId.set(id, invite, expiresAt * 1000);
+        idByLease.set(leaseAddress, id, expiresAt * 1000);
+      });
 
       const url = inviteUrl(token);
       let sent = sender.delivers;
@@ -397,6 +409,9 @@ export function createInvites(deps: InviteDeps) {
       }
       invite.wallet = wallet;
       invite.claimedAt = Math.floor(now() / 1000);
+      // Written back under the same expiry: the claim is the one fact both parties are about to
+      // confirm on chain, so it has to outlive this process.
+      byId.set(invite.id, invite, invite.expiresAt * 1000);
       log(`invite ${invite.id}: claimed lease=${invite.lease} wallet=${wallet}`);
       return { lease: invite.lease, companyName: invite.companyName, wallet, claimedAt: invite.claimedAt };
     },
@@ -420,7 +435,7 @@ export function createInvites(deps: InviteDeps) {
     /** Test seam: how many invites are live. */
     size: (): number => {
       sweep();
-      return byId.size;
+      return byId.size();
     },
   };
 }

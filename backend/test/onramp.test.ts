@@ -1,8 +1,13 @@
 import "./noenv.ts";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
+  CREDIT_TTL_MS,
+  INTENT_TTL_MS,
   OnrampError,
   WebhookError,
   createOnramp,
@@ -14,6 +19,7 @@ import {
   type OnrampTreasury,
 } from "../src/providers/onramp.ts";
 import { parsePln, parseRate, parseUsdc } from "../src/providers/money.ts";
+import { openStore } from "../src/store.ts";
 
 const WALLET = "EBMibFLTvr5GDpgxNqt5Gqp9B1xLMr32aNwGDJV2oGJ6";
 const OTHER = "11111111111111111111111111111111";
@@ -68,6 +74,32 @@ function fakeTreasury(opts: { gate?: Promise<void> } = {}) {
     },
   };
   return { treasury: treasury as unknown as OnrampTreasury, calls };
+}
+
+type TreasuryCalls = ReturnType<typeof fakeTreasury>["calls"];
+
+/** Like `fakeTreasury`, but records into calls the CALLER provides: a stand-in for "the treasury
+ * is on chain and does not restart when the backend does", so a restart test can prove the mint
+ * really happened once across two separately-constructed `createOnramp` instances. */
+function fakeTreasuryWithCalls(calls: TreasuryCalls): OnrampTreasury {
+  return {
+    mode: "mock" as const,
+    creditReserve(amount: bigint, ref?: string) {
+      calls.creditReserve.push({ amount, ref });
+      return amount;
+    },
+    async wrap(args: { wallet: string; amount: bigint; ref?: string }) {
+      calls.wrap.push(args);
+      return { token: WALLET, signatures: ["sig-wrap"], invariantBefore: report, invariantAfter: report };
+    },
+    async wrapAndMakeConfidential(args: Record<string, unknown>) {
+      calls.wrapAndMakeConfidential.push(args);
+      return { token: WALLET, confidentialAmount: 1n, publicRemaining: 0n, invariantAfter: report };
+    },
+    async invariant() {
+      return report;
+    },
+  } as unknown as OnrampTreasury;
 }
 
 const mockBody = (intent: string, extra: Record<string, unknown> = {}) => JSON.stringify({ intent, ...extra });
@@ -191,7 +223,9 @@ describe("onramp credit (mock provider)", () => {
     const second = await svc.handleWebhook({}, mockBody(out.intent));
     assert.equal(first.replay, false);
     assert.equal(second.replay, true);
-    assert.equal(second.credit, first.credit);
+    // The same credit, not the same object: it is read back out of the store now, which is what
+    // makes the answer survive a restart between the two deliveries.
+    assert.deepEqual(second.credit, first.credit);
     assert.equal(calls.wrap.length, 1);
     assert.equal(calls.creditReserve.length, 1);
   });
@@ -304,6 +338,44 @@ describe("onramp credit (mock provider)", () => {
     await svc.handleWebhook({}, mockBody(out.intent));
     assert.equal(svc.remainingToday(WALLET), 200_000_000n - 93_023_255n);
     assert.equal(svc.remainingToday(OTHER), 200_000_000n);
+  });
+});
+
+describe("onramp: TTL pruning", () => {
+  it("an intent older than INTENT_TTL_MS is swept on the next checkout, but a fresh one is not", async () => {
+    let clock = 1_000_000;
+    const { svc } = mockService({}, fakeTreasury(), () => clock);
+    const old = await svc.checkout({ wallet: WALLET, amountPln: parsePln("400") });
+    assert.ok(svc.intent(old.intent));
+
+    clock += INTENT_TTL_MS - 1;
+    // Each checkout prunes intents.ts; one call just before the TTL must not sweep it early.
+    await svc.checkout({ wallet: OTHER, amountPln: parsePln("10") });
+    assert.ok(svc.intent(old.intent), "not yet expired");
+
+    clock += 2;
+    const fresh = await svc.checkout({ wallet: WALLET, amountPln: parsePln("10") });
+    assert.equal(svc.intent(old.intent), undefined, "swept once its TTL has actually passed");
+    assert.ok(svc.intent(fresh.intent));
+  });
+
+  it("a credit older than CREDIT_TTL_MS is swept on the next webhook delivery, but a fresh one is not", async () => {
+    let clock = 1_000_000;
+    const { svc } = mockService({}, fakeTreasury(), () => clock);
+    const a = await svc.checkout({ wallet: WALLET, amountPln: parsePln("400") });
+    await svc.handleWebhook({}, mockBody(a.intent));
+    assert.ok(svc.creditForIntent(a.intent));
+
+    clock += CREDIT_TTL_MS - 1;
+    const b = await svc.checkout({ wallet: OTHER, amountPln: parsePln("10") });
+    await svc.handleWebhook({}, mockBody(b.intent)); // another webhook call, which also prunes credits
+    assert.ok(svc.creditForIntent(a.intent), "not yet expired");
+
+    clock += 2;
+    const c = await svc.checkout({ wallet: WALLET, amountPln: parsePln("10") });
+    await svc.handleWebhook({}, mockBody(c.intent));
+    assert.equal(svc.creditForIntent(a.intent), undefined, "swept once its TTL has actually passed");
+    assert.ok(svc.creditForIntent(c.intent));
   });
 });
 
@@ -500,5 +572,76 @@ describe("formatRate", () => {
     assert.equal(formatRate(parseRate("4")), "4.00");
     assert.equal(formatRate(parseRate("4.123456")), "4.123456");
     assert.equal(formatRate(parseRate("4.1200")), "4.12");
+  });
+});
+
+describe("onramp survives a restart", () => {
+  function tmpDir(): { dir: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "relstate-onramp-test-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+  // openStore(file) prunes against the real wall clock on open; these tests need `now()` close to
+  // the real clock, unlike the fixed-clock tests elsewhere in this file.
+  const REAL_NOW = Date.now();
+
+  it("a redelivered event after the restart returns replay: true and does not mint again; creditForIntent still answers; the daily cap is still spent", async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const file = join(dir, "relstate.db");
+      // One counter standing in for "the mint on chain", which does not restart when the backend does.
+      const calls: TreasuryCalls = { creditReserve: [], wrap: [], wrapAndMakeConfidential: [] };
+
+      const store1 = openStore(file);
+      const svc1 = createOnramp({ config: baseConfig({ maxUsdcPerWalletPerDay: parseUsdc("100") }), treasury: async () => fakeTreasuryWithCalls(calls), now: () => REAL_NOW, store: store1 });
+      const out = await svc1.checkout({ wallet: WALLET, amountPln: parsePln("400") }); // ~93.02 rUSDC
+      const first = await svc1.handleWebhook({}, mockBody(out.intent));
+      assert.equal(first.replay, false);
+      assert.equal(calls.wrap.length, 1, "money is money: this must be unmissable");
+      store1.close();
+
+      const store2 = openStore(file);
+      const svc2 = createOnramp({ config: baseConfig({ maxUsdcPerWalletPerDay: parseUsdc("100") }), treasury: async () => fakeTreasuryWithCalls(calls), now: () => REAL_NOW, store: store2 });
+
+      // Stripe/the mock provider redelivers the same event after the redeploy.
+      const second = await svc2.handleWebhook({}, mockBody(out.intent));
+      assert.equal(second.replay, true);
+      assert.deepEqual(second.credit, first.credit);
+      assert.equal(calls.wrap.length, 1, "the mint must not happen a second time");
+      assert.equal(calls.creditReserve.length, 1, "nor the reserve credit behind it");
+
+      // The app polling after the hosted page sends the user back still gets an answer.
+      assert.deepEqual(svc2.creditForIntent(out.intent), first.credit);
+
+      // ~93.02 of a 100 cap were already spent before the restart; another ~93.02 would pass it.
+      await assert.rejects(
+        () => svc2.checkout({ wallet: WALLET, amountPln: parsePln("400") }),
+        (e: unknown) => e instanceof OnrampError && e.code === "wallet-cap" && e.status === 429,
+      );
+      store2.close();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("a different wallet's cap is untouched by what another wallet spent before the restart", async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const file = join(dir, "relstate.db");
+      const calls: TreasuryCalls = { creditReserve: [], wrap: [], wrapAndMakeConfidential: [] };
+
+      const store1 = openStore(file);
+      const svc1 = createOnramp({ config: baseConfig({ maxUsdcPerWalletPerDay: parseUsdc("100") }), treasury: async () => fakeTreasuryWithCalls(calls), now: () => REAL_NOW, store: store1 });
+      const out = await svc1.checkout({ wallet: WALLET, amountPln: parsePln("400") });
+      await svc1.handleWebhook({}, mockBody(out.intent));
+      store1.close();
+
+      const store2 = openStore(file);
+      const svc2 = createOnramp({ config: baseConfig({ maxUsdcPerWalletPerDay: parseUsdc("100") }), treasury: async () => fakeTreasuryWithCalls(calls), now: () => REAL_NOW, store: store2 });
+      assert.equal(svc2.remainingToday(OTHER), parseUsdc("100"));
+      await assert.doesNotReject(() => svc2.checkout({ wallet: OTHER, amountPln: parsePln("400") }));
+      store2.close();
+    } finally {
+      cleanup();
+    }
   });
 });

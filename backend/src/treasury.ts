@@ -70,6 +70,7 @@ import {
 } from "./txinspect.ts";
 import { createRateLimiter, LimitError, type RateLimiter } from "./limits.ts";
 import { jsonSafe } from "./rpc.ts";
+import { defaultStore, type Collection, type Store } from "./store.ts";
 
 export type TreasuryRpc = Rpc<
   GetAccountInfoApi & GetBalanceApi & GetMinimumBalanceForRentExemptionApi & GetTokenAccountBalanceApi & SimulateTransactionApi & SendTransactionApi
@@ -191,8 +192,21 @@ export type TreasuryDeps = {
   rentDustLimiter?: RateLimiter;
   /** Test seam for the account layouts rent dust sizes itself from; defaults to the program's IDL. */
   accountLayout?: (account: string) => Layout;
+  /**
+   * The replay guard and the once-per-wallet rent grant. Defaults to the process's store; tests get
+   * their own, so each one starts with nothing granted.
+   */
+  store?: Store;
   log?: (...args: unknown[]) => void;
 };
+
+/**
+ * How long an unfinished rent-dust claim blocks a wallet (see `dustGranted` below). Exported so the
+ * test that pins this tradeoff reads the real figure instead of a copy of it: a copy would keep
+ * passing against the old value if this one ever changed, which is the opposite of what that test
+ * is for.
+ */
+export const DUST_CLAIM_TTL_MS = 5 * 60_000;
 
 /**
  * How much of a wrapped amount may go confidential, given how much must stay
@@ -211,14 +225,18 @@ export function confidentialMoveAmount(total: bigint, publicHoldback: bigint): b
 export function createTreasury(deps: TreasuryDeps) {
   const log = deps.log ?? (() => {});
   const maxRentLamports = deps.maxRentLamports ?? env.sponsor.maxRentLamports;
+  const store = deps.store ?? defaultStore();
   const setupLimiter =
     deps.setupLimiter ??
-    createRateLimiter({
-      maxPerWalletPerHour: 3,
-      maxGlobalPerHour: 60,
-      maxLamportsPerWalletPerDay: 3n * (maxRentLamports + env.sponsor.maxFeeLamports),
-      maxLamportsGlobalPerDay: 20n * (maxRentLamports + env.sponsor.maxFeeLamports),
-    });
+    createRateLimiter(
+      {
+        maxPerWalletPerHour: 3,
+        maxGlobalPerHour: 60,
+        maxLamportsPerWalletPerDay: 3n * (maxRentLamports + env.sponsor.maxFeeLamports),
+        maxLamportsGlobalPerDay: 20n * (maxRentLamports + env.sponsor.maxFeeLamports),
+      },
+      { store, namespace: "confidential-setup" },
+    );
   /**
    * Mock-mode stand-in for the real USDC reserve.
    *
@@ -598,15 +616,22 @@ export function createTreasury(deps: TreasuryDeps) {
 
   // --- confidential rent payment ----------------------------------------------------------------
 
-  const rentLimits = deps.rentPaymentLimiter ?? createRateLimiter({
-    maxPerWalletPerHour: env.rentPayment.maxPerWalletPerHour,
-    maxGlobalPerHour: env.rentPayment.maxGlobalPerHour,
-    maxLamportsPerWalletPerDay: env.rentPayment.maxLamportsPerWalletPerDay,
-    maxLamportsGlobalPerDay: env.rentPayment.maxLamportsGlobalPerDay,
-  });
+  const rentLimits = deps.rentPaymentLimiter ?? createRateLimiter(
+    {
+      maxPerWalletPerHour: env.rentPayment.maxPerWalletPerHour,
+      maxGlobalPerHour: env.rentPayment.maxGlobalPerHour,
+      maxLamportsPerWalletPerDay: env.rentPayment.maxLamportsPerWalletPerDay,
+      maxLamportsGlobalPerDay: env.rentPayment.maxLamportsGlobalPerDay,
+    },
+    { store, namespace: "rent-payment" },
+  );
   const rentPlans = createRentPlanRegistry();
-  /** Message hashes already cosigned, for the length of a blockhash's life. */
-  const seenMessages = new Map<string, number>();
+  /**
+   * Message hashes already cosigned, for the length of a blockhash's life. Persisted, so a redeploy
+   * in the middle of a rent payment cannot be used to get the same message cosigned twice; the row
+   * carries its own expiry, so the window still closes on its own.
+   */
+  const seenMessages: Collection<number> = store.collection("replay_rent_payment");
   const REPLAY_WINDOW_MS = 5 * 60_000;
 
   /**
@@ -675,7 +700,7 @@ export function createTreasury(deps: TreasuryDeps) {
     // landing. Remembered for longer than a blockhash lives, so a replay can never land anyway.
     const key = createHash("sha256").update(new Uint8Array(tx.transaction.messageBytes)).digest("hex");
     const now = Date.now();
-    for (const [k, at] of seenMessages) if (now - at > REPLAY_WINDOW_MS) seenMessages.delete(k);
+    seenMessages.prune(now);
     if (seenMessages.has(key)) throw new RejectedTransaction("this exact transaction was already co-signed", "replay");
 
     let reservation;
@@ -694,7 +719,7 @@ export function createTreasury(deps: TreasuryDeps) {
       reservation.cancel();
       throw e;
     }
-    seenMessages.set(key, now);
+    seenMessages.set(key, now, now + REPLAY_WINDOW_MS);
     try {
       return await cosignAndSend(tx, txBase64, worstCaseFee, reservation, {
         maxSpend: env.rentPayment.maxSpendLamports,
@@ -716,13 +741,27 @@ export function createTreasury(deps: TreasuryDeps) {
 
   // Sizes come from the program's IDL (layout.ts), never from constants here: Profile and Lease are
   // changing, and a hard-coded size would fund the wrong rent without any error.
-  const dustGranted = new Set<string>();
-  const dustLimiter = deps.rentDustLimiter ?? createRateLimiter({
-    maxPerWalletPerHour: 1,
-    maxGlobalPerHour: env.rentDust.maxGlobalPerHour,
-    maxLamportsPerWalletPerDay: 1_000_000_000n,
-    maxLamportsGlobalPerDay: env.rentDust.maxLamportsGlobalPerDay,
-  });
+  /**
+   * Which wallets have taken their one rent grant. Persisted: a redeploy used to forget, and the
+   * next visit handed the same wallet another grant out of the treasury.
+   *
+   * Two states in one row, because the row is also the claim that keeps two concurrent requests
+   * from both granting. `granted: true` is permanent — that is the whole point. `granted: false` is
+   * a request in flight and expires, so a machine killed mid-grant does not leave a wallet
+   * permanently marked as funded when it never was. The cost of that choice is bounded and the
+   * right way round: at worst one extra grant after a crash (and the global daily lamport cap still
+   * holds), rather than a user who can never get the rent their first `apply` charges them.
+   */
+  const dustGranted: Collection<{ at: number; granted: boolean }> = store.collection("rent_dust_granted");
+  const dustLimiter = deps.rentDustLimiter ?? createRateLimiter(
+    {
+      maxPerWalletPerHour: 1,
+      maxGlobalPerHour: env.rentDust.maxGlobalPerHour,
+      maxLamportsPerWalletPerDay: 1_000_000_000n,
+      maxLamportsGlobalPerDay: env.rentDust.maxLamportsGlobalPerDay,
+    },
+    { store, namespace: "rent-dust" },
+  );
 
   /**
    * A listing at its maximum text lengths: 8 (discriminator) + 59 fixed bytes + the four strings at
@@ -766,12 +805,21 @@ export function createTreasury(deps: TreasuryDeps) {
    */
   async function grantRentDust({ wallet }: { wallet: string }): Promise<{ granted: boolean; lamports: string; signature?: Signature; reason?: string }> {
     if (wallet === deps.treasury.address) throw new RejectedTransaction("the treasury does not need rent dust", "wallet-is-treasury");
+    const now = Date.now();
+    dustGranted.prune(now);
     if (dustGranted.has(wallet)) return { granted: false, lamports: "0", reason: "already-granted" };
     // Marked synchronously, before the first await: the checks below take network round trips, and
     // two concurrent requests for one wallet must not both get past the line above. Released on
     // every path that does not end in a grant.
-    dustGranted.add(wallet);
+    dustGranted.set(wallet, { at: now, granted: false }, now + DUST_CLAIM_TTL_MS);
     let reservation: ReturnType<typeof dustLimiter.reserve> | undefined;
+    /**
+     * Flipped the moment the transfer is known to have landed. Past that point **nothing may be
+     * un-booked**: the lamports have left the treasury, so a wallet that was paid has to stay
+     * marked and the spend has to stay counted — even when what fails next is the bookkeeping
+     * itself, which is now a SQLite write and can fail on a busy database or a full volume.
+     */
+    let paid = false;
     try {
       const amount = await rentDustAmount();
       const balance = (await deps.rpc.getBalance(wallet as Address, { commitment: "confirmed" }).send()).value;
@@ -790,11 +838,40 @@ export function createTreasury(deps: TreasuryDeps) {
         sequentialInstructionPlan([getTransferSolInstruction({ source: deps.treasury, destination: wallet as Address, amount })]),
         `rent dust ${amount} lamports to ${wallet}`,
       );
-      reservation.commit(amount);
+      paid = true;
+
+      // Permanent mark first, budget second, and each booked independently rather than one guarding
+      // the other: the once-per-wallet record is what stops a second grant, so it matters more than
+      // a budget line, and the budget must still be counted even when that record could not be
+      // written. The claim becomes the permanent record only now that the lamports really moved.
+      const unrecorded: string[] = [];
+      try {
+        dustGranted.set(wallet, { at: Date.now(), granted: true });
+      } catch (e) {
+        unrecorded.push(`the permanent grant record (${e instanceof Error ? e.message : String(e)})`);
+      }
+      try {
+        reservation.commit(amount);
+      } catch (e) {
+        unrecorded.push(`the ${amount} lamports against the daily cap (${e instanceof Error ? e.message : String(e)})`);
+      }
+      if (unrecorded.length > 0) {
+        // The grant itself succeeded, so the caller is told so; this is the operator's problem, and
+        // it is the kind that goes unnoticed until the treasury is unexpectedly empty.
+        log(
+          `treasury: rent dust ${amount} lamports to ${wallet} LANDED (${signatures[0]}) but the database would not record ${unrecorded.join(" or ")}. ` +
+            `The claim's ${DUST_CLAIM_TTL_MS / 60_000}-minute expiry is now the only thing stopping a second grant to this wallet — check the database and the volume's free space.`,
+        );
+      }
       return { granted: true, lamports: amount.toString(), signature: signatures[0] };
     } catch (e) {
-      dustGranted.delete(wallet);
-      reservation?.cancel();
+      // Only an attempt that never paid gives its claim and its budget back. After the transfer has
+      // landed both are kept: the claim then expires on its own TTL and nothing before that can
+      // grant again, which is the only direction that cannot pay one wallet twice.
+      if (!paid) {
+        dustGranted.delete(wallet);
+        reservation?.cancel();
+      }
       throw e;
     }
   }
