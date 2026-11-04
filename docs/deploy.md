@@ -191,9 +191,14 @@ fly secrets set \
   KYC_SUBJECT_SALT="$(openssl rand -base64 32)" \
   HELIUS_API_KEY='<your Helius devnet key>' \
   STRIPE_SECRET_KEY='sk_test_...' \
-  STRIPE_WEBHOOK_SECRET='whsec_...'      # from step 5 below — set it AFTER creating the endpoint,
+  RESEND_API_KEY='re_...' \
+  STRIPE_WEBHOOK_SECRET='whsec_...'      # from step 4 below — set it AFTER creating the endpoint,
                                           # or set a placeholder now and `fly secrets set` it again later
 ```
+
+`RESEND_API_KEY` is only needed for `INVITE_EMAIL_SENDER=resend` (step 5 below) — drop that line if you
+are leaving invitation e-mail off, and note that the sending domain has to be verified **before** the
+key is of any use.
 
 Fly secrets only accept inline values, not file paths, so the fee payer / treasury / issuer keys go
 in as the **contents** of the keypair file (a JSON array like `[12,34,...]`) or as base58, exactly as
@@ -275,13 +280,78 @@ a hosted backend. For Fly:
 5. `fly secrets set STRIPE_WEBHOOK_SECRET='whsec_...'` (this redeploys the machine with the new
    secret — expected, it's the only way Fly secrets take effect).
 
-## 5. Smoke test checklist
+## 5. Resend (real invitation e-mail)
+
+Only needed for `INVITE_EMAIL_SENDER=resend`, which is what makes an appraiser invited in a mediation
+receive the link in their own inbox. Leave it unset and a live backend uses the `none` sender: the
+invite is still created and `POST /api/invites` answers `delivery.sent: false`, so the party passes
+the link on by hand. Nothing else in the flow changes.
+
+**The order matters: verify the domain first.** Until a sending domain is verified, Resend refuses
+every recipient except your own account address with HTTP 403 ("You can only send testing emails to
+your own email address"). So a key that works for your own inbox will still fail for the appraiser.
+
+1. **Add the domain.** Resend dashboard → [Domains](https://resend.com/domains) → **Add Domain** →
+   `relstate.casa`. Resend recommends a subdomain (`mail.relstate.casa`) so the sending reputation is
+   isolated from the apex; either works, and whichever you choose has to match `INVITE_EMAIL_FROM`.
+2. **Add the DNS records it shows you,** in the same registrar panel as step 2 above. There are three
+   for sending, and **the values are specific to your domain and Resend region, so copy them from the
+   dashboard rather than from here** — only the shapes are stable:
+
+   | Purpose | Type | Name | Value | Priority |
+   |---|---|---|---|---|
+   | DKIM | `TXT` | `resend._domainkey` | `p=…` (from the dashboard) | — |
+   | SPF | `TXT` | `send` | `v=spf1 include:amazonses.com ~all` | — |
+   | SPF (bounce feedback) | `MX` | `send` | `feedback-smtp.<region>.amazonses.com` | `10` |
+
+   Paste the name **without** the domain (`send`, not `send.relstate.casa`). On Cloudflare, set the
+   DKIM record's proxy status to **DNS only**; if priority `10` is taken, use `20`. The `inbound` MX
+   record Resend also offers is for *receiving* mail and is not needed here.
+3. **Verify.** Back in the dashboard, click **Verify DNS Records**. Manual setup can take up to 72
+   hours to propagate, though it is usually minutes — like the Pages DNS in step 2, do this before
+   the day of the demo. Do not move on until the domain shows as verified.
+4. **Create the API key** at [resend.com/api-keys](https://resend.com/api-keys) with **Sending access
+   only** (not full access), and restricted to the domain you just verified. Copy it once — Resend
+   does not show it again.
+5. **Set the secret:**
+
+   ```bash
+   fly secrets set RESEND_API_KEY='re_...'   # redeploys the machine, as every secret change does
+   ```
+
+6. **Turn the sender on** in `fly.toml`'s `[env]` block (neither of these is secret):
+
+   ```toml
+   INVITE_EMAIL_SENDER = "resend"
+   INVITE_EMAIL_FROM = "Relstate <invites@relstate.casa>"   # must be on the verified domain
+   ```
+
+   Then `fly deploy`. The backend refuses to boot if `INVITE_EMAIL_SENDER=resend` and either of these
+   is missing or malformed, and says which — a half-configured provider would otherwise tell a party
+   their invitation went out when it did not.
+
+7. **Check `APP_URL` before inviting anyone.** The link in the e-mail is built from it, so a wrong
+   `APP_URL` sends a real appraiser a link to the wrong host. It should already be
+   `https://<your domain>/app/` from step 3.4.
+
+**Verifying it end to end** needs a lease in `Mediation` with the company name agreed by both
+parties; `POST /api/invites` then answers `"delivery": {"sender": "resend", "sent": true}` and the
+mail arrives. Resend's dashboard shows the message under Emails, by the id the backend logs
+(`resend: accepted <id>`). A failure is reported as `"sent": false` with the invite still valid, and
+the backend log names the HTTP status and Resend's error code — never the invite link, the token, the
+recipient's full address, or Resend's response body. A 401, or a 403 that is not about the domain,
+adds a line naming `RESEND_API_KEY`; a 403 `validation_error` one naming `INVITE_EMAIL_FROM`, which
+is the "domain not verified yet" case. A 429 or a transient 500/503 is retried once automatically.
+
+## 6. Smoke test checklist
 
 Run through this once the Pages deploy and the Fly deploy are both up, **before** the demo:
 
 - [ ] `curl https://<your-fly-app>.fly.dev/health` → `"ok": true`, `"mode": "mock"`, and
       `feePayer`/`attestationIssuer`/`treasury` are the addresses you expect (not `ephemeralKeys`
       including ones you meant to configure — an ephemeral key there means a secret didn't take).
+      `"emailSender"` names the sender actually in use (`console`, `resend` or `none`), so this is
+      where an `INVITE_EMAIL_SENDER` that didn't take shows up — before the first invitation does.
 - [ ] The same `/health` says `"persistentStore": true`. If it says `false`, the volume or
       `DATABASE_PATH` is not wired up and a redeploy will forget the invitations, the webhook
       idempotency keys and today's budgets (see the headline note at the top of this page).
@@ -301,8 +371,13 @@ Run through this once the Pages deploy and the Fly deploy are both up, **before*
       `checkout.session.completed` delivery shows **200**, not a retry.
 - [ ] Propose a lease, fund the deposit, pay rent once — confirms the treasury-cosigned routes
       (`/api/treasury/rent-dust`, `/api/treasury/rent-payment`) work against the live program.
+- [ ] (`INVITE_EMAIL_SENDER=resend` only) Escalate a lease to mediation, agree a company name on both
+      sides, and invite an address you control → the response carries `"delivery": {"sender":
+      "resend", "sent": true}`, the mail arrives, and the link in it opens the invite page on **your**
+      domain. `"sent": false` means the send failed, not that the invite is lost — the Fly log names
+      the HTTP status, and a 403 there means the sending domain is not verified yet.
 
-## 6. Cost and teardown
+## 7. Cost and teardown
 
 **Rough running cost** (check current pricing before relying on this — both are usage-based, not
 flat):
@@ -332,7 +407,7 @@ fly apps destroy <your-app-name>      # stops billing for the backend immediatel
 - The devnet program deployment itself costs nothing ongoing (devnet SOL isn't real money); leave it
   or redeploy over it next time, your call.
 
-## 7. Hetzner alternative
+## 8. Hetzner alternative
 
 The backend image is deliberately generic — the same one Fly runs, runs anywhere Docker does:
 
@@ -363,7 +438,7 @@ relstate.example {
 config. Everything else in this runbook (Pages, DNS, Stripe, the smoke test) is unchanged; only
 "where the backend lives" differs.
 
-## 8. Rollback and "the demo network is down"
+## 9. Rollback and "the demo network is down"
 
 | Symptom | What to do |
 |---|---|

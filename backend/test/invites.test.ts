@@ -9,6 +9,7 @@ import { generateKeyPairSigner, getAddressEncoder, getBase64Decoder, type Addres
 import { RELSTATE_PROGRAM } from "../src/contracts.ts";
 import { env } from "../src/env.ts";
 import { appraiserNameHash, disputePda } from "../src/dispute.ts";
+import type { EmailSender } from "../src/email.ts";
 import { createInvites, inviteSecret } from "../src/invites.ts";
 import { accountLayout, type Layout } from "../src/layout.ts";
 import { LEASE_STATUS } from "../src/lease.ts";
@@ -70,7 +71,7 @@ function encodeDispute(fields: DisputeFields, layout: Layout = accountLayout("Di
 
 const COMPANY = "Acme Wycena";
 
-async function fixture(options: { status?: string; agreed?: boolean; bound?: boolean; selectionIn?: number; now?: number; clock?: { t: number } } = {}) {
+async function fixture(options: { status?: string; agreed?: boolean; bound?: boolean; selectionIn?: number; now?: number; clock?: { t: number }; sender?: EmailSender; log?: (...args: unknown[]) => void } = {}) {
   const [landlord, tenant, appraiser, stranger] = (await Promise.all([0, 1, 2, 3].map(async () => (await generateKeyPairSigner()).address))) as [Address, Address, Address, Address];
   const lease = (await generateKeyPairSigner()).address;
   const nowMs = options.now ?? Date.UTC(2026, 0, 1);
@@ -106,7 +107,8 @@ async function fixture(options: { status?: string; agreed?: boolean; bound?: boo
     rpc: () => rpc as never,
     now,
     program: PROGRAM,
-    sender: { name: "test", delivers: true, send: async (email) => void sent.push({ to: email.to, text: email.text }) },
+    sender: options.sender ?? { name: "test", delivers: true, send: async (email) => void sent.push({ to: email.to, text: email.text }) },
+    ...(options.log === undefined ? {} : { log: options.log }),
   });
   return { invites, lease, landlord, tenant, appraiser, stranger, sent, selectionDeadline, nowSeconds: Math.floor(nowMs / 1000) };
 }
@@ -140,6 +142,42 @@ describe("POST /api/invites", () => {
     assert.deepEqual(issued.delivery, { sender: "test", sent: true });
     assert.equal(f.sent.length, 1);
     assert.equal(f.sent[0]?.to, "biuro@acme.example");
+  });
+
+  /**
+   * The promise the whole design rests on: **a provider that is down must not lose the invitation.**
+   * Every other test here uses a sender that cannot fail, so nothing covered what happens when a
+   * real one does — which, with Resend wired in, is the case an operator will actually meet (an
+   * unverified domain answers 403 for every recipient).
+   *
+   * All four halves matter. The route must not throw, it must say `sent: false` so the party knows
+   * to pass the link on, the invite must still be claimable, and the log must still not carry the
+   * token — a failure path is exactly where a careless `catch` would print the whole message.
+   */
+  it("keeps the invite and reports sent: false when the sender throws, without logging the token", async () => {
+    const log: string[] = [];
+    const f = await fixture({
+      sender: { name: "boom", delivers: true, send: () => Promise.reject(new Error("provider exploded")) },
+      log: (...args) => log.push(args.map(String).join(" ")),
+    });
+
+    const issued = await f.invites.issue({ lease: f.lease, companyName: COMPANY, email: "biuro@acme.example", wallet: f.landlord });
+    assert.deepEqual(issued.delivery, { sender: "boom", sent: false });
+
+    // The invite is live: the appraiser could still claim it off a link passed on by hand.
+    const token = tokenOf(issued.url);
+    assert.equal(f.invites.read(token).companyName, COMPANY);
+    assert.equal(f.invites.size(), 1);
+    const claimed = f.invites.claim(token, f.appraiser);
+    assert.equal(claimed.wallet, f.appraiser);
+
+    // And the failure did not drag the bearer token or the address into the log.
+    const logged = log.join("\n");
+    assert.ok(logged.includes("boom sender failed"), `the failure should be logged: ${logged}`);
+    assert.equal(logged.includes(token), false, "the invite token must never reach the log");
+    assert.equal(logged.includes(issued.url ?? "\u0000"), false, "the invite url must never reach the log");
+    assert.equal(logged.includes("biuro@acme.example"), false, "the full address must never reach the log");
+    assert.ok(logged.includes("b***@acme.example"), "the masked address is what the log line carries");
   });
 
   it("refuses a stranger, a lease that is not in mediation, and a name the parties did not agree", async () => {

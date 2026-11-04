@@ -175,7 +175,8 @@ contents (`cat <file>`) or a base58 secret, per `backend/src/keys.ts`.
 | `RUSDC_AUDITOR_IKM` | secret | ★ |
 | `RUSDC_AUDITOR_ELGAMAL_PUBKEY` | Fly env | optional, reference only |
 | `USDC_RESERVE_MINT` / `USDC_RESERVE_TOKEN_ACCOUNT` | Fly env | optional |
-| `INVITE_EMAIL_SENDER` | Fly env | optional (`console` \| `none`; blank = `console` in mock, `none` in live) — **post open-appraiser merge only** |
+| `INVITE_EMAIL_SENDER` | Fly env | optional (`console` \| `resend` \| `none`; blank = `console` in mock, `none` in live) — **post open-appraiser merge only** |
+| `RESEND_API_KEY` / `INVITE_EMAIL_FROM` | secret / Fly env | both required once `INVITE_EMAIL_SENDER=resend`; verify the sending domain in Resend first (`docs/deploy.md` step 5) — **post open-appraiser merge only** |
 | `INVITE_TTL_SECONDS` | Fly env | optional (blank follows the program's `SELECTION_WINDOW_SECS`) — **post open-appraiser merge only** |
 | `SPONSOR_MAX_*` (8 vars), `RENT_PAYMENT_MAX_*` (8 vars), `RENT_DUST_MAX_*` (2 vars) | Fly env | optional, tune only. Set `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS=400000` for devnet priority-fee headroom |
 | `KYC_PROVIDER` | Fly env | optional (default `mock`) |

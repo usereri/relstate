@@ -1,16 +1,18 @@
 // Outbound e-mail, behind one interface. Contract 4's shape ("every external vendor sits behind one
 // of these") applied to the one message this backend sends: the appraiser invitation.
 //
-// There is no vendor here and no new dependency. What the demo needs is a sender that makes the
-// link reachable on a stage, and what a real deployment needs is a seam that a provider drops into
-// without touching `invites.ts`. So: an interface, a console sender, a no-op sender, and one
-// `createEmailSender` that picks between them.
+// What the demo needs is a sender that makes the link reachable on a stage, and what a real
+// deployment needs is a seam that a provider drops into without touching `invites.ts`. So: an
+// interface, a console sender, a no-op sender, a Resend sender in `email-resend.ts`, and one
+// `createEmailSender` that picks between them. Resend added no dependency either — it is one POST
+// over `fetch`.
 //
 // The one security rule in this file: **an invite link is a bearer token, so it never reaches a
 // shared log in live mode.** The console sender prints it in mock mode, where the operator is the
 // only reader and the demo depends on it, and redacts it anywhere else. `redactSecrets` cannot help
 // here — the token is freshly minted per invite and is not a configured secret — so the sender has
 // to be the thing that knows.
+import { createResendEmailSender, resendConfigFromEnv } from "./email-resend.ts";
 import { env } from "./env.ts";
 
 export type OutboundEmail = {
@@ -79,13 +81,36 @@ export const noneEmailSender = (): EmailSender => ({
 });
 
 /**
- * The configured sender. `INVITE_EMAIL_SENDER` is validated at boot (`assertEnvConsistent`), so an
- * unknown value never reaches here; blank picks the sender that is honest for the mode.
+ * Which sender {@link createEmailSender} will pick, without building it.
  *
- * A real provider is added in exactly one place: a `case "ses"` (or whatever) here plus its own
- * file implementing {@link EmailSender}. Nothing in `invites.ts` changes.
+ * Split out from the factory so `/health` can name the configured sender without constructing one
+ * (and so without needing the invites service at all), while the answer stays one function's
+ * opinion rather than two that can drift. Blank picks the sender that is honest for the mode:
+ * `console` in mock, where the operator reads the link off the log, and `none` in live, so a
+ * deployment with nothing configured never claims to have sent an e-mail.
  */
-export function createEmailSender({ log, sender = env.invites.emailSender, mode = env.mode }: { log?: (...args: unknown[]) => void; sender?: string; mode?: string } = {}): EmailSender {
+export function emailSenderName({ sender = env.invites.emailSender, mode = env.mode }: { sender?: string; mode?: string } = {}): "console" | "resend" | "none" {
   const chosen = sender !== "" ? sender : mode === "mock" ? "console" : "none";
-  return chosen === "console" ? createConsoleEmailSender({ log, mode }) : noneEmailSender();
+  return chosen === "console" ? "console" : chosen === "resend" ? "resend" : "none";
+}
+
+/**
+ * The configured sender. `INVITE_EMAIL_SENDER` is validated at boot (`assertEnvConsistent`), so an
+ * unknown value never reaches here, and `resend` is only reachable with its key and from address
+ * both set.
+ *
+ * A further provider is added in exactly one place: another `case` here (plus its name in
+ * {@link emailSenderName}) and its own file implementing {@link EmailSender}, the way
+ * `email-resend.ts` does. Nothing in `invites.ts` changes.
+ */
+export function createEmailSender({ log, sender = env.invites.emailSender, mode = env.mode, fetch }: { log?: (...args: unknown[]) => void; sender?: string; mode?: string; fetch?: typeof globalThis.fetch } = {}): EmailSender {
+  switch (emailSenderName({ sender, mode })) {
+    case "console":
+      return createConsoleEmailSender({ log, mode });
+    case "resend":
+      // `fetch` is a test seam only; in the server it is left undefined and the global is used.
+      return createResendEmailSender(resendConfigFromEnv(), { log, ...(fetch === undefined ? {} : { fetch }) });
+    default:
+      return noneEmailSender();
+  }
 }

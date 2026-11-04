@@ -238,6 +238,13 @@ export interface HealthResponse {
   offrampProvider: "mock";
   /** Workstream D. `mock` means the identity check is a local page and no vendor is involved. */
   kycProvider: "mock" | "sumsub";
+  /**
+   * Which sender carries an appraiser invitation. `none` accepts the invite and sends nothing, so
+   * `POST /api/invites` answers `delivery.sent: false` and the party passes the link on. This is the
+   * **resolved** sender, not the raw `INVITE_EMAIL_SENDER`, so a blank setting reports what it
+   * actually picked for the mode. A name only — never the key or the from address.
+   */
+  emailSender: "console" | "resend" | "none";
   /** Illustrative fixed demo rate, PLN per USDC. */
   plnPerUsdc: string;
 }

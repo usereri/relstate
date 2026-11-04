@@ -9,6 +9,7 @@ import { cors } from "hono/cors";
 import { AuthError, assertAdmin, createSessionToken, sessionFromAuthorizationHeader } from "./auth.ts";
 import { verifyRentPayment } from "./confidential.ts";
 import { RELSTATE_PROGRAM, type HealthResponse, type SponsorInfoResponse, type SponsorRequest, type TreasuryInvariantView } from "./contracts.ts";
+import { emailSenderName } from "./email.ts";
 import { env, redactedRpcUrl } from "./env.ts";
 import { DisputeDecodeError, DisputeNotFound } from "./dispute.ts";
 import { InviteError } from "./invites.ts";
@@ -183,6 +184,11 @@ export function createApp(
       onrampProvider: env.onramp.provider,
       offrampProvider: env.offramp.provider,
       kycProvider: env.kyc.provider,
+      // The resolved sender, so an `INVITE_EMAIL_SENDER=resend` that failed to take is visible here
+      // rather than only in the first invitation that silently did not go out. Resolved from env
+      // rather than through `services.invites()`, so this route still builds nothing and needs no
+      // service: the gate for this lane is that it answers with no secrets and no network.
+      emailSender: emailSenderName(),
       plnPerUsdc: formatRate(services.onramp().rateScaled),
     };
     return c.json(body);

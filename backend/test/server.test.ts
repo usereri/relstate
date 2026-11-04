@@ -27,6 +27,31 @@ describe("server (mock mode, no secrets)", () => {
     assert.equal(body.auditorConfigured, false);
   });
 
+  it("GET /health names the resolved invite e-mail sender", async () => {
+    const body = (await (await app.request("/health")).json()) as Record<string, unknown>;
+    // Blank INVITE_EMAIL_SENDER (noenv.ts pins it) resolves to `console` in mock mode, which is the
+    // point of reporting the resolved name rather than the raw setting.
+    assert.equal(body.emailSender, "console");
+  });
+
+  // The secret-leak test above can only check `env.invites.resendApiKey` when one is configured, and
+  // under noenv.ts it is blank. So configure one here: `resend` is the only sender that has a key to
+  // spill in the first place, which makes it the case worth asserting.
+  it("GET /health reports the resend sender by name and never its key", async () => {
+    const slot = env.invites as { emailSender: string; resendApiKey: string; emailFrom: string };
+    const before = { ...slot };
+    slot.emailSender = "resend";
+    slot.resendApiKey = "re_live_Xk2mQ7bV9tR4nL8yW3cH5sJ0pGaZd6Fu";
+    slot.emailFrom = "Relstate <invites@relstate.casa>";
+    try {
+      const text = await (await app.request("/health")).text();
+      assert.equal((JSON.parse(text) as Record<string, unknown>).emailSender, "resend");
+      assert.ok(!text.includes(slot.resendApiKey), "/health must not contain RESEND_API_KEY");
+    } finally {
+      Object.assign(slot, before);
+    }
+  });
+
   it("/health never leaks a secret", async () => {
     const text = await (await app.request("/health")).text();
     // Match the NAMES of secret-bearing fields, and the configured secret VALUES. Not substrings of
@@ -35,7 +60,7 @@ describe("server (mock mode, no secrets)", () => {
     const body = JSON.parse(text) as Record<string, unknown>;
     const names = Object.keys(body).filter((k) => /secret|ikm|api[-_]?key|private|token|password|keypair/i.test(k));
     assert.deepEqual(names, [], `/health exposes secret-looking fields: ${names.join(", ")}`);
-    for (const value of [env.feePayerKeypair, env.treasuryKeypair, env.attestationIssuerKeypair, env.rusdcAuditorIkm, env.sessionSecret, env.adminToken]) {
+    for (const value of [env.feePayerKeypair, env.treasuryKeypair, env.attestationIssuerKeypair, env.rusdcAuditorIkm, env.sessionSecret, env.adminToken, env.invites.resendApiKey]) {
       if (value.length >= 12) assert.ok(!text.includes(value), "/health contains a configured secret");
     }
     assert.ok(!/api-key=(?!<redacted>)/i.test(text), "an RPC api-key is not redacted");

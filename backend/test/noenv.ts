@@ -21,6 +21,11 @@ for (const key of [
   // So a developer with a real DATABASE_PATH does not have these tests writing to it, and every
   // service built here gets its own in-memory store (store.ts).
   "DATABASE_PATH",
+  // Not secrets, but they decide which e-mail sender the invites service resolves to, and /health
+  // now reports it: a developer's own .env must not change what these tests see.
+  "INVITE_EMAIL_SENDER",
+  "INVITE_EMAIL_FROM",
+  "RESEND_API_KEY",
 ]) {
   process.env[key] = "";
 }

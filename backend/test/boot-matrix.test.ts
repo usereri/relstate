@@ -6,9 +6,9 @@ const { env, assertEnvConsistent, weakSecret } = await import("../src/env.ts");
 const { assertMockKycAllowed, DEVNET_GENESIS_HASH } = await import("../src/boot.ts");
 import type { Env } from "../src/env.ts";
 
-const withEnv = (patch: Record<string, unknown> & { kyc?: Partial<Env["kyc"]> } = {}): Env => {
-  const { kyc, ...rest } = patch;
-  return { ...env, ...rest, kyc: { ...env.kyc, ...kyc } } as unknown as Env;
+const withEnv = (patch: Record<string, unknown> & { kyc?: Partial<Env["kyc"]>; invites?: Partial<Env["invites"]> } = {}): Env => {
+  const { kyc, invites, ...rest } = patch;
+  return { ...env, ...rest, kyc: { ...env.kyc, ...kyc }, invites: { ...env.invites, ...invites } } as unknown as Env;
 };
 
 // Strong enough to pass weakSecret (>=32 chars, >=10 distinct): this file is about the auth-mode
@@ -234,6 +234,89 @@ describe("assertEnvConsistent: mock-KYC budget", () => {
 
   it("the no-secrets mock default already satisfies the budget invariants", () => {
     assert.equal(message(withEnv()), "");
+  });
+});
+
+describe("assertEnvConsistent: INVITE_EMAIL_SENDER", () => {
+  it("accepts console, none and blank", () => {
+    assert.equal(message(withEnv({ invites: { emailSender: "console" } })), "");
+    assert.equal(message(withEnv({ invites: { emailSender: "none" } })), "");
+    assert.equal(message(withEnv({ invites: { emailSender: "" } })), "");
+  });
+
+  it("accepts resend when fully configured", () => {
+    assert.equal(message(withEnv({ invites: { emailSender: "resend", resendApiKey: "re_test_0123456789abcdef", emailFrom: "invites@relstate.casa" } })), "");
+  });
+
+  it("refuses a typo, naming the valid values", () => {
+    const msg = message(withEnv({ invites: { emailSender: "resnd" } }));
+    assert.ok(msg.includes('INVITE_EMAIL_SENDER must be "console", "resend", "none" or unset'), msg);
+  });
+
+  it("resend without RESEND_API_KEY is refused with its own problem", () => {
+    const msg = message(withEnv({ invites: { emailSender: "resend", resendApiKey: "", emailFrom: "invites@relstate.casa" } }));
+    assert.ok(msg.includes("RESEND_API_KEY is required when INVITE_EMAIL_SENDER=resend"), msg);
+  });
+
+  it("resend without INVITE_EMAIL_FROM is refused with its own problem", () => {
+    const msg = message(withEnv({ invites: { emailSender: "resend", resendApiKey: "re_test_0123456789abcdef", emailFrom: "" } }));
+    assert.ok(msg.includes("INVITE_EMAIL_FROM is required when INVITE_EMAIL_SENDER=resend"), msg);
+  });
+
+  it("resend with a malformed INVITE_EMAIL_FROM is refused", () => {
+    const msg = message(withEnv({ invites: { emailSender: "resend", resendApiKey: "re_test_0123456789abcdef", emailFrom: "not-an-address" } }));
+    assert.ok(msg.includes("INVITE_EMAIL_FROM must be an e-mail address"), msg);
+  });
+
+  it("resend accepts a bare address and a 'Name <addr@host>' form", () => {
+    assert.equal(message(withEnv({ invites: { emailSender: "resend", resendApiKey: "re_test_0123456789abcdef", emailFrom: "invites@relstate.casa" } })), "");
+    assert.equal(message(withEnv({ invites: { emailSender: "resend", resendApiKey: "re_test_0123456789abcdef", emailFrom: "Relstate <invites@relstate.casa>" } })), "");
+  });
+
+  // INVITE_EMAIL_TIMEOUT_MS and RESEND_API_BASE have their own describe below, which covers the
+  // whole range of bad values rather than one of them.
+
+  it("none of the resend requirements fire when the sender is not resend", () => {
+    assert.equal(message(withEnv({ invites: { emailSender: "console", resendApiKey: "", emailFrom: "", emailTimeoutMs: 0, resendApiBase: "not a url" } })), "");
+    assert.equal(message(withEnv({ invites: { emailSender: "", resendApiKey: "", emailFrom: "", emailTimeoutMs: 0.5, resendApiBase: "http://x" } })), "");
+  });
+});
+
+describe("assertEnvConsistent: resend transport settings", () => {
+  const resend = { emailSender: "resend", resendApiKey: "re_test_0123456789abcdef", emailFrom: "invites@relstate.casa" } as const;
+  const problem = (patch: Partial<Env["invites"]>): string => message(withEnv({ invites: { ...resend, ...patch } }));
+
+  it("accepts a whole number of milliseconds up to the 32-bit signed maximum", () => {
+    for (const emailTimeoutMs of [1, 10_000, 2_147_483_647]) {
+      assert.equal(problem({ emailTimeoutMs }), "", `INVITE_EMAIL_TIMEOUT_MS=${emailTimeoutMs} should be accepted`);
+    }
+  });
+
+  /**
+   * `AbortSignal.timeout` rejects a fraction outright, but **accepts** anything above 2^31-1 and
+   * then collapses the timer to 1 ms with only a `TimeoutOverflowWarning`. So 4294967295 — the
+   * unsigned maximum, and the obvious bound to reach for — would boot cleanly and make every single
+   * send time out instantly, which the operator would read as the network being down. It is in this
+   * list for exactly that reason.
+   */
+  it("refuses a fraction, zero, a negative, NaN, and anything above the 32-bit signed maximum", () => {
+    for (const emailTimeoutMs of [0, -1, 500.5, 5e9, NaN, 2_147_483_648, 4_294_967_295]) {
+      assert.match(problem({ emailTimeoutMs }), /INVITE_EMAIL_TIMEOUT_MS must be a whole number of milliseconds between 1 and 2147483647/, `INVITE_EMAIL_TIMEOUT_MS=${emailTimeoutMs} should be refused`);
+    }
+  });
+
+  it("accepts an https RESEND_API_BASE", () => {
+    for (const resendApiBase of ["https://api.resend.com", "https://resend.internal/v1"]) {
+      assert.equal(problem({ resendApiBase }), "", `RESEND_API_BASE=${resendApiBase} should be accepted`);
+    }
+  });
+
+  // The base carries the bearer key and a live invite token, so plain http is refused rather than
+  // merely discouraged — and a value that is not a URL at all would otherwise fail at the first send.
+  it("refuses a plain-http or unparseable RESEND_API_BASE", () => {
+    assert.match(problem({ resendApiBase: "http://api.resend.com" }), /RESEND_API_BASE must be https/);
+    assert.match(problem({ resendApiBase: "not a url" }), /RESEND_API_BASE must be a URL/);
+    assert.match(problem({ resendApiBase: "" }), /RESEND_API_BASE must be a URL/);
   });
 });
 

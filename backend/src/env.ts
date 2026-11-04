@@ -247,9 +247,9 @@ export const env = {
   invites: {
     /**
      * Which {@link EmailSender} carries the invitation: `console` writes it to this process's log,
-     * `none` accepts the invite and sends nothing (the party reads the link off the response in
-     * mock mode, or a real provider is plugged in here). Blank picks `console` in mock mode and
-     * `none` in live mode, so a live deployment never pretends to have sent an e-mail.
+     * `resend` sends it for real (`email-resend.ts`), `none` accepts the invite and sends nothing
+     * (the party reads the link off the response in mock mode). Blank picks `console` in mock mode
+     * and `none` in live mode, so a live deployment never pretends to have sent an e-mail.
      */
     emailSender: str("INVITE_EMAIL_SENDER"),
     /**
@@ -259,6 +259,25 @@ export const env = {
      * never outlive the window in which the parties could still bind the wallet it carries.
      */
     ttlSeconds: str("INVITE_TTL_SECONDS"),
+    /**
+     * Resend, when `INVITE_EMAIL_SENDER=resend`. Both are required then and checked below, because
+     * a half-configured provider is the one failure that would tell a party their invitation went
+     * out when it did not.
+     *
+     * The key is a secret (registered in `secretValues()`, keys.ts, so it is redacted out of any
+     * printed error). The from address is public, but it must be on a **domain verified in
+     * Resend** — until it is, Resend accepts only the account owner's own address as a recipient.
+     * `Name <addr@host>` and a bare `addr@host` are both accepted; Resend takes either verbatim.
+     */
+    resendApiKey: str("RESEND_API_KEY"),
+    emailFrom: str("INVITE_EMAIL_FROM"),
+    resendApiBase: str("RESEND_API_BASE", "https://api.resend.com"),
+    /**
+     * Budget for the whole send, one retry included — `POST /api/invites` is synchronous, so the
+     * provider gets a hard ceiling rather than open-ended backoff. Bounded at boot to what
+     * `AbortSignal.timeout` can actually honour; see `assertEnvConsistent`.
+     */
+    emailTimeoutMs: num("INVITE_EMAIL_TIMEOUT_MS", 10_000),
   },
 
   sponsor: {
@@ -394,8 +413,37 @@ export function assertEnvConsistent(e: Env = env): void {
   // Both invite settings are parsed at boot rather than at the first request: a typo here would
   // otherwise surface as a 500 on the one route a party needs at the point where a mediation is
   // already running and the selection window is ticking.
-  if (e.invites.emailSender !== "" && e.invites.emailSender !== "console" && e.invites.emailSender !== "none") {
-    problems.push(`INVITE_EMAIL_SENDER must be "console", "none" or unset, not "${e.invites.emailSender}"`);
+  if (e.invites.emailSender !== "" && e.invites.emailSender !== "console" && e.invites.emailSender !== "none" && e.invites.emailSender !== "resend") {
+    problems.push(`INVITE_EMAIL_SENDER must be "console", "resend", "none" or unset, not "${e.invites.emailSender}"`);
+  }
+  // A half-configured mail provider is worse than none at all: `POST /api/invites` would answer
+  // `delivery.sent: false` on every call, and the party would learn that only after the mediation's
+  // selection window had started ticking.
+  if (e.invites.emailSender === "resend") {
+    if (e.invites.resendApiKey === "") problems.push("RESEND_API_KEY is required when INVITE_EMAIL_SENDER=resend (create a sending-only key at resend.com/api-keys)");
+    if (e.invites.emailFrom === "") {
+      problems.push('INVITE_EMAIL_FROM is required when INVITE_EMAIL_SENDER=resend (e.g. "Relstate <invites@relstate.casa>", on a domain verified in Resend)');
+    } else if (!/^(?:[^<>@]*<[^\s@,;:<>"]+@[^\s@,;:<>"]+\.[^\s@,;:<>".]+>|[^\s@,;:<>"]+@[^\s@,;:<>"]+\.[^\s@,;:<>".]+)$/.test(e.invites.emailFrom)) {
+      problems.push(`INVITE_EMAIL_FROM must be an e-mail address, optionally as "Name <addr@host>", not "${e.invites.emailFrom}"`);
+    }
+    // `AbortSignal.timeout` takes a 32-bit signed millisecond count. A fraction is a RangeError, and
+    // — worse, because it is silent — anything above 2^31-1 is *accepted* and then collapses to a
+    // 1 ms timeout with only a `TimeoutOverflowWarning`, so every send would fail instantly and look
+    // like the network. Both are refused here rather than at the first invitation.
+    if (!(Number.isInteger(e.invites.emailTimeoutMs) && e.invites.emailTimeoutMs > 0 && e.invites.emailTimeoutMs <= 2_147_483_647)) {
+      problems.push(`INVITE_EMAIL_TIMEOUT_MS must be a whole number of milliseconds between 1 and 2147483647, not "${e.invites.emailTimeoutMs}"`);
+    }
+    // The base carries the bearer key and a live invite token, so it is https or nothing. Checked
+    // here only (Stripe's and Sumsub's bases are left as they are) because this one is new.
+    const base = ((): URL | null => {
+      try {
+        return new URL(e.invites.resendApiBase);
+      } catch {
+        return null;
+      }
+    })();
+    if (base === null) problems.push(`RESEND_API_BASE must be a URL, not "${e.invites.resendApiBase}"`);
+    else if (base.protocol !== "https:") problems.push(`RESEND_API_BASE must be https, not "${e.invites.resendApiBase}" (it carries the API key and the invite token)`);
   }
   if (e.invites.ttlSeconds !== "" && !(/^\d+$/.test(e.invites.ttlSeconds) && Number(e.invites.ttlSeconds) > 0)) {
     problems.push("INVITE_TTL_SECONDS must be a positive whole number of seconds, or unset to follow the program's SELECTION_WINDOW_SECS");
