@@ -315,6 +315,8 @@ Run through this once the Pages deploy and the Fly deploy are both up, **before*
 - [ ] `curl https://<your-fly-app>.fly.dev/health` → `"ok": true`, `"mode": "mock"`, and
       `feePayer`/`attestationIssuer`/`treasury` are the addresses you expect (not `ephemeralKeys`
       including ones you meant to configure — an ephemeral key there means a secret didn't take).
+      `"emailSender"` names the sender actually in use (`console`, `resend` or `none`), so this is
+      where an `INVITE_EMAIL_SENDER` that didn't take shows up — before the first invitation does.
 - [ ] Open `https://<your domain>/` — the site loads, dark/light theme toggle works, footer shows
       the devnet disclaimer.
 - [ ] Open `https://<your domain>/app/` directly (not just by clicking through from the site) —

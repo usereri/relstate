@@ -81,16 +81,30 @@ export const noneEmailSender = (): EmailSender => ({
 });
 
 /**
+ * Which sender {@link createEmailSender} will pick, without building it.
+ *
+ * Split out from the factory so `/health` can name the configured sender without constructing one
+ * (and so without needing the invites service at all), while the answer stays one function's
+ * opinion rather than two that can drift. Blank picks the sender that is honest for the mode:
+ * `console` in mock, where the operator reads the link off the log, and `none` in live, so a
+ * deployment with nothing configured never claims to have sent an e-mail.
+ */
+export function emailSenderName({ sender = env.invites.emailSender, mode = env.mode }: { sender?: string; mode?: string } = {}): "console" | "resend" | "none" {
+  const chosen = sender !== "" ? sender : mode === "mock" ? "console" : "none";
+  return chosen === "console" ? "console" : chosen === "resend" ? "resend" : "none";
+}
+
+/**
  * The configured sender. `INVITE_EMAIL_SENDER` is validated at boot (`assertEnvConsistent`), so an
  * unknown value never reaches here, and `resend` is only reachable with its key and from address
- * both set; blank picks the sender that is honest for the mode.
+ * both set.
  *
- * A further provider is added in exactly one place: another `case` here plus its own file
- * implementing {@link EmailSender}, the way `email-resend.ts` does. Nothing in `invites.ts` changes.
+ * A further provider is added in exactly one place: another `case` here (plus its name in
+ * {@link emailSenderName}) and its own file implementing {@link EmailSender}, the way
+ * `email-resend.ts` does. Nothing in `invites.ts` changes.
  */
 export function createEmailSender({ log, sender = env.invites.emailSender, mode = env.mode, fetch }: { log?: (...args: unknown[]) => void; sender?: string; mode?: string; fetch?: typeof globalThis.fetch } = {}): EmailSender {
-  const chosen = sender !== "" ? sender : mode === "mock" ? "console" : "none";
-  switch (chosen) {
+  switch (emailSenderName({ sender, mode })) {
     case "console":
       return createConsoleEmailSender({ log, mode });
     case "resend":

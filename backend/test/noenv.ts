@@ -18,6 +18,11 @@ for (const key of [
   "USDC_RESERVE_TOKEN_ACCOUNT",
   "HELIUS_API_KEY",
   "RPC_URL",
+  // Not secrets, but they decide which e-mail sender the invites service resolves to, and /health
+  // now reports it: a developer's own .env must not change what these tests see.
+  "INVITE_EMAIL_SENDER",
+  "INVITE_EMAIL_FROM",
+  "RESEND_API_KEY",
 ]) {
   process.env[key] = "";
 }
