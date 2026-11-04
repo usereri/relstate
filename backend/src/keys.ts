@@ -100,6 +100,7 @@ const secretValues = (): string[] =>
     env.rusdcAuditorIkm,
     env.onramp.stripeSecretKey,
     env.onramp.stripeWebhookSecret,
+    env.invites.resendApiKey,
     env.sessionSecret,
     env.adminToken,
   ].filter((v) => v !== "");

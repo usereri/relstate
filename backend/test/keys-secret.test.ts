@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { describe, it } from "node:test";
 import { inspect } from "node:util";
 import { getBase58Decoder } from "@solana/kit";
+import { env } from "../src/env.ts";
 import { KeySpecError, generateKeyPairBytes, loadKeyPairSigner, parseKeyPairBytes, redactSecrets } from "../src/keys.ts";
 
 // Review F3. A key spec is either a PATH or the SECRET ITSELF, and an error cannot tell which. The
@@ -70,6 +71,26 @@ describe("redactSecrets", () => {
   });
   it("ignores values too short to be a secret rather than mangling the text", () => {
     assert.equal(redactSecrets("a b c", ["a"]), "a b c");
+  });
+
+  it("replaces a configured RESEND_API_KEY", () => {
+    const key = "re_test_0123456789abcdef";
+    assert.equal(redactSecrets(`resend could not be reached: key ${key} was rejected`, [key]), "resend could not be reached: key <redacted> was rejected");
+  });
+
+  // The test above proves the replacement; this one proves the *registration*, which is the part
+  // keys.ts had to change. `secretValues()` is private and is read at call time, so the only way to
+  // ask "is RESEND_API_KEY one of the secrets this function defends?" is to set it and omit the list.
+  it("defends RESEND_API_KEY by default, without being handed the list", () => {
+    const key = "re_live_Zq7Z4tR1xK8mW2bV6nD3cL9yH5sJ0pGa";
+    const slot = env.invites as { resendApiKey: string };
+    const before = slot.resendApiKey;
+    slot.resendApiKey = key;
+    try {
+      assert.equal(redactSecrets(`resend refused the message: key ${key}`), "resend refused the message: key <redacted>");
+    } finally {
+      slot.resendApiKey = before;
+    }
   });
 });
 

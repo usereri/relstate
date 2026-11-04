@@ -236,9 +236,9 @@ export const env = {
   invites: {
     /**
      * Which {@link EmailSender} carries the invitation: `console` writes it to this process's log,
-     * `none` accepts the invite and sends nothing (the party reads the link off the response in
-     * mock mode, or a real provider is plugged in here). Blank picks `console` in mock mode and
-     * `none` in live mode, so a live deployment never pretends to have sent an e-mail.
+     * `resend` sends it for real (`email-resend.ts`), `none` accepts the invite and sends nothing
+     * (the party reads the link off the response in mock mode). Blank picks `console` in mock mode
+     * and `none` in live mode, so a live deployment never pretends to have sent an e-mail.
      */
     emailSender: str("INVITE_EMAIL_SENDER"),
     /**
@@ -248,6 +248,21 @@ export const env = {
      * never outlive the window in which the parties could still bind the wallet it carries.
      */
     ttlSeconds: str("INVITE_TTL_SECONDS"),
+    /**
+     * Resend, when `INVITE_EMAIL_SENDER=resend`. Both are required then and checked below, because
+     * a half-configured provider is the one failure that would tell a party their invitation went
+     * out when it did not.
+     *
+     * The key is a secret (registered in `secretValues()`, keys.ts, so it is redacted out of any
+     * printed error). The from address is public, but it must be on a **domain verified in
+     * Resend** — until it is, Resend accepts only the account owner's own address as a recipient.
+     * `Name <addr@host>` and a bare `addr@host` are both accepted; Resend takes either verbatim.
+     */
+    resendApiKey: str("RESEND_API_KEY"),
+    emailFrom: str("INVITE_EMAIL_FROM"),
+    resendApiBase: str("RESEND_API_BASE", "https://api.resend.com"),
+    /** `POST /api/invites` is synchronous, so the provider gets a hard ceiling rather than retries. */
+    emailTimeoutMs: num("INVITE_EMAIL_TIMEOUT_MS", 10_000),
   },
 
   sponsor: {
@@ -361,8 +376,20 @@ export function assertEnvConsistent(e: Env = env): void {
   // Both invite settings are parsed at boot rather than at the first request: a typo here would
   // otherwise surface as a 500 on the one route a party needs at the point where a mediation is
   // already running and the selection window is ticking.
-  if (e.invites.emailSender !== "" && e.invites.emailSender !== "console" && e.invites.emailSender !== "none") {
-    problems.push(`INVITE_EMAIL_SENDER must be "console", "none" or unset, not "${e.invites.emailSender}"`);
+  if (e.invites.emailSender !== "" && e.invites.emailSender !== "console" && e.invites.emailSender !== "none" && e.invites.emailSender !== "resend") {
+    problems.push(`INVITE_EMAIL_SENDER must be "console", "resend", "none" or unset, not "${e.invites.emailSender}"`);
+  }
+  // A half-configured mail provider is worse than none at all: `POST /api/invites` would answer
+  // `delivery.sent: false` on every call, and the party would learn that only after the mediation's
+  // selection window had started ticking.
+  if (e.invites.emailSender === "resend") {
+    if (e.invites.resendApiKey === "") problems.push("RESEND_API_KEY is required when INVITE_EMAIL_SENDER=resend (create a sending-only key at resend.com/api-keys)");
+    if (e.invites.emailFrom === "") {
+      problems.push('INVITE_EMAIL_FROM is required when INVITE_EMAIL_SENDER=resend (e.g. "Relstate <invites@relstate.casa>", on a domain verified in Resend)');
+    } else if (!/^(?:[^<>@]*<[^\s@,;:<>"]+@[^\s@,;:<>"]+\.[^\s@,;:<>".]+>|[^\s@,;:<>"]+@[^\s@,;:<>"]+\.[^\s@,;:<>".]+)$/.test(e.invites.emailFrom)) {
+      problems.push(`INVITE_EMAIL_FROM must be an e-mail address, optionally as "Name <addr@host>", not "${e.invites.emailFrom}"`);
+    }
+    if (!(e.invites.emailTimeoutMs > 0)) problems.push("INVITE_EMAIL_TIMEOUT_MS must be greater than zero");
   }
   if (e.invites.ttlSeconds !== "" && !(/^\d+$/.test(e.invites.ttlSeconds) && Number(e.invites.ttlSeconds) > 0)) {
     problems.push("INVITE_TTL_SECONDS must be a positive whole number of seconds, or unset to follow the program's SELECTION_WINDOW_SECS");
